@@ -13,11 +13,15 @@
 # limitations under the License.
 
 import os.path, subprocess
+import typing
 
 from ..mesonlib import EnvironmentException
-from ..mesonlib import is_windows
 
-from .compilers import Compiler, mono_buildtype_args
+from .compilers import Compiler, MachineChoice, mono_buildtype_args
+from .mixins.islinker import BasicLinkerIsCompilerMixin
+
+if typing.TYPE_CHECKING:
+    from ..envconfig import MachineInfo
 
 cs_optimization_args = {'0': [],
                         'g': [],
@@ -27,11 +31,14 @@ cs_optimization_args = {'0': [],
                         's': ['-optimize+'],
                         }
 
-class CsCompiler(Compiler):
-    def __init__(self, exelist, version, id, runner=None):
+
+class CsCompiler(BasicLinkerIsCompilerMixin, Compiler):
+    def __init__(self, exelist, version, for_machine: MachineChoice,
+                 info: 'MachineInfo', comp_id, runner=None):
         self.language = 'cs'
-        super().__init__(exelist, version)
-        self.id = id
+        super().__init__(exelist, version, for_machine, info)
+        self.id = comp_id
+        self.is_cross = False
         self.runner = runner
 
     def get_display_language(self):
@@ -49,17 +56,11 @@ class CsCompiler(Compiler):
     def get_link_args(self, fname):
         return ['-r:' + fname]
 
-    def get_soname_args(self, *args):
-        return []
-
     def get_werror_args(self):
         return ['-warnaserror']
 
     def split_shlib_to_parts(self, fname):
         return None, fname
-
-    def build_rpath_args(self, build_dir, from_dir, rpath_paths, build_rpath, install_rpath):
-        return []
 
     def get_dependency_gen_args(self, outtarget, outfile):
         return []
@@ -70,13 +71,7 @@ class CsCompiler(Compiler):
     def get_compile_only_args(self):
         return []
 
-    def get_linker_output_args(self, outputname):
-        return []
-
     def get_coverage_args(self):
-        return []
-
-    def get_coverage_link_args(self):
         return []
 
     def get_std_exe_link_args(self):
@@ -87,6 +82,15 @@ class CsCompiler(Compiler):
 
     def get_pic_args(self):
         return []
+
+    def compute_parameters_with_absolute_paths(self, parameter_list, build_dir):
+        for idx, i in enumerate(parameter_list):
+            if i[:2] == '-L':
+                parameter_list[idx] = i[:2] + os.path.normpath(os.path.join(build_dir, i[2:]))
+            if i[:5] == '-lib:':
+                parameter_list[idx] = i[:5] + os.path.normpath(os.path.join(build_dir, i[5:]))
+
+        return parameter_list
 
     def name_string(self):
         return ' '.join(self.exelist)
@@ -132,19 +136,22 @@ class CsCompiler(Compiler):
     def get_optimization_args(self, optimization_level):
         return cs_optimization_args[optimization_level]
 
+
 class MonoCompiler(CsCompiler):
-    def __init__(self, exelist, version):
-        super().__init__(exelist, version, 'mono',
-                         'mono')
+    def __init__(self, exelist, version, for_machine: MachineChoice,
+                 info: 'MachineInfo'):
+        super().__init__(exelist, version, for_machine, info, 'mono',
+                         runner='mono')
 
 
 class VisualStudioCsCompiler(CsCompiler):
-    def __init__(self, exelist, version):
-        super().__init__(exelist, version, 'csc')
+    def __init__(self, exelist, version, for_machine: MachineChoice,
+                 info: 'MachineInfo'):
+        super().__init__(exelist, version, for_machine, info, 'csc')
 
     def get_buildtype_args(self, buildtype):
         res = mono_buildtype_args[buildtype]
-        if not is_windows():
+        if not self.info.is_windows():
             tmp = []
             for flag in res:
                 if flag == '-debug':

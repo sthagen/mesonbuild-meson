@@ -14,6 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import typing
 import itertools
 import os
 import subprocess
@@ -27,12 +28,14 @@ import tempfile
 from pathlib import Path, PurePath
 from mesonbuild import build
 from mesonbuild import environment
+from mesonbuild import compilers
 from mesonbuild import mesonlib
 from mesonbuild import mlog
 from mesonbuild import mtest
-from mesonbuild.mesonlib import stringlistify, Popen_safe
+from mesonbuild.mesonlib import MachineChoice, stringlistify, Popen_safe
 from mesonbuild.coredata import backendlist
 import argparse
+import json
 import xml.etree.ElementTree as ET
 import time
 import multiprocessing
@@ -82,7 +85,7 @@ class AutoDeletedDir:
 
 failing_logs = []
 print_debug = 'MESON_PRINT_TEST_OUTPUT' in os.environ
-under_ci = not {'TRAVIS', 'APPVEYOR'}.isdisjoint(os.environ)
+under_ci = 'CI' in os.environ
 do_debug = under_ci or print_debug
 no_meson_log_msg = 'No meson-log.txt found.'
 
@@ -106,76 +109,124 @@ def setup_commands(optbackend):
     compile_commands, clean_commands, test_commands, install_commands, \
         uninstall_commands = get_backend_commands(backend, do_debug)
 
-def get_relative_files_list_from_dir(fromdir):
-    paths = []
-    for (root, _, files) in os.walk(fromdir):
-        reldir = os.path.relpath(root, start=fromdir)
-        for f in files:
-            path = os.path.join(reldir, f).replace('\\', '/')
-            if path.startswith('./'):
-                path = path[2:]
-            paths.append(path)
-    return paths
+def get_relative_files_list_from_dir(fromdir: Path) -> typing.List[Path]:
+    return [file.relative_to(fromdir) for file in fromdir.rglob('*') if file.is_file()]
 
-def platform_fix_name(fname, compiler, env):
+def platform_fix_name(fname: str, compiler, env) -> str:
+    # canonicalize compiler
+    if (compiler in {'clang-cl', 'intel-cl'} or
+       (env.machines.host.is_windows() and compiler == 'pgi')):
+        canonical_compiler = 'msvc'
+    else:
+        canonical_compiler = compiler
+
     if '?lib' in fname:
-        if mesonlib.for_cygwin(env.is_cross_build(), env):
+        if env.machines.host.is_windows() and canonical_compiler == 'msvc':
+            fname = re.sub(r'lib/\?lib(.*)\.', r'bin/\1.', fname)
+            fname = re.sub(r'/\?lib/', r'/bin/', fname)
+        elif env.machines.host.is_windows():
+            fname = re.sub(r'lib/\?lib(.*)\.', r'bin/lib\1.', fname)
+            fname = re.sub(r'\?lib(.*)\.dll$', r'lib\1.dll', fname)
+            fname = re.sub(r'/\?lib/', r'/bin/', fname)
+        elif env.machines.host.is_cygwin():
             fname = re.sub(r'lib/\?lib(.*)\.so$', r'bin/cyg\1.dll', fname)
+            fname = re.sub(r'lib/\?lib(.*)\.', r'bin/cyg\1.', fname)
             fname = re.sub(r'\?lib(.*)\.dll$', r'cyg\1.dll', fname)
+            fname = re.sub(r'/\?lib/', r'/bin/', fname)
         else:
             fname = re.sub(r'\?lib', 'lib', fname)
 
     if fname.endswith('?exe'):
         fname = fname[:-4]
-        if mesonlib.for_windows(env.is_cross_build(), env) or mesonlib.for_cygwin(env.is_cross_build(), env):
+        if env.machines.host.is_windows() or env.machines.host.is_cygwin():
             return fname + '.exe'
 
     if fname.startswith('?msvc:'):
         fname = fname[6:]
-        if compiler != 'cl':
+        if canonical_compiler != 'msvc':
             return None
 
     if fname.startswith('?gcc:'):
         fname = fname[5:]
-        if compiler == 'cl':
+        if canonical_compiler == 'msvc':
             return None
 
     if fname.startswith('?cygwin:'):
         fname = fname[8:]
-        if compiler == 'cl' or not mesonlib.for_cygwin(env.is_cross_build(), env):
+        if not env.machines.host.is_cygwin():
+            return None
+
+    if fname.startswith('?!cygwin:'):
+        fname = fname[9:]
+        if env.machines.host.is_cygwin():
+            return None
+
+    if fname.endswith('?so'):
+        if env.machines.host.is_windows() and canonical_compiler == 'msvc':
+            fname = re.sub(r'lib/([^/]*)\?so$', r'bin/\1.dll', fname)
+            fname = re.sub(r'/(?:lib|)([^/]*?)\?so$', r'/\1.dll', fname)
+            return fname
+        elif env.machines.host.is_windows():
+            fname = re.sub(r'lib/([^/]*)\?so$', r'bin/\1.dll', fname)
+            fname = re.sub(r'/([^/]*?)\?so$', r'/\1.dll', fname)
+            return fname
+        elif env.machines.host.is_cygwin():
+            fname = re.sub(r'lib/([^/]*)\?so$', r'bin/\1.dll', fname)
+            fname = re.sub(r'/lib([^/]*?)\?so$', r'/cyg\1.dll', fname)
+            fname = re.sub(r'/([^/]*?)\?so$', r'/\1.dll', fname)
+            return fname
+        elif env.machines.host.is_darwin():
+            return fname[:-3] + '.dylib'
+        else:
+            return fname[:-3] + '.so'
+
+    if fname.endswith('?implib') or fname.endswith('?implibempty'):
+        if env.machines.host.is_windows() and canonical_compiler == 'msvc':
+            # only MSVC doesn't generate empty implibs
+            if fname.endswith('?implibempty') and compiler == 'msvc':
+                return None
+            return re.sub(r'/(?:lib|)([^/]*?)\?implib(?:empty|)$', r'/\1.lib', fname)
+        elif env.machines.host.is_windows() or env.machines.host.is_cygwin():
+            return re.sub(r'\?implib(?:empty|)$', r'.dll.a', fname)
+        else:
             return None
 
     return fname
 
-def validate_install(srcdir, installdir, compiler, env):
+def validate_install(srcdir: str, installdir: Path, compiler, env) -> str:
     # List of installed files
-    info_file = os.path.join(srcdir, 'installed_files.txt')
+    info_file = Path(srcdir) / 'installed_files.txt'
+    installdir = Path(installdir)
     # If this exists, the test does not install any other files
-    noinst_file = 'usr/no-installed-files'
-    expected = {}
+    noinst_file = Path('usr/no-installed-files')
+    expected = {}  # type: typing.Dict[Path, bool]
     ret_msg = ''
     # Generate list of expected files
-    if os.path.exists(os.path.join(installdir, noinst_file)):
+    if (installdir / noinst_file).is_file():
         expected[noinst_file] = False
-    elif os.path.exists(info_file):
-        with open(info_file) as f:
+    elif info_file.is_file():
+        with info_file.open() as f:
             for line in f:
                 line = platform_fix_name(line.strip(), compiler, env)
                 if line:
-                    expected[line] = False
+                    expected[Path(line)] = False
     # Check if expected files were found
     for fname in expected:
-        file_path = os.path.join(installdir, fname)
-        if os.path.exists(file_path) or os.path.islink(file_path):
+        file_path = installdir / fname
+        if file_path.is_file() or file_path.is_symlink():
             expected[fname] = True
     for (fname, found) in expected.items():
         if not found:
-            ret_msg += 'Expected file {0} missing.\n'.format(fname)
+            ret_msg += 'Expected file {} missing.\n'.format(fname)
     # Check if there are any unexpected files
     found = get_relative_files_list_from_dir(installdir)
     for fname in found:
         if fname not in expected:
-            ret_msg += 'Extra file {0} found.\n'.format(fname)
+            ret_msg += 'Extra file {} found.\n'.format(fname)
+    if ret_msg != '':
+        ret_msg += '\nInstall dir contents:\n'
+        for i in found:
+            ret_msg += '  - {}'.format(i)
     return ret_msg
 
 def log_text_file(logfile, testdir, stdo, stde):
@@ -255,7 +306,7 @@ def parse_test_args(testdir):
         pass
     return args
 
-# Build directory name must be the same so CCache works over
+# Build directory name must be the same so Ccache works over
 # consecutive invocations.
 def create_deterministic_builddir(src_dir):
     import hashlib
@@ -284,7 +335,7 @@ def pass_libdir_to_test(dirname):
         return False
     if '38 libdir must be inside prefix' in dirname:
         return False
-    if '196 install_mode' in dirname:
+    if '195 install_mode' in dirname:
         return False
     return True
 
@@ -292,6 +343,7 @@ def _run_test(testdir, test_build_dir, install_dir, extra_args, compiler, backen
     compile_commands, clean_commands, install_commands, uninstall_commands = commands
     test_args = parse_test_args(testdir)
     gen_start = time.time()
+    setup_env = None
     # Configure in-process
     if pass_prefix_to_test(testdir):
         gen_args = ['--prefix', '/usr']
@@ -300,7 +352,21 @@ def _run_test(testdir, test_build_dir, install_dir, extra_args, compiler, backen
     if pass_libdir_to_test(testdir):
         gen_args += ['--libdir', 'lib']
     gen_args += [testdir, test_build_dir] + flags + test_args + extra_args
-    (returncode, stdo, stde) = run_configure(gen_args)
+    nativefile = os.path.join(testdir, 'nativefile.ini')
+    if os.path.exists(nativefile):
+        gen_args.extend(['--native-file', nativefile])
+    crossfile = os.path.join(testdir, 'crossfile.ini')
+    if os.path.exists(crossfile):
+        gen_args.extend(['--cross-file', crossfile])
+    setup_env_file = os.path.join(testdir, 'setup_env.json')
+    if os.path.exists(setup_env_file):
+        setup_env = os.environ.copy()
+        with open(setup_env_file, 'r') as fp:
+            data = json.load(fp)
+            for key, val in data.items():
+                val = val.replace('@ROOT@', os.path.abspath(testdir))
+                setup_env[key] = val
+    (returncode, stdo, stde) = run_configure(gen_args, env=setup_env)
     try:
         logfile = Path(test_build_dir, 'meson-logs', 'meson-log.txt')
         mesonlog = logfile.open(errors='ignore', encoding='utf-8').read()
@@ -373,12 +439,12 @@ def _run_test(testdir, test_build_dir, install_dir, extra_args, compiler, backen
     return TestResult(validate_install(testdir, install_dir, compiler, builddata.environment),
                       BuildStep.validate, stdo, stde, mesonlog, gen_time, build_time, test_time)
 
-def gather_tests(testdir: Path):
-    tests = [t.name for t in testdir.glob('*')]
-    tests = [t for t in tests if not t.startswith('.')] # Filter non-tests files (dot files, etc)
-    testlist = [(int(t.split()[0]), t) for t in tests]
-    testlist.sort()
-    tests = [testdir / t[1] for t in testlist]
+def gather_tests(testdir: Path) -> typing.List[Path]:
+    test_names = [t.name for t in testdir.glob('*') if t.is_dir()]
+    test_names = [t for t in test_names if not t.startswith('.')] # Filter non-tests files (dot files, etc)
+    test_nums = [(int(t.split()[0]), t) for t in test_names]
+    test_nums.sort()
+    tests = [testdir / t[1] for t in test_nums]
     return tests
 
 def have_d_compiler():
@@ -389,6 +455,14 @@ def have_d_compiler():
     elif shutil.which("gdc"):
         return True
     elif shutil.which("dmd"):
+        # The Windows installer sometimes produces a DMD install
+        # that exists but segfaults every time the compiler is run.
+        # Don't know why. Don't know how to fix. Skip in this case.
+        cp = subprocess.run(['dmd', '--version'],
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE)
+        if cp.stdout == b'':
+            return False
         return True
     return False
 
@@ -396,11 +470,12 @@ def have_objc_compiler():
     with AutoDeletedDir(tempfile.mkdtemp(prefix='b ', dir='.')) as build_dir:
         env = environment.Environment(None, build_dir, get_fake_options('/'))
         try:
-            objc_comp = env.detect_objc_compiler(False)
+            objc_comp = env.detect_objc_compiler(MachineChoice.HOST)
         except mesonlib.MesonException:
             return False
         if not objc_comp:
             return False
+        env.coredata.process_new_compiler('objc', objc_comp, env)
         try:
             objc_comp.sanity_check(env.get_scratch_dir(), env)
         except mesonlib.MesonException:
@@ -411,11 +486,12 @@ def have_objcpp_compiler():
     with AutoDeletedDir(tempfile.mkdtemp(prefix='b ', dir='.')) as build_dir:
         env = environment.Environment(None, build_dir, get_fake_options('/'))
         try:
-            objcpp_comp = env.detect_objcpp_compiler(False)
+            objcpp_comp = env.detect_objcpp_compiler(MachineChoice.HOST)
         except mesonlib.MesonException:
             return False
         if not objcpp_comp:
             return False
+        env.coredata.process_new_compiler('objcpp', objcpp_comp, env)
         try:
             objcpp_comp.sanity_check(env.get_scratch_dir(), env)
         except mesonlib.MesonException:
@@ -439,6 +515,18 @@ def skippable(suite, test):
     if test.endswith('10 gtk-doc'):
         return True
 
+    # NetCDF is not in the CI image
+    if test.endswith('netcdf'):
+        return True
+
+    # MSVC doesn't link with GFortran
+    if test.endswith('14 fortran links c'):
+        return True
+
+    # Blocks are not supported on all compilers
+    if test.endswith('29 blocks'):
+        return True
+
     # No frameworks test should be skipped on linux CI, as we expect all
     # prerequisites to be installed
     if mesonlib.is_linux():
@@ -449,6 +537,10 @@ def skippable(suite, test):
     if test.endswith('1 boost'):
         if mesonlib.is_windows():
             return 'BOOST_ROOT' not in os.environ
+        return False
+
+    # Qt is provided on macOS by Homebrew
+    if test.endswith('4 qt') and mesonlib.is_osx():
         return False
 
     # Other framework tests are allowed to be skipped on other platforms
@@ -476,13 +568,59 @@ def skip_csharp(backend):
         return not stdo.startswith(b'2.')
     return True
 
-def detect_tests_to_run():
+# In Azure some setups have a broken rustc that will error out
+# on all compilation attempts.
+
+def has_broken_rustc() -> bool:
+    dirname = 'brokenrusttest'
+    if os.path.exists(dirname):
+        mesonlib.windows_proof_rmtree(dirname)
+    os.mkdir(dirname)
+    open(dirname + '/sanity.rs', 'w').write('''fn main() {
+}
+''')
+    pc = subprocess.run(['rustc', '-o', 'sanity.exe', 'sanity.rs'],
+                        cwd=dirname,
+                        stdout = subprocess.DEVNULL,
+                        stderr = subprocess.DEVNULL)
+    mesonlib.windows_proof_rmtree(dirname)
+    return pc.returncode != 0
+
+def should_skip_rust() -> bool:
+    if not shutil.which('rustc'):
+        return True
+    if backend is not Backend.ninja:
+        return True
+    if mesonlib.is_windows():
+        if has_broken_rustc():
+            return True
+    return False
+
+def detect_tests_to_run(only: typing.List[str]) -> typing.List[typing.Tuple[str, typing.List[Path], bool]]:
+    """
+    Parameters
+    ----------
+    only: list of str, optional
+        specify names of tests to run
+
+    Returns
+    -------
+    gathered_tests: list of tuple of str, list of pathlib.Path, bool
+        tests to run
+    """
+
+    skip_fortran = not(shutil.which('gfortran') or shutil.which('flang') or
+                       shutil.which('pgfortran') or shutil.which('ifort'))
+
     # Name, subdirectory, skip condition.
     all_tests = [
+        ('cmake', 'cmake', not shutil.which('cmake') or (os.environ.get('compiler') == 'msvc2015' and under_ci)),
         ('common', 'common', False),
+        ('warning-meson', 'warning', False),
         ('failing-meson', 'failing', False),
         ('failing-build', 'failing build', False),
         ('failing-test',  'failing test', False),
+        ('kconfig', 'kconfig', False),
 
         ('platform-osx', 'osx', not mesonlib.is_osx()),
         ('platform-windows', 'windows', not mesonlib.is_windows() and not mesonlib.is_cygwin()),
@@ -490,29 +628,37 @@ def detect_tests_to_run():
 
         ('java', 'java', backend is not Backend.ninja or mesonlib.is_osx() or not have_java()),
         ('C#', 'csharp', skip_csharp(backend)),
-        ('vala', 'vala', backend is not Backend.ninja or not shutil.which('valac')),
-        ('rust', 'rust', backend is not Backend.ninja or not shutil.which('rustc')),
+        ('vala', 'vala', backend is not Backend.ninja or not shutil.which(os.environ.get('VALAC', 'valac'))),
+        ('rust', 'rust', should_skip_rust()),
         ('d', 'd', backend is not Backend.ninja or not have_d_compiler()),
-        ('objective c', 'objc', backend not in (Backend.ninja, Backend.xcode) or mesonlib.is_windows() or not have_objc_compiler()),
-        ('objective c++', 'objcpp', backend not in (Backend.ninja, Backend.xcode) or mesonlib.is_windows() or not have_objcpp_compiler()),
-        ('fortran', 'fortran', backend is not Backend.ninja or not shutil.which('gfortran')),
+        ('objective c', 'objc', backend not in (Backend.ninja, Backend.xcode) or not have_objc_compiler()),
+        ('objective c++', 'objcpp', backend not in (Backend.ninja, Backend.xcode) or not have_objcpp_compiler()),
+        ('fortran', 'fortran', skip_fortran or backend != Backend.ninja),
         ('swift', 'swift', backend not in (Backend.ninja, Backend.xcode) or not shutil.which('swiftc')),
+        ('cuda', 'cuda', backend not in (Backend.ninja, Backend.xcode) or not shutil.which('nvcc')),
         ('python3', 'python3', backend is not Backend.ninja),
+        ('python', 'python', backend is not Backend.ninja),
         ('fpga', 'fpga', shutil.which('yosys') is None),
         ('frameworks', 'frameworks', False),
         ('nasm', 'nasm', False),
+        ('wasm', 'wasm', shutil.which('emcc') is None or backend is not Backend.ninja),
     ]
+
+    if only:
+        names = [t[0] for t in all_tests]
+        ind = [names.index(o) for o in only]
+        all_tests = [all_tests[i] for i in ind]
     gathered_tests = [(name, gather_tests(Path('test cases', subdir)), skip) for name, subdir, skip in all_tests]
     return gathered_tests
 
-def run_tests(all_tests, log_name_base, failfast, extra_args):
+def run_tests(all_tests, log_name_base, failfast: bool, extra_args):
     global logfile
     txtname = log_name_base + '.txt'
     with open(txtname, 'w', encoding='utf-8', errors='ignore') as lf:
         logfile = lf
         return _run_tests(all_tests, log_name_base, failfast, extra_args)
 
-def _run_tests(all_tests, log_name_base, failfast, extra_args):
+def _run_tests(all_tests, log_name_base, failfast: bool, extra_args):
     global stop, executor, futures, system_compiler
     xmlname = log_name_base + '.xml'
     junit_root = ET.Element('testsuites')
@@ -536,7 +682,8 @@ def _run_tests(all_tests, log_name_base, failfast, extra_args):
     #
     # Remove this once the following issue has been resolved:
     # https://github.com/mesonbuild/meson/pull/2082
-    num_workers *= 2
+    if not mesonlib.is_windows():  # twice as fast on Windows by *not* multiplying by 2.
+        num_workers *= 2
     executor = ProcessPoolExecutor(max_workers=num_workers)
 
     for name, test_cases, skipped in all_tests:
@@ -554,9 +701,14 @@ def _run_tests(all_tests, log_name_base, failfast, extra_args):
             (testnum, testbase) = t.name.split(' ', 1)
             testname = '%.3d %s' % (int(testnum), testbase)
             should_fail = False
+            suite_args = []
             if name.startswith('failing'):
                 should_fail = name.split('failing-')[1]
-            result = executor.submit(run_test, skipped, t.as_posix(), extra_args, system_compiler, backend, backend_flags, commands, should_fail)
+            if name.startswith('warning'):
+                suite_args = ['--fatal-meson-warnings']
+                should_fail = name.split('warning-')[1]
+            result = executor.submit(run_test, skipped, t.as_posix(), extra_args + suite_args,
+                                     system_compiler, backend, backend_flags, commands, should_fail)
             futures.append((testname, t, result))
         for (testname, t, result) in futures:
             sys.stdout.flush()
@@ -581,6 +733,12 @@ def _run_tests(all_tests, log_name_base, failfast, extra_args):
                         # print the meson log if available since it's a superset
                         # of stdout and often has very useful information.
                         failing_logs.append(result.mlog)
+                    elif under_ci:
+                        # Always print the complete meson log when running in
+                        # a CI. This helps debugging issues that only occur in
+                        # a hard to reproduce environment
+                        failing_logs.append(result.mlog)
+                        failing_logs.append(result.stdo)
                     else:
                         failing_logs.append(result.stdo)
                     failing_logs.append(result.stde)
@@ -606,8 +764,8 @@ def _run_tests(all_tests, log_name_base, failfast, extra_args):
                 stdeel = ET.SubElement(current_test, 'system-err')
                 stdeel.text = result.stde
 
-        if failfast and failing_tests > 0:
-            break
+            if failfast and failing_tests > 0:
+                break
 
     print("\nTotal configuration time: %.2fs" % conf_time)
     print("Total build time: %.2fs" % build_time)
@@ -615,18 +773,14 @@ def _run_tests(all_tests, log_name_base, failfast, extra_args):
     ET.ElementTree(element=junit_root).write(xmlname, xml_declaration=True, encoding='UTF-8')
     return passing_tests, failing_tests, skipped_tests
 
-def check_file(fname):
-    linenum = 1
-    with open(fname, 'rb') as f:
-        lines = f.readlines()
-    for line in lines:
-        if line.startswith(b'\t'):
-            print("File %s contains a literal tab on line %d. Only spaces are permitted." % (fname, linenum))
-            sys.exit(1)
-        if b'\r' in line:
-            print("File %s contains DOS line ending on line %d. Only unix-style line endings are permitted." % (fname, linenum))
-            sys.exit(1)
-        linenum += 1
+def check_file(file: Path):
+    lines = file.read_bytes().split(b'\n')
+    tabdetector = re.compile(br' *\t')
+    for i, line in enumerate(lines):
+        if re.match(tabdetector, line):
+            raise SystemExit("File {} contains a tab indent on line {:d}. Only spaces are permitted.".format(file, i + 1))
+        if line.endswith(b'\r'):
+            raise SystemExit("File {} contains DOS line ending on line {:d}. Only unix-style line endings are permitted.".format(file, i + 1))
 
 def check_format():
     check_suffixes = {'.c',
@@ -648,16 +802,21 @@ def check_format():
                       '.build',
                       '.md',
                       }
-    for (root, _, files) in os.walk('.'):
+    for (root, _, filenames) in os.walk('.'):
         if '.dub' in root: # external deps are here
             continue
-        for fname in files:
-            if os.path.splitext(fname)[1].lower() in check_suffixes:
-                bn = os.path.basename(fname)
-                if bn == 'sitemap.txt' or bn == 'meson-test-run.txt':
+        if '.pytest_cache' in root:
+            continue
+        if 'meson-logs' in root or 'meson-private' in root:
+            continue
+        if '.eggs' in root or '_cache' in root:  # e.g. .mypy_cache
+            continue
+        for fname in filenames:
+            file = Path(fname)
+            if file.suffix.lower() in check_suffixes:
+                if file.name in ('sitemap.txt', 'meson-test-run.txt'):
                     continue
-                fullname = os.path.join(root, fname)
-                check_file(fullname)
+                check_file(root / file)
 
 def check_meson_commands_work():
     global backend, compile_commands, test_commands, install_commands
@@ -687,14 +846,26 @@ def check_meson_commands_work():
 
 def detect_system_compiler():
     global system_compiler
-    if shutil.which('cl'):
-        system_compiler = 'cl'
-    elif shutil.which('cc'):
-        system_compiler = 'cc'
-    elif shutil.which('gcc'):
-        system_compiler = 'gcc'
-    else:
-        raise RuntimeError("Could not find C compiler.")
+
+    with AutoDeletedDir(tempfile.mkdtemp(prefix='b ', dir='.')) as build_dir:
+        env = environment.Environment(None, build_dir, get_fake_options('/'))
+        print()
+        for lang in sorted(compilers.all_languages):
+            try:
+                comp = env.compiler_from_language(lang, MachineChoice.HOST)
+                details = '%s %s' % (' '.join(comp.get_exelist()), comp.get_version_string())
+            except mesonlib.MesonException:
+                comp = None
+                details = 'not found'
+            print('%-7s: %s' % (lang, details))
+
+            # note C compiler for later use by platform_fix_name()
+            if lang == 'c':
+                if comp:
+                    system_compiler = comp.get_id()
+                else:
+                    raise RuntimeError("Could not find C compiler.")
+        print()
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Run the test suite of Meson.")
@@ -704,6 +875,9 @@ if __name__ == '__main__':
                         choices=backendlist)
     parser.add_argument('--failfast', action='store_true',
                         help='Stop running if test case fails')
+    parser.add_argument('--no-unittests', action='store_true',
+                        help='Not used, only here to simplify run_tests.py')
+    parser.add_argument('--only', help='name of test(s) to run', nargs='+')
     options = parser.parse_args()
     setup_commands(options.backend)
 
@@ -714,7 +888,7 @@ if __name__ == '__main__':
     check_format()
     check_meson_commands_work()
     try:
-        all_tests = detect_tests_to_run()
+        all_tests = detect_tests_to_run(options.only)
         (passing_tests, failing_tests, skipped_tests) = run_tests(all_tests, 'meson-test-run', options.failfast, options.extra_args)
     except StopException:
         pass
@@ -728,10 +902,10 @@ if __name__ == '__main__':
                 print(l, '\n')
             except UnicodeError:
                 print(l.encode('ascii', errors='replace').decode(), '\n')
-    for name, dirs, skip in all_tests:
-        dirs = (x.name for x in dirs)
-        for k, g in itertools.groupby(dirs, key=lambda x: x.split()[0]):
+    for name, dirs, _ in all_tests:
+        dir_names = (x.name for x in dirs)
+        for k, g in itertools.groupby(dir_names, key=lambda x: x.split()[0]):
             tests = list(g)
             if len(tests) != 1:
                 print('WARNING: The %s suite contains duplicate "%s" tests: "%s"' % (name, k, '", "'.join(tests)))
-    sys.exit(failing_tests)
+    raise SystemExit(failing_tests)

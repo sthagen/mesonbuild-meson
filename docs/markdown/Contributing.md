@@ -156,19 +156,19 @@ subdirectory. They are not run as part of `./run_project_tests.py`.
 ### Skipping integration tests
 
 Meson uses several continuous integration testing systems that have slightly
-different interface. To promote consistent naming policy, use:
-
-- `[skip ci]` in the commit title if you want to disable all integration tests
-- `[skip appveyor]` in the commit title if you want to disable Windows-only tests
+different interfaces for indicating a commit should be skipped.
 
 Continuous integration systems currently used:
-
-- [Travis-CI](https://docs.travis-ci.com/user/customizing-the-build/#Skipping-a-build)
+- [Travis-CI](https://docs.travis-ci.com/user/customizing-the-build#skipping-a-build)
   allows `[skip ci]` anywhere in the commit messages.
-- [AppVeyor](https://www.appveyor.com/docs/how-to/filtering-commits/#skip-directive-in-commit-message)
-  requires `[skip ci]` or `[skip appveyor]` in the commit title.
+- [Azure Pipelines](https://docs.microsoft.com/en-us/azure/devops/pipelines/scripts/git-commands?view=vsts&tabs=yaml#how-do-i-avoid-triggering-a-ci-build-when-the-script-pushes)
+  allows `***NO_CI***` in the commit message.
 - [Sider](https://sider.review)
-  runs Flake8 (see below)
+  runs Flake8 ([see below](#python-coding-style))
+
+To promote consistent naming policy, use:
+
+   - `[skip ci]` in the commit title if you want to disable all integration tests
 
 ## Documentation
 
@@ -200,7 +200,7 @@ following:
   to avoid wasted effort
 
 Meson uses Flake8 for style guide enforcement. The Flake8 options for
-the project are contained in setup.cfg.
+the project are contained in .flake8.
 
 To run Flake8 on your local clone of Meson:
 
@@ -292,3 +292,21 @@ also hidden by default. Envvars should be avoided whenever possible,
 all functionality should be exposed in better ways such as command
 line switches.
 
+## Random design points that fit nowhere else
+
+- All features should follow the 90/9/1 rule. 90% of all use cases
+  should be easy, 9% should be possible and it is totally fine to not
+  support the final 1% if it would make things too complicated.
+
+- Any build directory will have at most two toolchains: one native and
+  one cross.
+
+- Prefer specific solutions to generic frameworks. Solve the end
+  user's problems rather than providing them tools to do it
+  themselves.
+
+- Never use features of the Unix shell (or Windows shell for that
+  matter). Doing things like forwaring output with `>` or invoking
+  multiple commands with `&&` are not permitted. Whenever these sorts
+  of requirements show up, write an internal Python script with the
+  desired functionality and use that instead.

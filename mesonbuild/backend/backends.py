@@ -20,14 +20,14 @@ from .. import mesonlib
 from .. import mlog
 import json
 import subprocess
-from ..mesonlib import MesonException, OrderedSet
+from ..mesonlib import MachineChoice, MesonException, OrderedSet, OptionOverrideProxy
 from ..mesonlib import classify_unity_sources
 from ..mesonlib import File
-from ..compilers import CompilerArgs, get_macos_dylib_install_name
+from ..compilers import CompilerArgs, VisualStudioLikeCompiler
 from collections import OrderedDict
 import shlex
 from functools import lru_cache
-
+import typing
 
 
 class CleanTrees:
@@ -69,13 +69,10 @@ class TargetInstallData:
         self.optional = optional
 
 class ExecutableSerialisation:
-    def __init__(self, name, fname, cmd_args, env, is_cross, exe_wrapper,
-                 workdir, extra_paths, capture):
-        self.name = name
-        self.fname = fname
+    def __init__(self, cmd_args, env=None, exe_wrapper=None,
+                 workdir=None, extra_paths=None, capture=None):
         self.cmd_args = cmd_args
-        self.env = env
-        self.is_cross = is_cross
+        self.env = env or {}
         if exe_wrapper is not None:
             assert(isinstance(exe_wrapper, dependencies.ExternalProgram))
         self.exe_runner = exe_wrapper
@@ -84,8 +81,12 @@ class ExecutableSerialisation:
         self.capture = capture
 
 class TestSerialisation:
-    def __init__(self, name, project, suite, fname, is_cross_built, exe_wrapper, is_parallel,
-                 cmd_args, env, should_fail, timeout, workdir, extra_paths):
+    def __init__(self, name: str, project: str, suite: str, fname: typing.List[str],
+                 is_cross_built: bool, exe_wrapper: typing.Optional[build.Executable],
+                 needs_exe_wrapper: bool, is_parallel: bool, cmd_args: typing.List[str],
+                 env: build.EnvironmentVariables, should_fail: bool,
+                 timeout: typing.Optional[int], workdir: typing.Optional[str],
+                 extra_paths: typing.List[str], protocol: str, priority: int):
         self.name = name
         self.project_name = project
         self.suite = suite
@@ -101,37 +102,48 @@ class TestSerialisation:
         self.timeout = timeout
         self.workdir = workdir
         self.extra_paths = extra_paths
+        self.protocol = protocol
+        self.priority = priority
+        self.needs_exe_wrapper = needs_exe_wrapper
 
-class OptionProxy:
-    def __init__(self, name, value):
-        self.name = name
-        self.value = value
-
-class OptionOverrideProxy:
-    '''Mimic an option list but transparently override
-    selected option values.'''
-    def __init__(self, overrides, *options):
-        self.overrides = overrides
-        self.options = options
-
-    def __getitem__(self, option_name):
-        for opts in self.options:
-            if option_name in opts:
-                return self._get_override(option_name, opts[option_name])
-        raise KeyError('Option not found', option_name)
-
-    def _get_override(self, option_name, base_opt):
-        if option_name in self.overrides:
-            return OptionProxy(base_opt.name, base_opt.validate_value(self.overrides[option_name]))
-        return base_opt
+def get_backend_from_name(backend, build):
+    if backend == 'ninja':
+        from . import ninjabackend
+        return ninjabackend.NinjaBackend(build)
+    elif backend == 'vs':
+        from . import vs2010backend
+        return vs2010backend.autodetect_vs_version(build)
+    elif backend == 'vs2010':
+        from . import vs2010backend
+        return vs2010backend.Vs2010Backend(build)
+    elif backend == 'vs2015':
+        from . import vs2015backend
+        return vs2015backend.Vs2015Backend(build)
+    elif backend == 'vs2017':
+        from . import vs2017backend
+        return vs2017backend.Vs2017Backend(build)
+    elif backend == 'vs2019':
+        from . import vs2019backend
+        return vs2019backend.Vs2019Backend(build)
+    elif backend == 'xcode':
+        from . import xcodebackend
+        return xcodebackend.XCodeBackend(build)
+    return None
 
 # This class contains the basic functionality that is needed by all backends.
 # Feel free to move stuff in and out of it as you see fit.
 class Backend:
     def __init__(self, build):
+        # Make it possible to construct a dummy backend
+        # This is used for introspection without a build directory
+        if build is None:
+            self.environment = None
+            return
         self.build = build
         self.environment = build.environment
         self.processed_targets = {}
+        self.build_dir = self.environment.get_build_dir()
+        self.source_dir = self.environment.get_source_dir()
         self.build_to_src = mesonlib.relpath(self.environment.get_source_dir(),
                                              self.environment.get_build_dir())
 
@@ -140,6 +152,8 @@ class Backend:
             if len(t.get_outputs()) != 1:
                 mlog.warning('custom_target {!r} has more than one output! '
                              'Using the first one.'.format(t.name))
+            filename = t.get_outputs()[0]
+        elif isinstance(t, build.CustomTargetIndex):
             filename = t.get_outputs()[0]
         else:
             assert(isinstance(t, build.BuildTarget))
@@ -159,9 +173,9 @@ class Backend:
                                    self.environment.coredata.base_options)
 
     def get_compiler_options_for_target(self, target):
-        return OptionOverrideProxy(target.option_overrides,
-                                   # no code depends on builtins for now
-                                   self.environment.coredata.compiler_options)
+        return OptionOverrideProxy(
+            target.option_overrides,
+            self.environment.coredata.compiler_options[target.for_machine])
 
     def get_option_for_target(self, option_name, target):
         if option_name in target.option_overrides:
@@ -179,6 +193,10 @@ class Backend:
             return os.path.join(self.get_target_dir(target), link_lib)
         elif isinstance(target, build.StaticLibrary):
             return os.path.join(self.get_target_dir(target), target.get_filename())
+        elif isinstance(target, (build.CustomTarget, build.CustomTargetIndex)):
+            if not target.is_linkable_target():
+                raise MesonException('Tried to link against custom target "%s", which is not linkable.' % target.name)
+            return os.path.join(self.get_target_dir(target), target.get_filename())
         elif isinstance(target, build.Executable):
             if target.import_filename:
                 return os.path.join(self.get_target_dir(target), target.get_import_filename())
@@ -186,6 +204,7 @@ class Backend:
                 return None
         raise AssertionError('BUG: Tried to link to {!r} which is not linkable'.format(target))
 
+    @lru_cache(maxsize=None)
     def get_target_dir(self, target):
         if self.environment.coredata.get_builtin_option('layout') == 'mirror':
             dirname = target.get_subdir()
@@ -212,6 +231,7 @@ class Backend:
     def get_target_private_dir_abs(self, target):
         return os.path.join(self.environment.get_build_dir(), self.get_target_private_dir(target))
 
+    @lru_cache(maxsize=None)
     def get_target_generated_dir(self, target, gensrc, src):
         """
         Takes a BuildTarget, a generator source (CustomTarget or GeneratedList),
@@ -280,24 +300,61 @@ class Backend:
                 raise MesonException('Unknown data type in object list.')
         return obj_list
 
-    def serialize_executable(self, tname, exe, cmd_args, workdir, env={},
-                             extra_paths=None, capture=None):
+    def as_meson_exe_cmdline(self, tname, exe, cmd_args, workdir=None,
+                             for_machine=MachineChoice.BUILD,
+                             extra_bdeps=None, capture=None, force_serialize=False):
         '''
         Serialize an executable for running with a generator or a custom target
         '''
         import hashlib
-        if extra_paths is None:
-            # The callee didn't check if we needed extra paths, so check it here
-            if mesonlib.is_windows() or mesonlib.is_cygwin():
-                extra_paths = self.determine_windows_extra_paths(exe, [])
-            else:
-                extra_paths = []
-        # Can't just use exe.name here; it will likely be run more than once
+        machine = self.environment.machines[for_machine]
+        if machine.is_windows() or machine.is_cygwin():
+            extra_paths = self.determine_windows_extra_paths(exe, extra_bdeps or [])
+        else:
+            extra_paths = []
+
+        if isinstance(exe, dependencies.ExternalProgram):
+            exe_cmd = exe.get_command()
+            exe_for_machine = exe.for_machine
+        elif isinstance(exe, (build.BuildTarget, build.CustomTarget)):
+            exe_cmd = [self.get_target_filename_abs(exe)]
+            exe_for_machine = exe.for_machine
+        else:
+            exe_cmd = [exe]
+            exe_for_machine = MachineChoice.BUILD
+
+        is_cross_built = not self.environment.machines.matches_build_machine(exe_for_machine)
+        if is_cross_built and self.environment.need_exe_wrapper():
+            exe_wrapper = self.environment.get_exe_wrapper()
+            if not exe_wrapper.found():
+                msg = 'The exe_wrapper {!r} defined in the cross file is ' \
+                      'needed by target {!r}, but was not found. Please ' \
+                      'check the command and/or add it to PATH.'
+                raise MesonException(msg.format(exe_wrapper.name, tname))
+        else:
+            if exe_cmd[0].endswith('.jar'):
+                exe_cmd = ['java', '-jar'] + exe_cmd
+            elif exe_cmd[0].endswith('.exe') and not (mesonlib.is_windows() or mesonlib.is_cygwin()):
+                exe_cmd = ['mono'] + exe_cmd
+            exe_wrapper = None
+
+        force_serialize = force_serialize or extra_paths or workdir or \
+            exe_wrapper or any('\n' in c for c in cmd_args)
+        if not force_serialize:
+            if not capture:
+                return None
+            return (self.environment.get_build_command() +
+                    ['--internal', 'exe', '--capture', capture, '--'] + exe_cmd + cmd_args)
+
+        workdir = workdir or self.environment.get_build_dir()
+        env = {}
         if isinstance(exe, (dependencies.ExternalProgram,
                             build.BuildTarget, build.CustomTarget)):
             basename = exe.name
         else:
             basename = os.path.basename(exe)
+
+        # Can't just use exe.name here; it will likely be run more than once
         # Take a digest of the cmd args, env, workdir, and capture. This avoids
         # collisions and also makes the name deterministic over regenerations
         # which avoids a rebuild by Ninja because the cmdline stays the same.
@@ -307,33 +364,11 @@ class Backend:
         scratch_file = 'meson_exe_{0}_{1}.dat'.format(basename, digest)
         exe_data = os.path.join(self.environment.get_scratch_dir(), scratch_file)
         with open(exe_data, 'wb') as f:
-            if isinstance(exe, dependencies.ExternalProgram):
-                exe_cmd = exe.get_command()
-                exe_is_native = True
-            elif isinstance(exe, (build.BuildTarget, build.CustomTarget)):
-                exe_cmd = [self.get_target_filename_abs(exe)]
-                exe_is_native = not exe.is_cross
-            else:
-                exe_cmd = [exe]
-                exe_is_native = True
-            is_cross_built = (not exe_is_native) and \
-                self.environment.is_cross_build() and \
-                self.environment.cross_info.need_cross_compiler() and \
-                self.environment.cross_info.need_exe_wrapper()
-            if is_cross_built:
-                exe_wrapper = self.environment.get_exe_wrapper()
-                if not exe_wrapper.found():
-                    msg = 'The exe_wrapper {!r} defined in the cross file is ' \
-                          'needed by target {!r}, but was not found. Please ' \
-                          'check the command and/or add it to PATH.'
-                    raise MesonException(msg.format(exe_wrapper.name, tname))
-            else:
-                exe_wrapper = None
-            es = ExecutableSerialisation(basename, exe_cmd, cmd_args, env,
-                                         is_cross_built, exe_wrapper, workdir,
+            es = ExecutableSerialisation(exe_cmd + cmd_args, env,
+                                         exe_wrapper, workdir,
                                          extra_paths, capture)
             pickle.dump(es, f)
-        return exe_data
+        return self.environment.get_build_command() + ['--internal', 'exe', '--unpickle', exe_data]
 
     def serialize_tests(self):
         test_data = os.path.join(self.environment.get_scratch_dir(), 'meson_test_setup.dat')
@@ -350,10 +385,7 @@ class Backend:
         Otherwise, we query the target for the dynamic linker.
         '''
         if isinstance(target, build.StaticLibrary):
-            if target.is_cross:
-                return self.build.static_cross_linker, []
-            else:
-                return self.build.static_linker, []
+            return self.build.static_linker[target.for_machine], []
         l, stdlib_args = target.get_clink_dynamic_linker_and_stdlibs()
         return l, stdlib_args
 
@@ -429,7 +461,8 @@ class Backend:
             else:
                 source = os.path.relpath(os.path.join(build_dir, rel_src),
                                          os.path.join(self.environment.get_source_dir(), target.get_subdir()))
-        return source.replace('/', '_').replace('\\', '_') + '.' + self.environment.get_object_suffix()
+        machine = self.environment.machines[target.for_machine]
+        return source.replace('/', '_').replace('\\', '_') + '.' + machine.get_object_suffix()
 
     def determine_ext_objs(self, extobj, proj_dir_to_build_root):
         result = []
@@ -443,7 +476,13 @@ class Backend:
                 sources.append(File(True, dirpart, fnamepart))
 
         # Filter out headers and all non-source files
-        sources = [s for s in sources if self.environment.is_source(s) and not self.environment.is_header(s)]
+        filtered_sources = []
+        for s in sources:
+            if self.environment.is_source(s) and not self.environment.is_header(s):
+                filtered_sources.append(s)
+            elif self.environment.is_object(s):
+                result.append(s.relative_name())
+        sources = filtered_sources
 
         # extobj could contain only objects and no sources
         if not sources:
@@ -478,6 +517,23 @@ class Backend:
             args += compiler.get_pch_use_args(pchpath, p[0])
         return includeargs + args
 
+    def create_msvc_pch_implementation(self, target, lang, pch_header):
+        # We have to include the language in the file name, otherwise
+        # pch.c and pch.cpp will both end up as pch.obj in VS backends.
+        impl_name = 'meson_pch-%s.%s' % (lang, lang)
+        pch_rel_to_build = os.path.join(self.get_target_private_dir(target), impl_name)
+        # Make sure to prepend the build dir, since the working directory is
+        # not defined. Otherwise, we might create the file in the wrong path.
+        pch_file = os.path.join(self.build_dir, pch_rel_to_build)
+        os.makedirs(os.path.dirname(pch_file), exist_ok=True)
+
+        content = '#include "%s"' % os.path.basename(pch_header)
+        pch_file_tmp = pch_file + '.tmp'
+        with open(pch_file_tmp, 'w') as f:
+            f.write(content)
+        mesonlib.replace_if_different(pch_file, pch_file_tmp)
+        return pch_rel_to_build
+
     @staticmethod
     def escape_extra_args(compiler, args):
         # No extra escaping/quoting needed when not running on Windows
@@ -485,7 +541,7 @@ class Backend:
             return args
         extra_args = []
         # Compiler-specific escaping is needed for -D args but not for any others
-        if compiler.get_id() == 'msvc':
+        if isinstance(compiler, VisualStudioLikeCompiler):
             # MSVC needs escaping when a -D argument ends in \ or \"
             for arg in args:
                 if arg.startswith('-D') or arg.startswith('/D'):
@@ -538,20 +594,22 @@ class Backend:
         commands += compiler.get_optimization_args(self.get_option_for_target('optimization', target))
         commands += compiler.get_debug_args(self.get_option_for_target('debug', target))
         # Add compile args added using add_project_arguments()
-        commands += self.build.get_project_args(compiler, target.subproject, target.is_cross)
+        commands += self.build.get_project_args(compiler, target.subproject, target.for_machine)
         # Add compile args added using add_global_arguments()
         # These override per-project arguments
-        commands += self.build.get_global_args(compiler, target.is_cross)
-        if not target.is_cross:
-            # Compile args added from the env: CFLAGS/CXXFLAGS, etc. We want these
-            # to override all the defaults, but not the per-target compile args.
-            commands += self.environment.coredata.get_external_args(compiler.get_language())
+        commands += self.build.get_global_args(compiler, target.for_machine)
+        # Compile args added from the env: CFLAGS/CXXFLAGS, etc, or the cross
+        # file. We want these to override all the defaults, but not the
+        # per-target compile args.
+        commands += self.environment.coredata.get_external_args(target.for_machine, compiler.get_language())
         # Always set -fPIC for shared libraries
         if isinstance(target, build.SharedLibrary):
             commands += compiler.get_pic_args()
         # Set -fPIC for static libraries by default unless explicitly disabled
         if isinstance(target, build.StaticLibrary) and target.pic:
             commands += compiler.get_pic_args()
+        if isinstance(target, build.Executable) and target.pie:
+            commands += compiler.get_pie_args()
         # Add compile args needed to find external dependencies. Link args are
         # added while generating the link command.
         # NOTE: We must preserve the order in which external deps are
@@ -571,17 +629,13 @@ class Backend:
                 elif isinstance(dep, dependencies.ExternalLibrary):
                     commands += dep.get_link_args('vala')
             else:
-                commands += dep.get_compile_args()
+                commands += compiler.get_dependency_compile_args(dep)
             # Qt needs -fPIC for executables
             # XXX: We should move to -fPIC for all executables
             if isinstance(target, build.Executable):
                 commands += dep.get_exe_args(compiler)
             # For 'automagic' deps: Boost and GTest. Also dependency('threads').
             # pkg-config puts the thread flags itself via `Cflags:`
-            if dep.need_threads():
-                commands += compiler.thread_flags(self.environment)
-            elif dep.need_openmp():
-                commands += compiler.openmp_flags()
         # Fortran requires extra include directives.
         if compiler.language == 'fortran':
             for lt in target.link_targets:
@@ -599,17 +653,19 @@ class Backend:
                 continue
             if compiler.get_language() == 'd':
                 arg = '-Wl,' + arg
+            else:
+                arg = compiler.get_linker_lib_prefix() + arg
             args.append(arg)
         return args
 
     def get_mingw_extra_paths(self, target):
         paths = OrderedSet()
         # The cross bindir
-        root = self.environment.cross_info.get_root()
+        root = self.environment.properties[target.for_machine].get_root()
         if root:
             paths.add(os.path.join(root, 'bin'))
         # The toolchain bindir
-        sys_root = self.environment.cross_info.get_sys_root()
+        sys_root = self.environment.properties[target.for_machine].get_sys_root()
         if sys_root:
             paths.add(os.path.join(sys_root, 'bin'))
         # Get program and library dirs from all target compilers
@@ -619,7 +675,7 @@ class Backend:
                 paths.update(cc.get_library_dirs(self.environment))
         return list(paths)
 
-    def determine_windows_extra_paths(self, target, extra_bdeps, is_cross=False):
+    def determine_windows_extra_paths(self, target: typing.Union[build.BuildTarget, str], extra_bdeps):
         '''On Windows there is no such thing as an rpath.
         We must determine all locations of DLLs that this exe
         links to and return them so they can be used in unit
@@ -639,7 +695,8 @@ class Backend:
                 continue
             dirseg = os.path.join(self.environment.get_build_dir(), self.get_target_dir(ld))
             result.add(dirseg)
-        if is_cross:
+        if (isinstance(target, build.BuildTarget) and
+                not self.environment.machines.matches_build_machine(target.for_machine)):
             result.update(self.get_mingw_extra_paths(target))
         return list(result)
 
@@ -649,33 +706,31 @@ class Backend:
     def write_test_file(self, datafile):
         self.write_test_serialisation(self.build.get_tests(), datafile)
 
-    def write_test_serialisation(self, tests, datafile):
+    def create_test_serialisation(self, tests):
         arr = []
-        for t in tests:
+        for t in sorted(tests, key=lambda tst: -1 * tst.priority):
             exe = t.get_exe()
             if isinstance(exe, dependencies.ExternalProgram):
                 cmd = exe.get_command()
             else:
                 cmd = [os.path.join(self.environment.get_build_dir(), self.get_target_filename(t.get_exe()))]
-            is_cross = self.environment.is_cross_build() and \
-                self.environment.cross_info.need_cross_compiler() and \
-                self.environment.cross_info.need_exe_wrapper()
-            if isinstance(exe, build.BuildTarget):
-                is_cross = is_cross and exe.is_cross
-            if isinstance(exe, dependencies.ExternalProgram):
+            if isinstance(exe, (build.BuildTarget, dependencies.ExternalProgram)):
+                test_for_machine = exe.for_machine
+            else:
                 # E.g. an external verifier or simulator program run on a generated executable.
                 # Can always be run without a wrapper.
-                is_cross = False
-            if is_cross:
+                test_for_machine = MachineChoice.BUILD
+            is_cross = not self.environment.machines.matches_build_machine(test_for_machine)
+            if is_cross and self.environment.need_exe_wrapper():
                 exe_wrapper = self.environment.get_exe_wrapper()
             else:
                 exe_wrapper = None
-            if mesonlib.for_windows(is_cross, self.environment) or \
-               mesonlib.for_cygwin(is_cross, self.environment):
+            machine = self.environment.machines[exe.for_machine]
+            if machine.is_windows() or machine.is_cygwin():
                 extra_bdeps = []
                 if isinstance(exe, build.CustomTarget):
                     extra_bdeps = exe.get_transitive_build_target_deps()
-                extra_paths = self.determine_windows_extra_paths(exe, extra_bdeps, is_cross)
+                extra_paths = self.determine_windows_extra_paths(exe, extra_bdeps)
             else:
                 extra_paths = []
             cmd_args = []
@@ -690,14 +745,26 @@ class Backend:
                 elif isinstance(a, str):
                     cmd_args.append(a)
                 elif isinstance(a, build.Target):
-                    cmd_args.append(self.get_target_filename(a))
+                    cmd_args.append(self.construct_target_rel_path(a, t.workdir))
                 else:
                     raise MesonException('Bad object in test command.')
             ts = TestSerialisation(t.get_name(), t.project_name, t.suite, cmd, is_cross,
-                                   exe_wrapper, t.is_parallel, cmd_args, t.env,
-                                   t.should_fail, t.timeout, t.workdir, extra_paths)
+                                   exe_wrapper, self.environment.need_exe_wrapper(),
+                                   t.is_parallel, cmd_args, t.env,
+                                   t.should_fail, t.timeout, t.workdir,
+                                   extra_paths, t.protocol, t.priority)
             arr.append(ts)
-        pickle.dump(arr, datafile)
+        return arr
+
+    def write_test_serialisation(self, tests, datafile):
+        pickle.dump(self.create_test_serialisation(tests), datafile)
+
+    def construct_target_rel_path(self, a, workdir):
+        if workdir is None:
+            return self.get_target_filename(a)
+        assert(os.path.isabs(workdir))
+        abs_path = self.get_target_filename_abs(a)
+        return os.path.relpath(abs_path, workdir)
 
     def generate_depmf_install(self, d):
         if self.build.dep_manifest_name is None:
@@ -716,8 +783,8 @@ class Backend:
         deps = [os.path.join(self.build_to_src, df)
                 for df in self.interpreter.get_build_def_files()]
         if self.environment.is_cross_build():
-            deps.append(os.path.join(self.build_to_src,
-                                     self.environment.coredata.cross_file))
+            deps.extend(self.environment.coredata.cross_files)
+        deps.extend(self.environment.coredata.config_files)
         deps.append('meson-private/coredata.dat')
         if os.path.exists(os.path.join(self.environment.get_source_dir(), 'meson_options.txt')):
             deps.append(os.path.join(self.build_to_src, 'meson_options.txt'))
@@ -728,15 +795,17 @@ class Backend:
         return deps
 
     def exe_object_to_cmd_array(self, exe):
-        if self.environment.is_cross_build() and \
-           isinstance(exe, build.BuildTarget) and exe.is_cross:
-            if self.environment.exe_wrapper is None and self.environment.cross_info.need_exe_wrapper():
-                s = textwrap.dedent('''
-                    Can not use target {} as a generator because it is cross-built
-                    and no exe wrapper is defined or needs_exe_wrapper is true.
-                    You might want to set it to native instead.'''.format(exe.name))
-                raise MesonException(s)
         if isinstance(exe, build.BuildTarget):
+            if exe.for_machine is not MachineChoice.BUILD:
+                if (self.environment.is_cross_build() and
+                        self.environment.exe_wrapper is None and
+                        self.environment.need_exe_wrapper()):
+                    s = textwrap.dedent('''
+                        Cannot use target {} as a generator because it is built for the
+                        host machine and no exe wrapper is defined or needs_exe_wrapper is
+                        true. You might want to set `native: true` instead to build it for
+                        the build machine.'''.format(exe.name))
+                    raise MesonException(s)
             exe_arr = [os.path.join(self.environment.get_build_dir(), self.get_target_filename(exe))]
         else:
             exe_arr = exe.get_command()
@@ -753,7 +822,7 @@ class Backend:
 
     def replace_outputs(self, args, private_dir, output_list):
         newargs = []
-        regex = re.compile('@OUTPUT(\d+)@')
+        regex = re.compile(r'@OUTPUT(\d+)@')
         for arg in args:
             m = regex.search(arg)
             while m is not None:
@@ -768,7 +837,7 @@ class Backend:
         result = OrderedDict()
         # Get all build and custom targets that must be built by default
         for name, t in self.build.get_targets().items():
-            if t.build_by_default or t.install:
+            if t.build_by_default:
                 result[name] = t
         # Get all targets used as test executables and arguments. These must
         # also be built by default. XXX: Sometime in the future these should be
@@ -790,14 +859,22 @@ class Backend:
                 result[dep.get_id()] = dep
         return result
 
+    @lru_cache(maxsize=None)
+    def get_custom_target_provided_by_generated_source(self, generated_source):
+        libs = []
+        for f in generated_source.get_outputs():
+            if self.environment.is_library(f):
+                libs.append(os.path.join(self.get_target_dir(generated_source), f))
+        return libs
+
+    @lru_cache(maxsize=None)
     def get_custom_target_provided_libraries(self, target):
         libs = []
         for t in target.get_generated_sources():
             if not isinstance(t, build.CustomTarget):
                 continue
-            for f in t.get_outputs():
-                if self.environment.is_library(f):
-                    libs.append(os.path.join(self.get_target_dir(t), f))
+            l = self.get_custom_target_provided_by_generated_source(t)
+            libs = libs + l
         return libs
 
     def is_unity(self, target):
@@ -824,6 +901,8 @@ class Backend:
                 fname = [os.path.join(self.get_target_dir(i), p) for p in i.get_outputs()]
             elif isinstance(i, build.GeneratedList):
                 fname = [os.path.join(self.get_target_private_dir(target), p) for p in i.get_outputs()]
+            elif isinstance(i, build.ExtractedObjects):
+                fname = [os.path.join(self.get_target_private_dir(i.target), p) for p in i.get_outputs(self)]
             else:
                 fname = [i.rel_to_builddir(self.build_to_src)]
             if target.absolute_paths:
@@ -892,8 +971,14 @@ class Backend:
                     raise MesonException(msg)
                 dfilename = os.path.join(outdir, target.depfile)
                 i = i.replace('@DEPFILE@', dfilename)
+            elif '@PRIVATE_DIR@' in i:
+                if target.absolute_paths:
+                    pdir = self.get_target_private_dir_abs(target)
+                else:
+                    pdir = self.get_target_private_dir(target)
+                i = i.replace('@PRIVATE_DIR@', pdir)
             elif '@PRIVATE_OUTDIR_' in i:
-                match = re.search('@PRIVATE_OUTDIR_(ABS_)?([^/\s*]*)@', i)
+                match = re.search(r'@PRIVATE_OUTDIR_(ABS_)?([^/\s*]*)@', i)
                 if not match:
                     msg = 'Custom target {!r} has an invalid argument {!r}' \
                           ''.format(target.name, i)
@@ -941,18 +1026,14 @@ class Backend:
             cmd = s['exe'] + s['args']
             subprocess.check_call(cmd, env=child_env)
 
-    def create_install_data_files(self):
-        install_data_file = os.path.join(self.environment.get_scratch_dir(), 'install.dat')
-
-        if self.environment.is_cross_build():
-            bins = self.environment.cross_info.config['binaries']
-            if 'strip' not in bins:
+    def create_install_data(self):
+        strip_bin = self.environment.binaries.host.lookup_entry('strip')
+        if strip_bin is None:
+            if self.environment.is_cross_build():
                 mlog.warning('Cross file does not specify strip binary, result will not be stripped.')
-                strip_bin = None
             else:
-                strip_bin = mesonlib.stringlistify(bins['strip'])
-        else:
-            strip_bin = self.environment.native_strip_bin
+                # TODO go through all candidates, like others
+                strip_bin = [self.environment.default_strip[0]]
         d = InstallData(self.environment.get_source_dir(),
                         self.environment.get_build_dir(),
                         self.environment.get_prefix(),
@@ -966,8 +1047,12 @@ class Backend:
         self.generate_data_install(d)
         self.generate_custom_install_script(d)
         self.generate_subdir_install(d)
+        return d
+
+    def create_install_data_files(self):
+        install_data_file = os.path.join(self.environment.get_scratch_dir(), 'install.dat')
         with open(install_data_file, 'wb') as ofile:
-            pickle.dump(d, ofile)
+            pickle.dump(self.create_install_data(), ofile)
 
     def generate_target_install(self, d):
         for t in self.build.get_targets().values():
@@ -984,7 +1069,20 @@ class Backend:
             install_mode = t.get_custom_install_mode()
             # Install the target output(s)
             if isinstance(t, build.BuildTarget):
-                should_strip = self.get_option_for_target('strip', t)
+                # In general, stripping static archives is tricky and full of pitfalls.
+                # Wholesale stripping of static archives with a command such as
+                #
+                #   strip libfoo.a
+                #
+                # is broken, as GNU's strip will remove *every* symbol in a static
+                # archive. One solution to this nonintuitive behaviour would be
+                # to only strip local/debug symbols. Unfortunately, strip arguments
+                # are not specified by POSIX and therefore not portable. GNU's `-g`
+                # option (i.e. remove debug symbols) is equivalent to Apple's `-S`.
+                #
+                # TODO: Create GNUStrip/AppleStrip/etc. hierarchy for more
+                #       fine-grained stripping of static archives.
+                should_strip = not isinstance(t, build.StaticLibrary) and self.get_option_for_target('strip', t)
                 # Install primary build output (library/executable/jar, etc)
                 # Done separately because of strip/aliases/rpath
                 if outdirs[0] is not False:
@@ -993,22 +1091,31 @@ class Backend:
                                           t.get_aliases(), should_strip, mappings,
                                           t.install_rpath, install_mode)
                     d.targets.append(i)
-                    # On toolchains/platforms that use an import library for
-                    # linking (separate from the shared library with all the
-                    # code), we need to install that too (dll.a/.lib).
-                    if isinstance(t, (build.SharedLibrary, build.SharedModule, build.Executable)) and t.get_import_filename():
-                        if custom_install_dir:
-                            # If the DLL is installed into a custom directory,
-                            # install the import library into the same place so
-                            # it doesn't go into a surprising place
-                            implib_install_dir = outdirs[0]
-                        else:
-                            implib_install_dir = self.environment.get_import_lib_dir()
-                        # Install the import library; may not exist for shared modules
-                        i = TargetInstallData(self.get_target_filename_for_linking(t),
-                                              implib_install_dir, {}, False, {}, '', install_mode,
-                                              optional=isinstance(t, build.SharedModule))
-                        d.targets.append(i)
+
+                    if isinstance(t, (build.SharedLibrary, build.SharedModule, build.Executable)):
+                        # On toolchains/platforms that use an import library for
+                        # linking (separate from the shared library with all the
+                        # code), we need to install that too (dll.a/.lib).
+                        if t.get_import_filename():
+                            if custom_install_dir:
+                                # If the DLL is installed into a custom directory,
+                                # install the import library into the same place so
+                                # it doesn't go into a surprising place
+                                implib_install_dir = outdirs[0]
+                            else:
+                                implib_install_dir = self.environment.get_import_lib_dir()
+                            # Install the import library; may not exist for shared modules
+                            i = TargetInstallData(self.get_target_filename_for_linking(t),
+                                                  implib_install_dir, {}, False, {}, '', install_mode,
+                                                  optional=isinstance(t, build.SharedModule))
+                            d.targets.append(i)
+
+                        if not should_strip and t.get_debug_filename():
+                            debug_file = os.path.join(self.get_target_dir(t), t.get_debug_filename())
+                            i = TargetInstallData(debug_file, outdirs[0],
+                                                  {}, False, {}, '',
+                                                  install_mode, optional=True)
+                            d.targets.append(i)
                 # Install secondary outputs. Only used for Vala right now.
                 if num_outdirs > 1:
                     for output, outdir in zip(t.get_outputs()[1:], outdirs[1:]):
@@ -1029,7 +1136,8 @@ class Backend:
                 if num_outdirs == 1 and num_out > 1:
                     for output in t.get_outputs():
                         f = os.path.join(self.get_target_dir(t), output)
-                        i = TargetInstallData(f, outdirs[0], {}, False, {}, None, install_mode)
+                        i = TargetInstallData(f, outdirs[0], {}, False, {}, None, install_mode,
+                                              optional=not t.build_by_default)
                         d.targets.append(i)
                 else:
                     for output, outdir in zip(t.get_outputs(), outdirs):
@@ -1037,7 +1145,8 @@ class Backend:
                         if outdir is False:
                             continue
                         f = os.path.join(self.get_target_dir(t), output)
-                        i = TargetInstallData(f, outdir, {}, False, {}, None, install_mode)
+                        i = TargetInstallData(f, outdir, {}, False, {}, None, install_mode,
+                                              optional=not t.build_by_default)
                         d.targets.append(i)
 
     def generate_custom_install_script(self, d):
@@ -1083,7 +1192,7 @@ class Backend:
                 if subdir is None:
                     subdir = os.path.join(manroot, 'man' + num)
                 srcabs = f.absolute_path(self.environment.get_source_dir(), self.environment.get_build_dir())
-                dstabs = os.path.join(subdir, os.path.basename(f.fname) + '.gz')
+                dstabs = os.path.join(subdir, os.path.basename(f.fname))
                 i = [srcabs, dstabs, m.get_custom_install_mode()]
                 d.man.append(i)
 
@@ -1113,3 +1222,53 @@ class Backend:
                 dst_dir = os.path.join(dst_dir, os.path.basename(src_dir))
             d.install_subdirs.append([src_dir, dst_dir, sd.install_mode,
                                       sd.exclude])
+
+    def get_introspection_data(self, target_id, target):
+        '''
+        Returns a list of source dicts with the following format for a given target:
+        [
+            {
+                "language": "<LANG>",
+                "compiler": ["result", "of", "comp.get_exelist()"],
+                "parameters": ["list", "of", "compiler", "parameters],
+                "sources": ["list", "of", "all", "<LANG>", "source", "files"],
+                "generated_sources": ["list", "of", "generated", "source", "files"]
+            }
+        ]
+
+        This is a limited fallback / reference implementation. The backend should override this method.
+        '''
+        if isinstance(target, (build.CustomTarget, build.BuildTarget)):
+            source_list_raw = target.sources + target.extra_files
+            source_list = []
+            for j in source_list_raw:
+                if isinstance(j, mesonlib.File):
+                    source_list += [j.absolute_path(self.source_dir, self.build_dir)]
+                elif isinstance(j, str):
+                    source_list += [os.path.join(self.source_dir, j)]
+            source_list = list(map(lambda x: os.path.normpath(x), source_list))
+
+            compiler = []
+            if isinstance(target, build.CustomTarget):
+                tmp_compiler = target.command
+                if not isinstance(compiler, list):
+                    tmp_compiler = [compiler]
+                for j in tmp_compiler:
+                    if isinstance(j, mesonlib.File):
+                        compiler += [j.absolute_path(self.source_dir, self.build_dir)]
+                    elif isinstance(j, str):
+                        compiler += [j]
+                    elif isinstance(j, (build.BuildTarget, build.CustomTarget)):
+                        compiler += j.get_outputs()
+                    else:
+                        raise RuntimeError('Type "{}" is not supported in get_introspection_data. This is a bug'.format(type(j).__name__))
+
+            return [{
+                'language': 'unknown',
+                'compiler': compiler,
+                'parameters': [],
+                'sources': source_list,
+                'generated_sources': []
+            }]
+
+        return []

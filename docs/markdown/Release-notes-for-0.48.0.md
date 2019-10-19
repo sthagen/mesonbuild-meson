@@ -36,16 +36,15 @@ configuration. For example:
 project('configure_file', 'cpp')
 
 configure_file(
-      input: 'a.in',
-      output: 'out',
-      command: ['./foo.sh']
-    )
+  input: 'a.in',
+  output: 'out',
+  command: ['./foo.sh']
+)
 configure_file(
   input: 'a.in',
   output: 'out',
   command: ['./foo.sh']
 )
-
 ```
 
 This will output:
@@ -218,7 +217,7 @@ i18n.merge_file() now behaves as custom_target() in this regard.
 ## Projects args can be set separately for cross and native builds (potentially breaking change)
 
 It has been a longstanding bug (or let's call it a "delayed bug fix")
-that if yo do this:
+that if you do this:
 
 ```meson
 add_project_arguments('-DFOO', language : 'c')
@@ -231,15 +230,15 @@ namely `add_global_arguments`, `add_global_link_arguments`,
 `add_project_arguments` and `add_project_link_arguments` that behaves
 like the following:
 
-```
-## Added to native builds when compiling natively and to cross
-## compilations when doing cross compiles.
+```meson
+# Added to native builds when compiling natively and to cross
+# compilations when doing cross compiles.
 add_project_arguments(...)
 
-## Added only to native compilations, not used in cross compilations.
+# Added only to native compilations, not used in cross compilations.
 add_project_arguments(..., native : true)
 
-## Added only to cross compilations, not used in native compilations.
+# Added only to cross compilations, not used in native compilations.
 add_project_arguments(..., native : false)
 ```
 
@@ -305,4 +304,31 @@ To enable this, the following needs to be added to the `.wrap` file:
 
 ```ini
 clone-recursive=true
+```
+
+## `subproject()` function now supports the `required:` kwarg
+
+This allows you to declare an optional subproject. You can now call `found()`
+on the return value of the `subproject()` call to see if the subproject is
+available before calling `get_variable()` to fetch information from it.
+
+## `dependency()` objects now support the `.name()` method
+
+You can now fetch the name of the dependency that was searched like so:
+
+```meson
+glib_dep = dependency('glib-2.0')
+...
+message("dependency name is " + glib_dep.name())
+# This outputs `dependency name is glib-2.0`
+
+qt_dep = dependency('qt5')
+...
+message("dependency name is " + qt_dep.name())
+# This outputs `dependency name is qt5`
+
+decl_dep = declare_dependency()
+...
+message("dependency name is " + decl_dep.name())
+# This outputs `dependency name is internal`
 ```

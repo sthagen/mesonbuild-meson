@@ -120,6 +120,7 @@ has_function_printf = true
 
 c_args = ['-DCROSS=1', '-DSOMETHING=3']
 c_link_args = ['-some_link_arg']
+sys_root = '/some/path'
 ```
 
 In most cases you don't need the size and alignment settings, Meson
@@ -130,6 +131,12 @@ the issue. If you need extra compiler arguments to be used during
 cross compilation you can set them with `[langname]_args =
 [args]`. Just remember to specify the args as an array and not as a
 single string (i.e. not as `'-DCROSS=1 -DSOMETHING=3'`).
+
+*Since 0.52.0* The `sys_root` property may point to the root of the host
+system path (the system that will run the compiled binaries). This is used
+internally by Meson to set the PKG_CONFIG_SYSROOT_DIR environment variable
+for pkg-config. If this is unset the host system is assumed to share a root
+with the build system.
 
 One important thing to note, if you did not define an `exe_wrapper` in
 the previous section, is that Meson will make a best-effort guess at
@@ -150,7 +157,7 @@ binaries are not actually compatible. In such cases you may use the
 needs_exe_wrapper = true
 ```
 
-The last bit is the definition of host and target machines. Every
+The next bit is the definition of host and target machines. Every
 cross build definition must have one or both of them. If it had
 neither, the build would not be a cross build but a native build. You
 do not need to define the build machine, as all necessary information
@@ -185,6 +192,20 @@ but with different operating systems.
 If you do not define your host machine, it is assumed to be the build
 machine. Similarly if you do not specify target machine, it is assumed
 to be the host machine.
+
+Additionally, you can define the paths that you want to install to in your
+cross file. This may be especially useful when cross compiling an entire
+operating system, or for operating systems to use internally for consistency.
+
+```ini
+[paths]
+prefix = '/my/prefix'
+libdir = 'lib/i386-linux-gnu'
+bindir = 'bin'
+```
+
+This will be overwritten by any options passed on the command line.
+
 
 ## Starting a cross build
 

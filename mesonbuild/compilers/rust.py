@@ -13,26 +13,34 @@
 # limitations under the License.
 
 import subprocess, os.path
+import typing
 
-from ..mesonlib import EnvironmentException, Popen_safe
-
+from ..mesonlib import EnvironmentException, MachineChoice, Popen_safe
 from .compilers import Compiler, rust_buildtype_args, clike_debug_args
 
+if typing.TYPE_CHECKING:
+    from ..envconfig import MachineInfo
+    from ..environment import Environment  # noqa: F401
+
 rust_optimization_args = {'0': [],
-                          'g': ['-C', '--opt-level=0'],
-                          '1': ['-C', '--opt-level=1'],
-                          '2': ['-C', '--opt-level=2'],
-                          '3': ['-C', '--opt-level=3'],
-                          's': ['-C', '--opt-level=s'],
+                          'g': ['-C', 'opt-level=0'],
+                          '1': ['-C', 'opt-level=1'],
+                          '2': ['-C', 'opt-level=2'],
+                          '3': ['-C', 'opt-level=3'],
+                          's': ['-C', 'opt-level=s'],
                           }
 
 class RustCompiler(Compiler):
-    def __init__(self, exelist, version, is_cross, exe_wrapper=None):
+
+    LINKER_PREFIX = '-Wl,'
+
+    def __init__(self, exelist, version, for_machine: MachineChoice,
+                 is_cross, info: 'MachineInfo', exe_wrapper=None, **kwargs):
         self.language = 'rust'
-        super().__init__(exelist, version)
-        self.is_cross = is_cross
+        super().__init__(exelist, version, for_machine, info, **kwargs)
         self.exe_wrapper = exe_wrapper
         self.id = 'rustc'
+        self.is_cross = is_cross
 
     def needs_static_linker(self):
         return False
@@ -47,10 +55,18 @@ class RustCompiler(Compiler):
             ofile.write('''fn main() {
 }
 ''')
-        pc = subprocess.Popen(self.exelist + ['-o', output_name, source_name], cwd=work_dir)
-        pc.wait()
+        pc = subprocess.Popen(self.exelist + ['-o', output_name, source_name],
+                              stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE,
+                              cwd=work_dir)
+        stdo, stde = pc.communicate()
+        stdo = stdo.decode('utf-8', errors='replace')
+        stde = stde.decode('utf-8', errors='replace')
         if pc.returncode != 0:
-            raise EnvironmentException('Rust compiler %s can not compile programs.' % self.name_string())
+            raise EnvironmentException('Rust compiler %s can not compile programs.\n%s\n%s' % (
+                self.name_string(),
+                stdo,
+                stde))
         if self.is_cross:
             if self.exe_wrapper is None:
                 # Can't check if the binaries run so we have to assume they do
@@ -69,9 +85,6 @@ class RustCompiler(Compiler):
     def get_buildtype_args(self, buildtype):
         return rust_buildtype_args[buildtype]
 
-    def build_rpath_args(self, build_dir, from_dir, rpath_paths, build_rpath, install_rpath):
-        return self.build_unix_rpath_args(build_dir, from_dir, rpath_paths, build_rpath, install_rpath)
-
     def get_sysroot(self):
         cmd = self.exelist + ['--print', 'sysroot']
         p, stdo, stde = Popen_safe(cmd)
@@ -82,3 +95,17 @@ class RustCompiler(Compiler):
 
     def get_optimization_args(self, optimization_level):
         return rust_optimization_args[optimization_level]
+
+    def compute_parameters_with_absolute_paths(self, parameter_list, build_dir):
+        for idx, i in enumerate(parameter_list):
+            if i[:2] == '-L':
+                for j in ['dependency', 'crate', 'native', 'framework', 'all']:
+                    combined_len = len(j) + 3
+                    if i[:combined_len] == '-L{}='.format(j):
+                        parameter_list[idx] = i[:combined_len] + os.path.normpath(os.path.join(build_dir, i[combined_len:]))
+                        break
+
+        return parameter_list
+
+    def get_std_exe_link_args(self):
+        return []

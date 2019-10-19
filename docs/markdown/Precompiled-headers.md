@@ -51,16 +51,27 @@ Using precompiled headers with GCC and derivatives
 --
 
 Once you have a file to precompile, you can enable the use of pch for
-a give target with a *pch* keyword argument. As an example, here's how
-you would use it with a C binary.
+a give target with a *pch* keyword argument. As an example, let's assume
+you want to build a small C binary with precompiled headers.
+Let's say the source files of the binary use the system headers `stdio.h`
+and `string.h`. Then you create a header file `pch/myexe_pch.h` with this
+content:
+
+```c
+#include <stdio.h>
+#include <string.h>
+```
+
+And add this to meson:
 
 ```meson
 executable('myexe', sources : sourcelist, c_pch : 'pch/myexe_pch.h')
 ```
 
-You should note that your source files must _not_ include the file
-`myexe_pch.h` and you must _not_ add the pch subdirectory to your
-search path. Meson will make the compiler include the pch with
+That's all. You should note that your source files must _not_ include
+the file `myexe_pch.h` and you must _not_ add the pch subdirectory to
+your search path. Any modification of the original program files is
+not necessary. Meson will make the compiler include the pch with
 compiler options. If you want to disable pch (because of, say,
 compiler bugs), it can be done entirely on the build system side with
 no changes to source code.
@@ -70,13 +81,16 @@ has multiple languages, you can specify multiple pch files like this.
 
 ```meson
 executable('multilang', sources : srclist,
-           c_pch : 'pch/c_pch.h', cpp_pch : 'pch/cpp_pch.h'])
+           c_pch : 'pch/c_pch.h', cpp_pch : 'pch/cpp_pch.h')
 ```
 
 Using precompiled headers with MSVC
 --
+Since Meson version 0.50.0, precompiled headers with MSVC work just like
+with GCC. Meson will automatically create the matching pch implementation
+file for you.
 
-MSVC is a bit trickier, because in addition to the header file, it
+Before version 0.50.0, in addition to the header file, Meson
 also requires a corresponding source file. If your header is called
 `foo_pch.h`, the corresponding source file is usually called
 `foo_pch.cpp` and it resides in the same `pch` subdirectory as the

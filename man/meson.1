@@ -1,4 +1,4 @@
-.TH MESON "1" "September 2018" "meson 0.48.0" "User Commands"
+.TH MESON "1" "October 2019" "meson 0.52.0" "User Commands"
 .SH NAME
 meson - a high productivity build system
 .SH DESCRIPTION
@@ -6,7 +6,7 @@ meson - a high productivity build system
 Meson is a build system designed to optimize programmer
 productivity. It aims to do this by providing simple, out-of-the-box
 support for modern software development tools and practices, such as
-unit tests, coverage reports, Valgrind, CCache and the like.
+unit tests, coverage reports, Valgrind, Ccache and the like.
 
 The main Meson executable provides many subcommands to access all
 the functionality.
@@ -20,9 +20,9 @@ configure your build:
 .B meson setup [
 .I options
 .B ] [
-.I source directory
-.B ] [
 .I build directory
+.B ] [
+.I source directory
 .B ]
 
 Note that the build directory must be different from the source
@@ -37,7 +37,7 @@ backend of Meson is Ninja, which can be invoked like this.
 
 You only need to run the Meson command once: when you first configure
 your build dir. After that you just run the build command. Meson will
-autodetect changes in your source tree and regenerates all files
+autodetect changes in your source tree and regenerate all files
 needed to build the project.
 
 The setup command is the default operation. If no actual command is
@@ -48,9 +48,9 @@ like this:
 .B meson [
 .I options
 .B ] [
-.I source directory
-.B ] [
 .I build directory
+.B ] [
+.I source directory
 .B ]
 
 .SS "options:"
@@ -123,6 +123,18 @@ The default way of running tests is to invoke the default build command:
 
 .B meson test
 provides a richer set of tools for invoking tests.
+
+.B meson test
+automatically rebuilds the necessary targets to run tests when used with the Ninja backend.
+Upon build failure,
+.B meson test
+will return an exit code of 125.
+This return code tells
+.B git bisect run
+to skip the current commit.
+Thus bisecting using git can be done conveniently like this.
+
+.B git bisect run meson test -C build_dir
 
 .SS "options:"
 .TP
@@ -213,6 +225,10 @@ Usage error, or an error parsing or executing meson.build.
 .TP
 .B 2
 Internal error.
+.TP
+.B 125
+.B meson test
+could not rebuild the required targets.
 .TP
 
 .SH SEE ALSO

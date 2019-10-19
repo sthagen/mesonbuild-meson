@@ -64,6 +64,29 @@ pkg-config files. Meson has autodetection support for some of these,
 and they are described [later in this
 page](#dependencies-with-custom-lookup-functionality).
 
+# Arbitrary variables from dependencies that can be found multiple ways
+
+*Note* new in 0.51.0
+
+When you need to get an arbitrary variables from a dependency that can be
+found multiple ways and you don't want to constrain the type you can use
+the generic `get_variable` method. This currently supports cmake, pkg-config,
+and config-tool based variables.
+
+```meson
+foo_dep = dependency('foo')
+var = foo.get_variable(cmake : 'CMAKE_VAR', pkgconfig : 'pkg-config-var', configtool : 'get-var', default_value : 'default')
+```
+
+It accepts the keywords 'cmake', 'pkgconfig', 'pkgconfig_define',
+'configtool', and 'default_value'. 'pkgconfig_define' works just like the
+'define_variable' argument to `get_pkgconfig_variable`. When this method is
+invoked the keyword corresponding to the underlying type of the dependency
+will be used to look for a variable. If that variable cannot be found or if
+the caller does not provide an argument for the type of dependency, one of
+the following will happen: If 'default_value' was provided that value will be
+returned, if 'default_value' was not provided then an error will be raised.
+
 # Declaring your own
 
 You can declare your own dependency objects that can be used
@@ -114,12 +137,47 @@ of all the work behind the scenes to make this work.
 
 You can use the keyword `method` to let meson know what method to use
 when searching for the dependency. The default value is `auto`.
-Aditional dependencies methods are `pkg-config`, `config-tool`,
+Aditional dependencies methods are `pkg-config`, `config-tool`, `cmake`,
 `system`, `sysconfig`, `qmake`, `extraframework` and `dub`.
 
 ```meson
 cups_dep = dependency('cups', method : 'pkg-config')
 ```
+
+The dependency method order for `auto` is:
+
+  1. `pkg-config`
+  2. `cmake`
+  3. `extraframework` (OSX only)
+
+## CMake
+
+Meson can use the CMake `find_package()` function to detect
+dependencies with the builtin `Find<NAME>.cmake` modules and exported
+project configurations (usually in `/usr/lib/cmake`). Meson is able
+to use both the old-style `<NAME>_LIBRARIES` variables as well as
+imported targets.
+
+It is possible to manually specify a list of CMake targets that should
+be used with the `modules` property. Howerver, this step is optional
+since meson tries to automatically guess the correct target based on the
+name of the dependency.
+
+Depending on the dependency it may be neccessary to explicitly specify
+a CMake target with the `modules` property if meson is unable to guess
+it automatically.
+
+```meson
+    cmake_dep = dependency('ZLIB', method : 'cmake', modules : ['ZLIB::ZLIB'])
+```
+
+It is also possible to reuse existing `Find<name>.cmake` files with the
+`cmake_module_path` property. Using this property is equivalent to setting the
+`CMAKE_MODULE_PATH` variable in CMake. The path(s) given to `cmake_module_path`
+should all be relative to the project source directory. Absolute paths
+should only be used if the CMake files are not stored in the project itself.
+
+Additional CMake parameters can be specified with the `cmake_args` property.
 
 ### Some notes on Dub
 
@@ -165,7 +223,7 @@ wmf_dep = dependency('libwmf', method : 'config-tool')
 ## Dependencies using config tools
 
 [CUPS](#cups), [LLVM](#llvm), [pcap](#pcap), [WxWidgets](#wxwidgets),
-[libwmf](#libwmf), [GCrypt](#libgcrypt), and GnuStep either do not provide pkg-config
+[libwmf](#libwmf), [GCrypt](#libgcrypt), [GPGME](#gpgme), and GnuStep either do not provide pkg-config
 modules or additionally can be detected via a config tool
 (cups-config, llvm-config, libgcrypt-config, etc). Meson has native support for these
 tools, and they can be found like other dependencies:
@@ -175,6 +233,7 @@ pcap_dep = dependency('pcap', version : '>=1.0')
 cups_dep = dependency('cups', version : '>=1.4')
 llvm_dep = dependency('llvm', version : '>=4.0')
 libgcrypt_dep = dependency('libgcrypt', version: '>= 1.8')
+gpgme_dep = dependency('gpgme', version: '>= 1.0')
 ```
 
 ## AppleFrameworks
@@ -186,6 +245,16 @@ dep = dependency('appleframeworks', modules : 'foundation')
 ```
 
 These dependencies can never be found for non-OSX hosts.
+
+## Blocks
+
+Enable support for Clang's blocks extension.
+
+```meson
+dep = dependency('blocks')
+```
+
+*(added 0.52.0)*
 
 ## Boost
 
@@ -218,7 +287,17 @@ libraries that have been compiled for single-threaded use instead.
 
 ## CUPS
 
-`method` may be `auto`, `config-tool`, `pkg-config` or `extraframework`.
+`method` may be `auto`, `config-tool`, `pkg-config`, `cmake` or `extraframework`.
+
+## Fortran Coarrays
+
+*(added 0.50.0)*
+
+ Coarrays are a Fortran language intrinsic feature, enabled by
+`dependency('coarray')`.
+
+GCC will use OpenCoarrays if present to implement coarrays, while Intel and NAG
+use internal coarray support.
 
 ## GL
 
@@ -241,6 +320,20 @@ gtest_dep = dependency('gtest', main : true, required : false)
 e = executable('testprog', 'test.cc', dependencies : gtest_dep)
 test('gtest test', e)
 ```
+
+## HDF5
+
+*(added 0.50.0)*
+
+HDF5 is supported for C, C++ and Fortran. Because dependencies are
+language-specific, you must specify the requested language using the
+`language` keyword argument, i.e.,
+ * `dependency('hdf5', language: 'c')` for the C HDF5 headers and libraries
+ * `dependency('hdf5', language: 'cpp')` for the C++ HDF5 headers and libraries
+ * `dependency('hdf5', language: 'fortran')` for the Fortran HDF5 headers and libraries
+
+Meson uses pkg-config to find HDF5. The standard low-level HDF5 function and the `HL` high-level HDF5 functions are linked for each language.
+
 
 ## libwmf
 
@@ -295,6 +388,20 @@ are not in your path, they can be specified by setting the standard
 environment variables `MPICC`, `MPICXX`, `MPIFC`, `MPIF90`, or
 `MPIF77`, during configuration.
 
+## NetCDF
+
+*(added 0.50.0)*
+
+NetCDF is supported for C, C++ and Fortran. Because NetCDF dependencies are
+language-specific, you must specify the requested language using the
+`language` keyword argument, i.e.,
+ * `dependency('netcdf', language: 'c')` for the C NetCDF headers and libraries
+ * `dependency('netcdf', language: 'cpp')` for the C++ NetCDF headers and libraries
+ * `dependency('netcdf', language: 'fortran')` for the Fortran NetCDF headers and libraries
+
+Meson uses pkg-config to find NetCDF.
+
+
 ## OpenMP
 
 *(added 0.46.0)*
@@ -313,6 +420,12 @@ The `language` keyword may used.
 ## libgcrypt
 
 *(added 0.49.0)*
+
+`method` may be `auto`, `config-tool` or `pkg-config`.
+
+## GPGME
+
+*(added 0.51.0)*
 
 `method` may be `auto`, `config-tool` or `pkg-config`.
 
@@ -373,7 +486,7 @@ include path of the given module(s) to the compiler flags.  (since v0.47.0)
 **Note** using private headers in your project is a bad idea, do so at your own
 risk.
 
-`method` may be `auto`, `pkgconfig` or `qmake`.
+`method` may be `auto`, `pkg-config` or `qmake`.
 
 ## SDL2
 
@@ -409,6 +522,18 @@ a collection of modules. WxWidgets is supported via `wx-config`.
 Meson substitutes `modules` to `wx-config` invocation, it generates
 - `compile_args` using `wx-config --cxxflags $modules...`
 - `link_args` using `wx-config --libs $modules...`
+
+## Shaderc
+
+*(added 0.51.0)*
+
+Shaderc currently does not ship with any means of detection. Nevertheless, Meson
+can try to detect it using `pkg-config`, but will default to looking for the
+appropriate library manually. If the `static` keyword argument is `true`,
+`shaderc_combined` is preferred. Otherwise, `shaderc_shared` is preferred. Note
+that it is not possible to obtain the shaderc version using this method.
+
+`method` may be `auto`, `pkg-config` or `system`.
 
 ### Example
 

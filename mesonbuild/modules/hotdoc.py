@@ -76,7 +76,8 @@ class HotdocTargetBuilder:
             return
 
         if isinstance(value, bool):
-            self.cmd.append(option)
+            if value:
+                self.cmd.append(option)
         elif isinstance(value, list):
             # Do not do anything on empty lists
             if value:
@@ -154,6 +155,19 @@ class HotdocTargetBuilder:
 
     def replace_dirs_in_string(self, string):
         return string.replace("@SOURCE_ROOT@", self.sourcedir).replace("@BUILD_ROOT@", self.builddir)
+
+    def process_gi_c_source_roots(self):
+        if self.hotdoc.run_hotdoc(['--has-extension=gi-extension']) != 0:
+            return
+
+        value, _ = self.get_value([list, str], 'gi_c_source_roots', default=[], force_list=True)
+        value.extend([
+            os.path.join(self.state.environment.get_source_dir(),
+                         self.interpreter.subproject_dir, self.state.subproject),
+            os.path.join(self.state.environment.get_build_dir(), self.interpreter.subproject_dir, self.state.subproject)
+        ])
+
+        self.cmd += ['--gi-c-source-roots'] + value
 
     def process_dependencies(self, deps):
         cflags = set()
@@ -271,6 +285,7 @@ class HotdocTargetBuilder:
         self.process_known_arg('--c-include-directories',
                                [Dependency, build.StaticLibrary, build.SharedLibrary, list], argname="dependencies",
                                force_list=True, value_processor=self.process_dependencies)
+        self.process_gi_c_source_roots()
         self.process_extra_assets()
         self.process_extra_extension_paths()
         self.process_subprojects()
@@ -294,6 +309,9 @@ class HotdocTargetBuilder:
 
         for path in self.include_paths.keys():
             self.cmd.extend(['--include-path', path])
+
+        if self.state.environment.coredata.get_builtin_option('werror'):
+            self.cmd.append('--fatal-warning')
         self.generate_hotdoc_config()
 
         target_cmd = self.build_command + ["--internal", "hotdoc"] + \
@@ -379,7 +397,7 @@ class HotDocModule(ExtensionModule):
 
     @noKwargs
     def has_extensions(self, state, args, kwargs):
-        res = self.hotdoc.run_hotdoc(['--has-extension'] + args) == 0
+        res = self.hotdoc.run_hotdoc(['--has-extension=%s' % extension for extension in args]) == 0
         return ModuleReturnValue(res, [res])
 
     def generate_doc(self, state, args, kwargs):

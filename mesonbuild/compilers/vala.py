@@ -13,19 +13,24 @@
 # limitations under the License.
 
 import os.path
+import typing
 
 from .. import mlog
-from ..mesonlib import EnvironmentException, version_compare
+from ..mesonlib import EnvironmentException, MachineChoice, version_compare
 
 from .compilers import Compiler
 
+if typing.TYPE_CHECKING:
+    from ..envconfig import MachineInfo
+
 class ValaCompiler(Compiler):
-    def __init__(self, exelist, version):
+    def __init__(self, exelist, version, for_machine: MachineChoice,
+                 is_cross, info: 'MachineInfo'):
         self.language = 'vala'
-        super().__init__(exelist, version)
+        super().__init__(exelist, version, for_machine, info)
         self.version = version
+        self.is_cross = is_cross
         self.id = 'valac'
-        self.is_cross = False
         self.base_options = ['b_colorout']
 
     def name_string(self):
@@ -38,7 +43,7 @@ class ValaCompiler(Compiler):
         return []
 
     def get_debug_args(self, is_debug):
-        return ['--debug']
+        return ['--debug'] if is_debug else []
 
     def get_output_args(self, target):
         return [] # Because compiles into C.
@@ -47,6 +52,12 @@ class ValaCompiler(Compiler):
         return [] # Because compiles into C.
 
     def get_pic_args(self):
+        return []
+
+    def get_pie_args(self):
+        return []
+
+    def get_pie_link_args(self):
         return []
 
     def get_always_args(self):
@@ -66,10 +77,27 @@ class ValaCompiler(Compiler):
             return ['--color=' + colortype]
         return []
 
+    def compute_parameters_with_absolute_paths(self, parameter_list, build_dir):
+        for idx, i in enumerate(parameter_list):
+            if i[:9] == '--girdir=':
+                parameter_list[idx] = i[:9] + os.path.normpath(os.path.join(build_dir, i[9:]))
+            if i[:10] == '--vapidir=':
+                parameter_list[idx] = i[:10] + os.path.normpath(os.path.join(build_dir, i[10:]))
+            if i[:13] == '--includedir=':
+                parameter_list[idx] = i[:13] + os.path.normpath(os.path.join(build_dir, i[13:]))
+            if i[:14] == '--metadatadir=':
+                parameter_list[idx] = i[:14] + os.path.normpath(os.path.join(build_dir, i[14:]))
+
+        return parameter_list
+
     def sanity_check(self, work_dir, environment):
         code = 'class MesonSanityCheck : Object { }'
-        args = self.get_cross_extra_flags(environment, link=False)
-        with self.compile(code, args, 'compile') as p:
+        extra_flags = environment.coredata.get_external_args(self.for_machine, self.language)
+        if self.is_cross:
+            extra_flags += self.get_compile_only_args()
+        else:
+            extra_flags += environment.coredata.get_external_link_args(self.for_machine, self.language)
+        with self.cached_compile(code, environment.coredata, extra_args=extra_flags, mode='compile') as p:
             if p.returncode != 0:
                 msg = 'Vala compiler {!r} can not compile programs' \
                       ''.format(self.name_string())
@@ -80,17 +108,17 @@ class ValaCompiler(Compiler):
             return ['--debug']
         return []
 
-    def find_library(self, libname, env, extra_dirs):
+    def find_library(self, libname, env, extra_dirs, *args):
         if extra_dirs and isinstance(extra_dirs, str):
             extra_dirs = [extra_dirs]
         # Valac always looks in the default vapi dir, so only search there if
         # no extra dirs are specified.
         if not extra_dirs:
             code = 'class MesonFindLibrary : Object { }'
+            args = env.coredata.get_external_args(self.for_machine, self.language)
             vapi_args = ['--pkg', libname]
-            args = self.get_cross_extra_flags(env, link=False)
             args += vapi_args
-            with self.compile(code, args, 'compile') as p:
+            with self.cached_compile(code, env.coredata, extra_args=args, mode='compile') as p:
                 if p.returncode == 0:
                     return vapi_args
         # Not found? Try to find the vapi file itself.

@@ -57,6 +57,17 @@ if ret.returncode() != 0
   error('Error running command: @0@\n@1@'.format(ret.stdout(), ret.stderr()))
 endif
 
+genscript2deps = '@0@/generator-deps.py'.format(meson.current_source_dir())
+ofile2deps = '@0@/config2deps.h'.format(meson.current_build_dir())
+outf = configure_file(
+  output : 'config2deps.h',
+  depfile : 'depfile.d',
+  command : [genprog, genscript2deps, ofile2deps, '@DEPFILE@'])
+ret = run_command(check_file, outf)
+if ret.returncode() != 0
+  error('Error running command: @0@\n@1@'.format(ret.stdout(), ret.stderr()))
+endif
+
 found_script = find_program('generator.py')
 # More configure_file tests in here
 subdir('subdir')
@@ -139,6 +150,19 @@ test('test6', executable('prog6', 'prog6.c'))
 cfile = configure_file(input : 'config.h.in',
   output : 'do_not_get_installed.h',
   install_dir : '',
+  configuration : conf)
+
+# test install_dir : false (deprecated)
+cfile = configure_file(input : 'config.h.in',
+  output : 'do_not_get_installed_please.h',
+  install_dir : false,
+  configuration : conf)
+
+# test intsall_dir with install: false
+cfile = configure_file(input : 'config.h.in',
+  output : 'do_not_get_installed_in_install_dir.h',
+  install : false,
+  install_dir : 'share/appdir',
   configuration : conf)
 
 # Test escaping with cmake format
@@ -270,3 +294,9 @@ configure_file(output : 'config9b.h',
 )
 
 test('test9', executable('prog9', 'prog9.c'))
+
+check_inputs = find_program('check_inputs.py')
+configure_file(output : 'check_inputs.txt',
+  input : ['prog.c', files('prog2.c', 'prog4.c')],
+  command : [check_inputs, '@OUTPUT@', '@INPUT0@', '@INPUT@', files('prog5.c')]
+)

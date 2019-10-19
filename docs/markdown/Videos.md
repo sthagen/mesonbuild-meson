@@ -4,12 +4,18 @@ short-description: Videos about Meson
 
 # Videos
 
+ - [Behind the Scenes of a C++ Build
+   System](https://www.youtube.com/watch?v=34KzT2yvQuM) CppCon 2019
+
  - [Compiling Multi-Million Line C++ Code Bases Effortlessly with the
    Meson Build system](https://www.youtube.com/watch?v=SCZLnopmYBM),
    CppCon 2018
 
  - [The Meson Build System, 4+ years of work to become an overnight
    success](https://www.youtube.com/watch?v=gHdTzdXkhRY), Linux.conf.au 2018
+
+ - [Power through simplicity, using Python in the Meson Build
+   System](https://youtu.be/3jF3oVsjIEM), Piter.py, 2017
 
  - [Meson and the changing Linux build
    landscape](https://media.ccc.de/v/ASG2017-111-meson_and_the_changing_linux_build_landscape),

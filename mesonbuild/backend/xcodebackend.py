@@ -345,7 +345,7 @@ class XCodeBackend(backends.Backend):
         self.ofile.write('/* End PBXFileReference section */\n')
 
     def generate_pbx_frameworks_buildphase(self):
-        for tname, t in self.build.targets.items():
+        for t in self.build.targets.values():
             self.ofile.write('\n/* Begin PBXFrameworksBuildPhase section */\n')
             self.write_line('%s /* %s */ = {\n' % (t.buildphasemap['Frameworks'], 'Frameworks'))
             self.indent_level += 1
@@ -587,7 +587,7 @@ class XCodeBackend(backends.Backend):
 
     def generate_pbx_sources_build_phase(self):
         self.ofile.write('\n/* Begin PBXSourcesBuildPhase section */\n')
-        for name, phase_id in self.source_phase.items():
+        for name in self.source_phase.keys():
             t = self.build.targets[name]
             self.write_line('%s /* Sources */ = {' % (t.buildphasemap[name]))
             self.indent_level += 1
@@ -634,7 +634,7 @@ class XCodeBackend(backends.Backend):
             self.write_line('isa = XCBuildConfiguration;')
             self.write_line('buildSettings = {')
             self.indent_level += 1
-            self.write_line('ARCHS = "$(ARCHS_STANDARD_32_64_BIT)";')
+            self.write_line('ARCHS = "$(ARCHS_STANDARD_64_BIT)";')
             self.write_line('ONLY_ACTIVE_ARCH = YES;')
             self.write_line('SDKROOT = "macosx";')
             self.write_line('SYMROOT = "%s/build";' % self.environment.get_build_dir())
@@ -733,20 +733,22 @@ class XCodeBackend(backends.Backend):
                 else:
                     product_name = target.get_basename()
                 ldargs += target.link_args
+                for dep in target.get_external_deps():
+                    ldargs += dep.get_link_args()
                 ldstr = ' '.join(ldargs)
                 valid = self.buildconfmap[target_name][buildtype]
                 langargs = {}
-                for lang in self.environment.coredata.compilers:
+                for lang in self.environment.coredata.compilers[target.for_machine]:
                     if lang not in langnamemap:
                         continue
                     # Add compile args added using add_project_arguments()
-                    pargs = self.build.projects_args.get(target.subproject, {}).get(lang, [])
+                    pargs = self.build.projects_args[target.for_machine].get(target.subproject, {}).get(lang, [])
                     # Add compile args added using add_global_arguments()
                     # These override per-project arguments
-                    gargs = self.build.global_args.get(lang, [])
+                    gargs = self.build.global_args[target.for_machine].get(lang, [])
                     targs = target.get_extra_args(lang)
                     args = pargs + gargs + targs
-                    if len(args) > 0:
+                    if args:
                         langargs[langnamemap[lang]] = args
                 symroot = os.path.join(self.environment.get_build_dir(), target.subdir)
                 self.write_line('%s /* %s */ = {' % (valid, buildtype))
@@ -781,7 +783,7 @@ class XCodeBackend(backends.Backend):
                         self.write_line('GCC_PREFIX_HEADER = "$(PROJECT_DIR)/%s";' % relative_pch_path)
                 self.write_line('GCC_PREPROCESSOR_DEFINITIONS = "";')
                 self.write_line('GCC_SYMBOLS_PRIVATE_EXTERN = NO;')
-                if len(headerdirs) > 0:
+                if headerdirs:
                     quotedh = ','.join(['"\\"%s\\""' % i for i in headerdirs])
                     self.write_line('HEADER_SEARCH_PATHS=(%s);' % quotedh)
                 self.write_line('INSTALL_PATH = "%s";' % install_path)

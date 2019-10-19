@@ -16,6 +16,8 @@
 import sys, struct
 import shutil, subprocess
 
+from ..mesonlib import OrderedSet
+
 SHT_STRTAB = 3
 DT_NEEDED = 1
 DT_RPATH = 15
@@ -121,7 +123,7 @@ class Elf(DataSizes):
             self.parse_header()
             self.parse_sections()
             self.parse_dynamic()
-        except:
+        except (struct.error, RuntimeError):
             self.bf.close()
             raise
 
@@ -178,7 +180,7 @@ class Elf(DataSizes):
     def parse_sections(self):
         self.bf.seek(self.e_shoff)
         self.sections = []
-        for i in range(self.e_shnum):
+        for _ in range(self.e_shnum):
             self.sections.append(SectionHeader(self.bf, self.ptrsize, self.is_le))
 
     def read_str(self):
@@ -374,7 +376,26 @@ def fix_darwin(fname, new_rpath, final_path, install_name_mappings):
     try:
         args = []
         if rpaths:
-            for rp in rpaths:
+            # TODO: fix this properly, not totally clear how
+            #
+            # removing rpaths from binaries on macOS has tons of
+            # weird edge cases. For instance, if the user provided
+            # a '-Wl,-rpath' argument in LDFLAGS that happens to
+            # coincide with an rpath generated from a dependency,
+            # this would cause installation failures, as meson would
+            # generate install_name_tool calls with two identical
+            # '-delete_rpath' arguments, which install_name_tool
+            # fails on. Because meson itself ensures that it never
+            # adds duplicate rpaths, duplicate rpaths necessarily
+            # come from user variables. The idea of using OrderedSet
+            # is to remove *at most one* duplicate RPATH entry. This
+            # is not optimal, as it only respects the user's choice
+            # partially: if they provided a non-duplicate '-Wl,-rpath'
+            # argument, it gets removed, if they provided a duplicate
+            # one, it remains in the final binary. A potentially optimal
+            # solution would split all user '-Wl,-rpath' arguments from
+            # LDFLAGS, and later add them back with '-add_rpath'.
+            for rp in OrderedSet(rpaths):
                 args += ['-delete_rpath', rp]
             subprocess.check_call(['install_name_tool', fname] + args,
                                   stdout=subprocess.DEVNULL,
@@ -392,9 +413,8 @@ def fix_darwin(fname, new_rpath, final_path, install_name_mappings):
             subprocess.check_call(['install_name_tool', fname] + args,
                                   stdout=subprocess.DEVNULL,
                                   stderr=subprocess.DEVNULL)
-    except Exception as e:
-        raise
-        sys.exit(0)
+    except Exception as err:
+        raise SystemExit(err)
 
 def fix_jar(fname):
     subprocess.check_call(['jar', 'xfv', fname, 'META-INF/MANIFEST.MF'])
@@ -410,6 +430,9 @@ def fix_jar(fname):
 def fix_rpath(fname, new_rpath, final_path, install_name_mappings, verbose=True):
     # Static libraries never have rpaths
     if fname.endswith('.a'):
+        return
+    # DLLs never have rpaths
+    if fname.endswith('.dll'):
         return
     try:
         if fname.endswith('.jar'):

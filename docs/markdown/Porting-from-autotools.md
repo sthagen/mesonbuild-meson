@@ -450,9 +450,9 @@ AM_CPPFLAGS =                                                   \
 `meson.build`:
 
 ```meson
-add_global_arguments('-DG_LOG_DOMAIN="As"', language : 'c')
-add_global_arguments('-DAS_COMPILATION', language : 'c')
-add_global_arguments('-DLOCALSTATEDIR="/var"', language : 'c')
+add_project_arguments('-DG_LOG_DOMAIN="As"', language : 'c')
+add_project_arguments('-DAS_COMPILATION', language : 'c')
+add_project_arguments('-DLOCALSTATEDIR="/var"', language : 'c')
 ```
 
 ### Tests
@@ -608,7 +608,7 @@ gsettings_SCHEMAS = foo.gschema.xml
 
 `meson.build`:
 ```meson
-install_data('foo.gschema.xml', install_dir: join_paths(get_option('datadir'), 'glib-2.0', 'schemas'))
+install_data('foo.gschema.xml', install_dir: get_option('datadir') / 'glib-2.0' / 'schemas')
 meson.add_install_script('meson_post_install.py')
 ```
 
@@ -668,7 +668,7 @@ i18n.merge_file(
   type: 'desktop',
   po_dir: 'po',
   install: true,
-  install_dir: join_paths(get_option('datadir'), 'applications')
+  install_dir: get_option('datadir') / 'applications'
 )
 
 i18n.merge_file(
@@ -676,7 +676,7 @@ i18n.merge_file(
   output: 'foo.appdata.xml',
   po_dir: 'po',
   install: true,
-  install_dir: join_paths(get_option('datadir'), 'appdata')
+  install_dir: get_option('datadir') / 'appdata'
 )
 ```
 

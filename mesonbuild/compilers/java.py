@@ -12,21 +12,26 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import os.path, shutil, subprocess
+import os.path
+import shutil
+import subprocess
+import typing
 
-from ..mesonlib import EnvironmentException
-
+from ..mesonlib import EnvironmentException, MachineChoice
 from .compilers import Compiler, java_buildtype_args
+from .mixins.islinker import BasicLinkerIsCompilerMixin
 
-class JavaCompiler(Compiler):
-    def __init__(self, exelist, version):
+if typing.TYPE_CHECKING:
+    from ..envconfig import MachineInfo
+
+class JavaCompiler(BasicLinkerIsCompilerMixin, Compiler):
+    def __init__(self, exelist, version, for_machine: MachineChoice,
+                 info: 'MachineInfo'):
         self.language = 'java'
-        super().__init__(exelist, version)
+        super().__init__(exelist, version, for_machine, info)
         self.id = 'unknown'
+        self.is_cross = False
         self.javarunner = 'java'
-
-    def get_soname_args(self, *args):
-        return []
 
     def get_werror_args(self):
         return ['-Werror']
@@ -34,14 +39,8 @@ class JavaCompiler(Compiler):
     def split_shlib_to_parts(self, fname):
         return None, fname
 
-    def build_rpath_args(self, build_dir, from_dir, rpath_paths, build_rpath, install_rpath):
-        return []
-
     def get_dependency_gen_args(self, outtarget, outfile):
         return []
-
-    def get_linker_exelist(self):
-        return self.exelist[:]
 
     def get_compile_only_args(self):
         return []
@@ -51,13 +50,7 @@ class JavaCompiler(Compiler):
             subdir = './'
         return ['-d', subdir, '-s', subdir]
 
-    def get_linker_output_args(self, outputname):
-        return []
-
     def get_coverage_args(self):
-        return []
-
-    def get_coverage_link_args(self):
         return []
 
     def get_std_exe_link_args(self):
@@ -80,6 +73,15 @@ class JavaCompiler(Compiler):
 
     def get_buildtype_args(self, buildtype):
         return java_buildtype_args[buildtype]
+
+    def compute_parameters_with_absolute_paths(self, parameter_list, build_dir):
+        for idx, i in enumerate(parameter_list):
+            if i in ['-cp', '-classpath', '-sourcepath'] and idx + 1 < len(parameter_list):
+                path_list = parameter_list[idx + 1].split(os.pathsep)
+                path_list = [os.path.normpath(os.path.join(build_dir, x)) for x in path_list]
+                parameter_list[idx + 1] = os.pathsep.join(path_list)
+
+        return parameter_list
 
     def sanity_check(self, work_dir, environment):
         src = 'SanityCheck.java'

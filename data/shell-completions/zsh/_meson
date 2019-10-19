@@ -49,8 +49,7 @@ local -a meson_commands=(
 
 # TODO: implement build option completion
 (( $+functions[__meson_build_options] )) || __meson_build_options() {}
-# TODO: implement target name completion
-(( $+functions[__meson_targets] )) || __meson_targets() {}
+
 # `meson introspect` currently can provide that information in JSON.
 # We can:
 # 1) pipe its output to python3 -m json.tool | grep "$alovelyregex" | cut <...>
@@ -170,7 +169,6 @@ local -a meson_commands=(
   local -a specs=(
   '--targets[list top level targets]'
   '--installed[list all installed files and directories]'
-  '--target-files[list source files for a given target]:target:__meson_targets'
   '--buildsystem-files[list files that belong to the build system]'
   '--buildoptions[list all build options]'
   '--tests[list all unit tests]'

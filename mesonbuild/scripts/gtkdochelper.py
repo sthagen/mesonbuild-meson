@@ -14,10 +14,9 @@
 
 import sys, os
 import subprocess
-import shlex
 import shutil
 import argparse
-from ..mesonlib import MesonException, Popen_safe, is_windows
+from ..mesonlib import MesonException, Popen_safe, is_windows, split_args
 from . import destdir_join
 
 parser = argparse.ArgumentParser()
@@ -47,6 +46,9 @@ parser.add_argument('--namespace', dest='namespace', default='')
 parser.add_argument('--mode', dest='mode', default='')
 parser.add_argument('--installdir', dest='install_dir')
 parser.add_argument('--run', dest='run', default='')
+for tool in ['scan', 'scangobj', 'mkdb', 'mkhtml', 'fixxref']:
+    program_name = 'gtkdoc-' + tool
+    parser.add_argument('--' + program_name, dest=program_name.replace('-', '_'))
 
 def gtkdoc_run_check(cmd, cwd, library_paths=None):
     if library_paths is None:
@@ -78,7 +80,7 @@ def build_gtkdoc(source_root, build_root, doc_subdir, src_subdirs,
                  html_args, scan_args, fixxref_args, mkdb_args,
                  gobject_typesfile, scanobjs_args, run, ld, cc, ldflags, cflags,
                  html_assets, content_files, ignore_headers, namespace,
-                 expand_content_files, mode):
+                 expand_content_files, mode, options):
     print("Building documentation for %s" % module)
 
     src_dir_args = []
@@ -122,7 +124,7 @@ def build_gtkdoc(source_root, build_root, doc_subdir, src_subdirs,
         f_abs = os.path.join(doc_src, f)
         shutil.copyfile(f_abs, os.path.join(htmldir, os.path.basename(f_abs)))
 
-    scan_cmd = ['gtkdoc-scan', '--module=' + module] + src_dir_args
+    scan_cmd = [options.gtkdoc_scan, '--module=' + module] + src_dir_args
     if ignore_headers:
         scan_cmd.append('--ignore-headers=' + ' '.join(ignore_headers))
     # Add user-specified arguments
@@ -135,17 +137,18 @@ def build_gtkdoc(source_root, build_root, doc_subdir, src_subdirs,
         gobject_typesfile = os.path.join(abs_out, module + '.types')
 
     if gobject_typesfile:
-        scanobjs_cmd = ['gtkdoc-scangobj'] + scanobjs_args + ['--types=' + gobject_typesfile,
-                                                              '--module=' + module,
-                                                              '--run=' + run,
-                                                              '--cflags=' + cflags,
-                                                              '--ldflags=' + ldflags,
-                                                              '--cc=' + cc,
-                                                              '--ld=' + ld,
-                                                              '--output-dir=' + abs_out]
+        scanobjs_cmd = [options.gtkdoc_scangobj] + scanobjs_args
+        scanobjs_cmd += ['--types=' + gobject_typesfile,
+                         '--module=' + module,
+                         '--run=' + run,
+                         '--cflags=' + cflags,
+                         '--ldflags=' + ldflags,
+                         '--cc=' + cc,
+                         '--ld=' + ld,
+                         '--output-dir=' + abs_out]
 
         library_paths = []
-        for ldflag in shlex.split(ldflags):
+        for ldflag in split_args(ldflags):
             if ldflag.startswith('-Wl,-rpath,'):
                 library_paths.append(ldflag[11:])
 
@@ -166,7 +169,7 @@ def build_gtkdoc(source_root, build_root, doc_subdir, src_subdirs,
     else: # none
         modeflag = None
 
-    mkdb_cmd = ['gtkdoc-mkdb',
+    mkdb_cmd = [options.gtkdoc_mkdb,
                 '--module=' + module,
                 '--output-format=xml',
                 '--expand-content-files=' + ' '.join(expand_content_files),
@@ -175,7 +178,7 @@ def build_gtkdoc(source_root, build_root, doc_subdir, src_subdirs,
         mkdb_cmd.append('--name-space=' + namespace)
     if modeflag:
         mkdb_cmd.append(modeflag)
-    if len(main_file) > 0:
+    if main_file:
         # Yes, this is the flag even if the file is in xml.
         mkdb_cmd.append('--main-sgml-file=' + main_file)
     # Add user-specified arguments
@@ -183,11 +186,11 @@ def build_gtkdoc(source_root, build_root, doc_subdir, src_subdirs,
     gtkdoc_run_check(mkdb_cmd, abs_out)
 
     # Make HTML documentation
-    mkhtml_cmd = ['gtkdoc-mkhtml',
+    mkhtml_cmd = [options.gtkdoc_mkhtml,
                   '--path=' + ':'.join((doc_src, abs_out)),
                   module,
                   ] + html_args
-    if len(main_file) > 0:
+    if main_file:
         mkhtml_cmd.append('../' + main_file)
     else:
         mkhtml_cmd.append('%s-docs.xml' % module)
@@ -195,7 +198,7 @@ def build_gtkdoc(source_root, build_root, doc_subdir, src_subdirs,
     gtkdoc_run_check(mkhtml_cmd, htmldir)
 
     # Fix cross-references in HTML files
-    fixref_cmd = ['gtkdoc-fixxref',
+    fixref_cmd = [options.gtkdoc_fixxref,
                   '--module=' + module,
                   '--module-dir=html'] + fixxref_args
     gtkdoc_run_check(fixref_cmd, abs_out)
@@ -212,23 +215,23 @@ def install_gtkdoc(build_root, doc_subdir, install_prefix, datadir, module):
 
 def run(args):
     options = parser.parse_args(args)
-    if len(options.htmlargs) > 0:
+    if options.htmlargs:
         htmlargs = options.htmlargs.split('@@')
     else:
         htmlargs = []
-    if len(options.scanargs) > 0:
+    if options.scanargs:
         scanargs = options.scanargs.split('@@')
     else:
         scanargs = []
-    if len(options.scanobjsargs) > 0:
+    if options.scanobjsargs:
         scanobjsargs = options.scanobjsargs.split('@@')
     else:
         scanobjsargs = []
-    if len(options.fixxrefargs) > 0:
+    if options.fixxrefargs:
         fixxrefargs = options.fixxrefargs.split('@@')
     else:
         fixxrefargs = []
-    if len(options.mkdbargs) > 0:
+    if options.mkdbargs:
         mkdbargs = options.mkdbargs.split('@@')
     else:
         mkdbargs = []
@@ -256,7 +259,8 @@ def run(args):
         options.ignore_headers.split('@@') if options.ignore_headers else [],
         options.namespace,
         options.expand_content_files.split('@@') if options.expand_content_files else [],
-        options.mode)
+        options.mode,
+        options)
 
     if 'MESON_INSTALL_PREFIX' in os.environ:
         destdir = os.environ.get('DESTDIR', '')

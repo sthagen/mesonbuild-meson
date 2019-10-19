@@ -17,10 +17,12 @@ option('someoption', type : 'string', value : 'optval', description : 'An option
 option('other_one', type : 'boolean', value : false)
 option('combo_opt', type : 'combo', choices : ['one', 'two', 'three'], value : 'three')
 option('integer_opt', type : 'integer', min : 0, max : 5, value : 3) # Since 0.45.0
-option('free_array_opt', type : 'array', value : ['one', 'two'])
+option('free_array_opt', type : 'array', value : ['one', 'two'])  # Since 0.44.0
 option('array_opt', type : 'array', choices : ['one', 'two', 'three'], value : ['one', 'two'])
-option('some_feature', type : 'feature', value : 'enabled')
+option('some_feature', type : 'feature', value : 'enabled')  # Since 0.47.0
 ```
+
+For built-in options, see [Built-in options][builtin_opts].
 
 ## Build option types
 
@@ -180,8 +182,10 @@ option.
 
 ## Built-in build options
 
-There are a number of built-in options. To get the current list execute `meson
+There are a number of [built-in options][builtin_opts]. To get the current list execute `meson
 configure` in the build directory.
+
+[builtin_opts]: https://mesonbuild.com/Builtin-options.html
 
 ### Visual Studio
 

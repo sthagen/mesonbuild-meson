@@ -13,10 +13,14 @@
 # limitations under the License.
 
 import subprocess, os.path
+import typing
 
-from ..mesonlib import EnvironmentException
+from ..mesonlib import EnvironmentException, MachineChoice
 
 from .compilers import Compiler, swift_buildtype_args, clike_debug_args
+
+if typing.TYPE_CHECKING:
+    from ..envconfig import MachineInfo
 
 swift_optimization_args = {'0': [],
                            'g': [],
@@ -27,15 +31,16 @@ swift_optimization_args = {'0': [],
                            }
 
 class SwiftCompiler(Compiler):
-    def __init__(self, exelist, version):
+
+    LINKER_PREFIX = ['-Xlinker']
+
+    def __init__(self, exelist, version, for_machine: MachineChoice,
+                 is_cross, info: 'MachineInfo', **kwargs):
         self.language = 'swift'
-        super().__init__(exelist, version)
+        super().__init__(exelist, version, for_machine, info, **kwargs)
         self.version = version
         self.id = 'llvm'
-        self.is_cross = False
-
-    def get_linker_exelist(self):
-        return self.exelist[:]
+        self.is_cross = is_cross
 
     def name_string(self):
         return ' '.join(self.exelist)
@@ -58,9 +63,6 @@ class SwiftCompiler(Compiler):
     def get_output_args(self, target):
         return ['-o', target]
 
-    def get_linker_output_args(self, target):
-        return ['-o', target]
-
     def get_header_import_args(self, headername):
         return ['-import-objc-header', headername]
 
@@ -69,9 +71,6 @@ class SwiftCompiler(Compiler):
 
     def get_buildtype_args(self, buildtype):
         return swift_buildtype_args[buildtype]
-
-    def get_buildtype_linker_args(self, buildtype):
-        return []
 
     def get_std_exe_link_args(self):
         return ['-emit-executable']
@@ -82,27 +81,38 @@ class SwiftCompiler(Compiler):
     def get_mod_gen_args(self):
         return ['-emit-module']
 
-    def build_rpath_args(self, *args):
-        return [] # FIXME
-
     def get_include_args(self, dirname):
         return ['-I' + dirname]
 
     def get_compile_only_args(self):
         return ['-c']
 
+    def compute_parameters_with_absolute_paths(self, parameter_list, build_dir):
+        for idx, i in enumerate(parameter_list):
+            if i[:2] == '-I' or i[:2] == '-L':
+                parameter_list[idx] = i[:2] + os.path.normpath(os.path.join(build_dir, i[2:]))
+
+        return parameter_list
+
     def sanity_check(self, work_dir, environment):
         src = 'swifttest.swift'
         source_name = os.path.join(work_dir, src)
         output_name = os.path.join(work_dir, 'swifttest')
+        extra_flags = environment.coredata.get_external_args(self.for_machine, self.language)
+        if self.is_cross:
+            extra_flags += self.get_compile_only_args()
+        else:
+            extra_flags += environment.coredata.get_external_link_args(self.for_machine, self.language)
         with open(source_name, 'w') as ofile:
             ofile.write('''print("Swift compilation is working.")
 ''')
-        extra_flags = self.get_cross_extra_flags(environment, link=True)
         pc = subprocess.Popen(self.exelist + extra_flags + ['-emit-executable', '-o', output_name, src], cwd=work_dir)
         pc.wait()
         if pc.returncode != 0:
             raise EnvironmentException('Swift compiler %s can not compile programs.' % self.name_string())
+        if self.is_cross:
+            # Can't check if the binaries run so we have to assume they do
+            return
         if subprocess.call(output_name) != 0:
             raise EnvironmentException('Executables created by Swift compiler %s are not runnable.' % self.name_string())
 

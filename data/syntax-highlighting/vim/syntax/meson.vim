@@ -1,5 +1,6 @@
 " Vim syntax file
 " Language:	Meson
+" License:	VIM License
 " Maintainer:	Nirbheek Chauhan <nirbheek.chauhan@gmail.com>
 " Last Change:	2016 Dec 7
 " Credits:	Zvezdan Petkovic <zpetkovic@acm.org>
@@ -69,6 +70,7 @@ syn keyword mesonBuiltin
   \ add_project_arguments
   \ add_project_link_arguments
   \ add_test_setup
+  \ alias_target
   \ assert
   \ benchmark
   \ both_libraries
@@ -97,6 +99,7 @@ syn keyword mesonBuiltin
   \ install_headers
   \ install_man
   \ install_subdir
+  \ is_disabler
   \ is_variable
   \ jar
   \ join_paths

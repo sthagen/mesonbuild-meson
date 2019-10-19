@@ -16,6 +16,21 @@ output = r.stdout().strip()
 errortxt = r.stderr().strip()
 ```
 
+Since 0.52.0, you can pass the command environment as a dictionary:
+
+```meson
+run_command('command', 'arg1', 'arg2', env: {'FOO': 'bar'})
+```
+
+Since 0.50.0, you can also pass the command
+[`environment`](Reference-manual.html#environment-object) object:
+
+```meson
+env = environment()
+env.set('FOO', 'bar')
+run_command('command', 'arg1', 'arg2', env: env)
+```
+
 The `run_command` function returns an object that can be queried for
 return value and text written to stdout and stderr. The `strip` method
 call is used to strip trailing and leading whitespace from

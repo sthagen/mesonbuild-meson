@@ -29,6 +29,7 @@ argument which is the name of the gettext module.
   [source](https://github.com/mesonbuild/meson/blob/master/mesonbuild/modules/i18n.py)
   for for their value
 * `install`: (*Added 0.43.0*) if false, do not install the built translations.
+* `install_dir`: (*Added 0.50.0*) override default install location, default is `localedir`
 
 This function also defines targets for maintainers to use:
 **Note**: These output to the source directory
@@ -47,5 +48,6 @@ for normal keywords. In addition it accepts these keywords:
   also `i18n.gettext()`)
 * `po_dir`: directory containing translations, relative to current directory
 * `type`: type of file, valid options are `'xml'` (default) and `'desktop'`
+* `args`: (*Added 0.51.0*) list of extra arguments to pass to `msgfmt`
 
 *Added 0.37.0*

@@ -9,8 +9,8 @@ $ProgressPreference = "SilentlyContinue"
 $dmd_install = "C:\D"
 $dmd_version_file = "C:\cache\DMD_LATEST"
 
-#echo "Fetching latest DMD version..."
 if (!$Version) {
+    #echo "Fetching latest DMD version..."
     $dmd_latest_url = "http://downloads.dlang.org/releases/LATEST"
     $retries = 10
     for ($i = 1; $i -le $retries; $i++) {
@@ -68,4 +68,4 @@ $dmd_bin = Join-Path $dmd_install "dmd2\windows\bin"
 $Env:Path = $Env:Path + ";" + $dmd_bin
 
 #echo "Testing DMD..."
-& dmd.exe --version 2>&1>$null
+& dmd.exe --version

@@ -1,5 +1,5 @@
 <p align="center">
-<img src="http://mesonbuild.com/assets/images/meson_logo.png">
+<img src="https://mesonbuild.com/assets/images/meson_logo.png">
 </p>
 Meson® is a project to create the best possible next-generation
 build system.
@@ -8,14 +8,14 @@ build system.
 
 [![PyPI](https://img.shields.io/pypi/v/meson.svg)](https://pypi.python.org/pypi/meson)
 [![Travis](https://travis-ci.org/mesonbuild/meson.svg?branch=master)](https://travis-ci.org/mesonbuild/meson)
-[![Appveyor](https://ci.appveyor.com/api/projects/status/7jfaotriu8d8ncov?svg=true)](https://ci.appveyor.com/project/mesonbuild/meson)
+[![Build Status](https://dev.azure.com/jussi0947/jussi/_apis/build/status/mesonbuild.meson)](https://dev.azure.com/jussi0947/jussi/_build/latest?definitionId=1)
 [![Codecov](https://codecov.io/gh/mesonbuild/meson/coverage.svg?branch=master)](https://codecov.io/gh/mesonbuild/meson/branch/master)
 [![Code Quality: Python](https://img.shields.io/lgtm/grade/python/g/mesonbuild/meson.svg?logo=lgtm&logoWidth=18)](https://lgtm.com/projects/g/mesonbuild/meson/context:python)
 [![Total Alerts](https://img.shields.io/lgtm/alerts/g/mesonbuild/meson.svg?logo=lgtm&logoWidth=18)](https://lgtm.com/projects/g/mesonbuild/meson/alerts)
 
 #### Dependencies
 
- - [Python](http://python.org) (version 3.5 or newer)
+ - [Python](https://python.org) (version 3.5 or newer)
  - [Ninja](https://ninja-build.org) (version 1.5 or newer)
 
 #### Installing from source
@@ -29,14 +29,15 @@ Meson is also available from
 [PyPi](https://pypi.python.org/pypi/meson), so it can be installed
 with `pip3 install meson` (this does not require a source checkout,
 pip will download the package automatically). The exact command to
-type to install with pip can vary between systems, be sure to use the
-Python 3 version of pip.
+type to install with Pip can vary between systems, be sure to use the
+Python 3 version of Pip.
 
 #### Running
 
 Meson requires that you have a source directory and a build directory
-and that these two are different. In your source root must exist a file
-called 'meson.build'. To generate the build system run this command:
+and that these two are different. In your source root must exist a
+file called `meson.build`. To generate the build system run this
+command:
 
 `meson <source directory> <build directory>`
 
@@ -67,7 +68,8 @@ you may need to run this command with sudo.
 
 #### Contributing
 
-We love code contributions. See the [contributing.md](contributing.md) file for
+We love code contributions. See the [contribution
+page](https://mesonbuild.com/Contributing.html) on the web site for
 details.
 
 
@@ -75,13 +77,14 @@ details.
 
 The irc channel for Meson is `#mesonbuild` over at Freenode.
 
-You can use [FreeNode's official webchat](https://webchat.freenode.net/#mesonbuild) 
+You can use [FreeNode's official webchat][meson_irc]
 to connect to this channel.
 
+[meson_irc]: https://webchat.freenode.net/?channels=%23mesonbuild
 
 #### Further info
 
 More information about the Meson build system can be found at the
-[project's home page](http://mesonbuild.com).
+[project's home page](https://mesonbuild.com).
 
 Meson is a registered trademark of Jussi Pakkanen.

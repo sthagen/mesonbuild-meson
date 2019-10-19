@@ -63,15 +63,14 @@ class CommandTests(unittest.TestCase):
 
     def _run(self, command, workdir=None):
         '''
-        Run a command while printing the stdout and stderr to stdout,
-        and also return a copy of it
+        Run a command while printing the stdout, and also return a copy of it
         '''
         # If this call hangs CI will just abort. It is very hard to distinguish
         # between CI issue and test bug in that case. Set timeout and fail loud
         # instead.
         p = subprocess.run(command, stdout=subprocess.PIPE,
-                           stderr=subprocess.STDOUT, env=os.environ.copy(),
-                           universal_newlines=True, cwd=workdir, timeout=60 * 5)
+                           env=os.environ.copy(), universal_newlines=True,
+                           cwd=workdir, timeout=60 * 5)
         print(p.stdout)
         if p.returncode != 0:
             raise subprocess.CalledProcessError(p.returncode, command)
@@ -124,7 +123,9 @@ class CommandTests(unittest.TestCase):
         pylibdir = prefix / get_pypath()
         bindir = prefix / get_pybindir()
         pylibdir.mkdir(parents=True)
-        os.environ['PYTHONPATH'] = str(pylibdir)
+        # XXX: join with empty name so it always ends with os.sep otherwise
+        # distutils complains that prefix isn't contained in PYTHONPATH
+        os.environ['PYTHONPATH'] = os.path.join(str(pylibdir), '')
         os.environ['PATH'] = str(bindir) + os.pathsep + os.environ['PATH']
         self._run(python_command + ['setup.py', 'install', '--prefix', str(prefix)])
         # Check that all the files were installed correctly
@@ -140,6 +141,8 @@ class CommandTests(unittest.TestCase):
         for p in Path(pylibdir).glob('**/*.py'):
             s = p.as_posix()
             if 'mesonbuild' not in s:
+                continue
+            if '/data/' in s:
                 continue
             have.add(s[s.rfind('mesonbuild'):])
         self.assertEqual(have, expect)

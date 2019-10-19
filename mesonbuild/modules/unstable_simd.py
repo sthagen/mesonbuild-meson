@@ -65,8 +65,8 @@ class SimdModule(ExtensionModule):
             if args is None:
                 mlog.log('Compiler supports %s:' % iset, mlog.red('NO'))
                 continue
-            if len(args) > 0:
-                if not compiler.has_multi_arguments(args, state.environment):
+            if args:
+                if not compiler.has_multi_arguments(args, state.environment)[0]:
                     mlog.log('Compiler supports %s:' % iset, mlog.red('NO'))
                     continue
             mlog.log('Compiler supports %s:' % iset, mlog.green('YES'))

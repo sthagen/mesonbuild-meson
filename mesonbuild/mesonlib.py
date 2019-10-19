@@ -13,14 +13,21 @@
 # limitations under the License.
 
 """A library of random helper functionality."""
-
-import functools
+from pathlib import Path
 import sys
 import stat
 import time
-import platform, subprocess, operator, os, shutil, re
+import platform, subprocess, operator, os, shlex, shutil, re
 import collections
+from enum import Enum
+from functools import lru_cache, update_wrapper
+import typing
+import uuid
+
 from mesonbuild import mlog
+
+_T = typing.TypeVar('_T')
+_U = typing.TypeVar('_U')
 
 have_fcntl = False
 have_msvcrt = False
@@ -65,11 +72,11 @@ def set_meson_command(mainfile):
     if 'MESON_COMMAND_TESTS' in os.environ:
         mlog.log('meson_command is {!r}'.format(meson_command))
 
-def is_ascii_string(astring):
+def is_ascii_string(astring) -> bool:
     try:
         if isinstance(astring, str):
             astring.encode('ascii')
-        if isinstance(astring, bytes):
+        elif isinstance(astring, bytes):
             astring.decode('ascii')
     except UnicodeDecodeError:
         return False
@@ -203,17 +210,17 @@ class FileMode:
         return perms
 
 class File:
-    def __init__(self, is_built, subdir, fname):
+    def __init__(self, is_built: bool, subdir: str, fname: str):
         self.is_built = is_built
         self.subdir = subdir
         self.fname = fname
         assert(isinstance(self.subdir, str))
         assert(isinstance(self.fname, str))
 
-    def __str__(self):
+    def __str__(self) -> str:
         return self.relative_name()
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         ret = '<File: {0}'
         if not self.is_built:
             ret += ' (not built)'
@@ -221,45 +228,50 @@ class File:
         return ret.format(self.relative_name())
 
     @staticmethod
-    def from_source_file(source_root, subdir, fname):
+    @lru_cache(maxsize=None)
+    def from_source_file(source_root: str, subdir: str, fname: str):
         if not os.path.isfile(os.path.join(source_root, subdir, fname)):
             raise MesonException('File %s does not exist.' % fname)
         return File(False, subdir, fname)
 
     @staticmethod
-    def from_built_file(subdir, fname):
+    def from_built_file(subdir: str, fname: str):
         return File(True, subdir, fname)
 
     @staticmethod
-    def from_absolute_file(fname):
+    def from_absolute_file(fname: str):
         return File(False, '', fname)
 
-    def rel_to_builddir(self, build_to_src):
+    @lru_cache(maxsize=None)
+    def rel_to_builddir(self, build_to_src: str) -> str:
         if self.is_built:
             return self.relative_name()
         else:
             return os.path.join(build_to_src, self.subdir, self.fname)
 
-    def absolute_path(self, srcdir, builddir):
+    @lru_cache(maxsize=None)
+    def absolute_path(self, srcdir: str, builddir: str) -> str:
         absdir = srcdir
         if self.is_built:
             absdir = builddir
         return os.path.join(absdir, self.relative_name())
 
-    def endswith(self, ending):
+    def endswith(self, ending: str) -> bool:
         return self.fname.endswith(ending)
 
-    def split(self, s):
+    def split(self, s: str) -> typing.List[str]:
         return self.fname.split(s)
 
-    def __eq__(self, other):
+    def __eq__(self, other) -> bool:
         return (self.fname, self.subdir, self.is_built) == (other.fname, other.subdir, other.is_built)
 
-    def __hash__(self):
+    def __hash__(self) -> int:
         return hash((self.fname, self.subdir, self.is_built))
 
-    def relative_name(self):
+    @lru_cache(maxsize=None)
+    def relative_name(self) -> str:
         return os.path.join(self.subdir, self.fname)
+
 
 def get_compiler_for_source(compilers, src):
     for comp in compilers:
@@ -277,119 +289,210 @@ def classify_unity_sources(compilers, sources):
             compsrclist[comp].append(src)
     return compsrclist
 
-def is_osx():
+class OrderedEnum(Enum):
+    """
+    An Enum which additionally offers homogeneous ordered comparison.
+    """
+    def __ge__(self, other):
+        if self.__class__ is other.__class__:
+            return self.value >= other.value
+        return NotImplemented
+
+    def __gt__(self, other):
+        if self.__class__ is other.__class__:
+            return self.value > other.value
+        return NotImplemented
+
+    def __le__(self, other):
+        if self.__class__ is other.__class__:
+            return self.value <= other.value
+        return NotImplemented
+
+    def __lt__(self, other):
+        if self.__class__ is other.__class__:
+            return self.value < other.value
+        return NotImplemented
+
+
+class MachineChoice(OrderedEnum):
+
+    """Enum class representing one of the two abstract machine names used in
+    most places: the build, and host, machines.
+    """
+
+    BUILD = 0
+    HOST = 1
+
+    def get_lower_case_name(self):
+        return PerMachine('build', 'host')[self]
+
+    def get_prefix(self):
+        return PerMachine('build.', '')[self]
+
+
+class PerMachine(typing.Generic[_T]):
+    def __init__(self, build: _T, host: _T):
+        self.build = build
+        self.host = host
+
+    def __getitem__(self, machine: MachineChoice) -> _T:
+        return {
+            MachineChoice.BUILD:  self.build,
+            MachineChoice.HOST:   self.host,
+        }[machine]
+
+    def __setitem__(self, machine: MachineChoice, val: _T) -> None:
+        setattr(self, machine.get_lower_case_name(), val)
+
+    def miss_defaulting(self) -> "PerMachineDefaultable[typing.Optional[_T]]":
+        """Unset definition duplicated from their previous to None
+
+        This is the inverse of ''default_missing''. By removing defaulted
+        machines, we can elaborate the original and then redefault them and thus
+        avoid repeating the elaboration explicitly.
+        """
+        unfreeze = PerMachineDefaultable() # type: PerMachineDefaultable[typing.Optional[_T]]
+        unfreeze.build = self.build
+        unfreeze.host = self.host
+        if unfreeze.host == unfreeze.build:
+            unfreeze.host = None
+        return unfreeze
+
+
+class PerThreeMachine(PerMachine[_T]):
+    """Like `PerMachine` but includes `target` too.
+
+    It turns out just one thing do we need track the target machine. There's no
+    need to computer the `target` field so we don't bother overriding the
+    `__getitem__`/`__setitem__` methods.
+    """
+    def __init__(self, build: _T, host: _T, target: _T):
+        super().__init__(build, host)
+        self.target = target
+
+    def miss_defaulting(self) -> "PerThreeMachineDefaultable[typing.Optional[_T]]":
+        """Unset definition duplicated from their previous to None
+
+        This is the inverse of ''default_missing''. By removing defaulted
+        machines, we can elaborate the original and then redefault them and thus
+        avoid repeating the elaboration explicitly.
+        """
+        unfreeze = PerThreeMachineDefaultable() # type: PerThreeMachineDefaultable[typing.Optional[_T]]
+        unfreeze.build = self.build
+        unfreeze.host = self.host
+        unfreeze.target = self.target
+        if unfreeze.target == unfreeze.host:
+            unfreeze.target = None
+        if unfreeze.host == unfreeze.build:
+            unfreeze.host = None
+        return unfreeze
+
+    def matches_build_machine(self, machine: MachineChoice) -> bool:
+        return self.build == self[machine]
+
+class PerMachineDefaultable(PerMachine[typing.Optional[_T]]):
+    """Extends `PerMachine` with the ability to default from `None`s.
+    """
+    def __init__(self) -> None:
+        super().__init__(None, None)
+
+    def default_missing(self) -> "PerMachine[typing.Optional[_T]]":
+        """Default host to buid
+
+        This allows just specifying nothing in the native case, and just host in the
+        cross non-compiler case.
+        """
+        freeze = PerMachine(self.build, self.host)
+        if freeze.host is None:
+            freeze.host = freeze.build
+        return freeze
+
+
+class PerThreeMachineDefaultable(PerMachineDefaultable, PerThreeMachine[typing.Optional[_T]]):
+    """Extends `PerThreeMachine` with the ability to default from `None`s.
+    """
+    def __init__(self) -> None:
+        PerThreeMachine.__init__(self, None, None, None)
+
+    def default_missing(self) -> "PerThreeMachine[typing.Optional[_T]]":
+        """Default host to buid and target to host.
+
+        This allows just specifying nothing in the native case, just host in the
+        cross non-compiler case, and just target in the native-built
+        cross-compiler case.
+        """
+        freeze = PerThreeMachine(self.build, self.host, self.target)
+        if freeze.host is None:
+            freeze.host = freeze.build
+        if freeze.target is None:
+            freeze.target = freeze.host
+        return freeze
+
+
+def is_sunos() -> bool:
+    return platform.system().lower() == 'sunos'
+
+def is_osx() -> bool:
     return platform.system().lower() == 'darwin'
 
-def is_linux():
+def is_linux() -> bool:
     return platform.system().lower() == 'linux'
 
-def is_android():
+def is_android() -> bool:
     return platform.system().lower() == 'android'
 
-def is_haiku():
+def is_haiku() -> bool:
     return platform.system().lower() == 'haiku'
 
-def is_openbsd():
+def is_openbsd() -> bool:
     return platform.system().lower() == 'openbsd'
 
-def is_windows():
+def is_windows() -> bool:
     platname = platform.system().lower()
     return platname == 'windows' or 'mingw' in platname
 
-def is_cygwin():
-    platname = platform.system().lower()
-    return platname.startswith('cygwin')
+def is_cygwin() -> bool:
+    return platform.system().lower().startswith('cygwin')
 
-def is_debianlike():
+def is_debianlike() -> bool:
     return os.path.isfile('/etc/debian_version')
 
-def is_dragonflybsd():
+def is_dragonflybsd() -> bool:
     return platform.system().lower() == 'dragonfly'
 
-def is_freebsd():
+def is_netbsd() -> bool:
+    return platform.system().lower() == 'netbsd'
+
+def is_freebsd() -> bool:
     return platform.system().lower() == 'freebsd'
 
-def for_windows(is_cross, env):
-    """
-    Host machine is windows?
-
-    Note: 'host' is the machine on which compiled binaries will run
-    """
-    if not is_cross:
-        return is_windows()
-    return env.cross_info.get_host_system() == 'windows'
-
-def for_cygwin(is_cross, env):
-    """
-    Host machine is cygwin?
-
-    Note: 'host' is the machine on which compiled binaries will run
-    """
-    if not is_cross:
-        return is_cygwin()
-    return env.cross_info.get_host_system() == 'cygwin'
-
-def for_linux(is_cross, env):
-    """
-    Host machine is linux?
-
-    Note: 'host' is the machine on which compiled binaries will run
-    """
-    if not is_cross:
-        return is_linux()
-    return env.cross_info.get_host_system() == 'linux'
-
-def for_darwin(is_cross, env):
-    """
-    Host machine is Darwin (iOS/OS X)?
-
-    Note: 'host' is the machine on which compiled binaries will run
-    """
-    if not is_cross:
-        return is_osx()
-    return env.cross_info.get_host_system() in ('darwin', 'ios')
-
-def for_android(is_cross, env):
-    """
-    Host machine is Android?
-
-    Note: 'host' is the machine on which compiled binaries will run
-    """
-    if not is_cross:
-        return is_android()
-    return env.cross_info.get_host_system() == 'android'
-
-def for_haiku(is_cross, env):
-    """
-    Host machine is Haiku?
-
-    Note: 'host' is the machine on which compiled binaries will run
-    """
-    if not is_cross:
-        return is_haiku()
-    return env.cross_info.get_host_system() == 'haiku'
-
-def for_openbsd(is_cross, env):
-    """
-    Host machine is OpenBSD?
-
-    Note: 'host' is the machine on which compiled binaries will run
-    """
-    if not is_cross:
-        return is_openbsd()
-    elif env.cross_info.has_host():
-        return env.cross_info.config['host_machine']['system'] == 'openbsd'
-    return False
-
-def exe_exists(arglist):
+def exe_exists(arglist: typing.List[str]) -> bool:
     try:
-        p = subprocess.Popen(arglist, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        p.communicate()
-        if p.returncode == 0:
+        if subprocess.run(arglist, timeout=10).returncode == 0:
             return True
-    except FileNotFoundError:
+    except (FileNotFoundError, subprocess.TimeoutExpired):
         pass
     return False
+
+@lru_cache(maxsize=None)
+def darwin_get_object_archs(objpath):
+    '''
+    For a specific object (executable, static library, dylib, etc), run `lipo`
+    to fetch the list of archs supported by it. Supports both thin objects and
+    'fat' objects.
+    '''
+    _, stdo, stderr = Popen_safe(['lipo', '-info', objpath])
+    if not stdo:
+        mlog.debug('lipo {}: {}'.format(objpath, stderr))
+        return None
+    stdo = stdo.rsplit(': ', 1)[1]
+    # Convert from lipo-style archs to meson-style CPUs
+    stdo = stdo.replace('i386', 'x86')
+    stdo = stdo.replace('arm64', 'aarch64')
+    # Add generic name for armv7 and armv7s
+    if 'armv7' in stdo:
+        stdo += ' arm'
+    return stdo.split()
 
 def detect_vcs(source_dir):
     vcs_systems = [
@@ -398,7 +501,7 @@ def detect_vcs(source_dir):
         dict(name = 'subversion', cmd = 'svn', repo_dir = '.svn', get_rev = 'svn info',               rev_regex = 'Revision: (.*)', dep = '.svn/wc.db'),
         dict(name = 'bazaar',     cmd = 'bzr', repo_dir = '.bzr', get_rev = 'bzr revno',              rev_regex = '(.*)', dep = '.bzr'),
     ]
-
+    # FIXME: this is much cleaner with pathlib.Path
     segs = source_dir.replace('\\', '/').split('/')
     for i in range(len(segs), -1, -1):
         curdir = '/'.join(segs[:i])
@@ -409,7 +512,6 @@ def detect_vcs(source_dir):
     return None
 
 # a helper class which implements the same version ordering as RPM
-@functools.total_ordering
 class Version:
     def __init__(self, s):
         self._s = s
@@ -418,49 +520,64 @@ class Version:
         sequences = re.finditer(r'(\d+|[a-zA-Z]+|[^a-zA-Z\d]+)', s)
         # non-alphanumeric separators are discarded
         sequences = [m for m in sequences if not re.match(r'[^a-zA-Z\d]+', m.group(1))]
-        # numeric sequences have leading zeroes discarded
-        sequences = [re.sub(r'^0+(\d)', r'\1', m.group(1), 1) for m in sequences]
+        # numeric sequences are converted from strings to ints
+        sequences = [int(m.group(1)) if m.group(1).isdigit() else m.group(1) for m in sequences]
 
         self._v = sequences
 
     def __str__(self):
         return '%s (V=%s)' % (self._s, str(self._v))
 
+    def __repr__(self):
+        return '<Version: {}>'.format(self._s)
+
     def __lt__(self, other):
-        return self.__cmp__(other) == -1
+        if isinstance(other, Version):
+            return self.__cmp(other, operator.lt)
+        return NotImplemented
+
+    def __gt__(self, other):
+        if isinstance(other, Version):
+            return self.__cmp(other, operator.gt)
+        return NotImplemented
+
+    def __le__(self, other):
+        if isinstance(other, Version):
+            return self.__cmp(other, operator.le)
+        return NotImplemented
+
+    def __ge__(self, other):
+        if isinstance(other, Version):
+            return self.__cmp(other, operator.ge)
+        return NotImplemented
 
     def __eq__(self, other):
-        return self.__cmp__(other) == 0
+        if isinstance(other, Version):
+            return self._v == other._v
+        return NotImplemented
 
-    def __cmp__(self, other):
-        def cmp(a, b):
-            return (a > b) - (a < b)
+    def __ne__(self, other):
+        if isinstance(other, Version):
+            return self._v != other._v
+        return NotImplemented
 
+    def __cmp(self, other, comparator):
         # compare each sequence in order
-        for i in range(0, min(len(self._v), len(other._v))):
+        for ours, theirs in zip(self._v, other._v):
             # sort a non-digit sequence before a digit sequence
-            if self._v[i].isdigit() != other._v[i].isdigit():
-                return 1 if self._v[i].isdigit() else -1
+            ours_is_int = isinstance(ours, int)
+            theirs_is_int = isinstance(theirs, int)
+            if ours_is_int != theirs_is_int:
+                return comparator(ours_is_int, theirs_is_int)
 
-            # compare as numbers
-            if self._v[i].isdigit():
-                # because leading zeros have already been removed, if one number
-                # has more digits, it is greater
-                c = cmp(len(self._v[i]), len(other._v[i]))
-                if c != 0:
-                    return c
-                # fallthrough
-
-            # compare lexicographically
-            c = cmp(self._v[i], other._v[i])
-            if c != 0:
-                return c
+            if ours != theirs:
+                return comparator(ours, theirs)
 
         # if equal length, all components have matched, so equal
         # otherwise, the version with a suffix remaining is greater
-        return cmp(len(self._v), len(other._v))
+        return comparator(len(self._v), len(other._v))
 
-def _version_extract_cmpop(vstr2):
+def _version_extract_cmpop(vstr2: str) -> typing.Tuple[typing.Callable[[typing.Any, typing.Any], bool], str]:
     if vstr2.startswith('>='):
         cmpop = operator.ge
         vstr2 = vstr2[2:]
@@ -487,7 +604,7 @@ def _version_extract_cmpop(vstr2):
 
     return (cmpop, vstr2)
 
-def version_compare(vstr1, vstr2):
+def version_compare(vstr1: str, vstr2: str) -> bool:
     (cmpop, vstr2) = _version_extract_cmpop(vstr2)
     return cmpop(Version(vstr1), Version(vstr2))
 
@@ -505,7 +622,7 @@ def version_compare_many(vstr1, conditions):
 
 # determine if the minimum version satisfying the condition |condition| exceeds
 # the minimum version for a feature |minimum|
-def version_compare_condition_with_min(condition, minimum):
+def version_compare_condition_with_min(condition: str, minimum: str) -> bool:
     if condition.startswith('>='):
         cmpop = operator.le
         condition = condition[2:]
@@ -538,7 +655,7 @@ def version_compare_condition_with_min(condition, minimum):
     # Map versions in the constraint of the form '0.46' to '0.46.0', to embed
     # this knowledge of the meson versioning scheme.
     condition = condition.strip()
-    if re.match('^\d+.\d+$', condition):
+    if re.match(r'^\d+.\d+$', condition):
         condition += '.0'
 
     return cmpop(Version(minimum), Version(condition))
@@ -555,6 +672,8 @@ def default_libdir():
                 return 'lib/' + archpath
         except Exception:
             pass
+    if is_freebsd():
+        return 'lib'
     if os.path.isdir('/usr/lib64') and not os.path.islink('/usr/lib64'):
         return 'lib64'
     return 'lib'
@@ -566,31 +685,49 @@ def default_libexecdir():
 def default_prefix():
     return 'c:/' if is_windows() else '/usr/local'
 
-def get_library_dirs():
+def get_library_dirs() -> typing.List[str]:
     if is_windows():
-        return ['C:/mingw/lib'] # Fixme
+        return ['C:/mingw/lib'] # TODO: get programatically
     if is_osx():
-        return ['/usr/lib'] # Fix me as well.
+        return ['/usr/lib'] # TODO: get programatically
     # The following is probably Debian/Ubuntu specific.
     # /usr/local/lib is first because it contains stuff
     # installed by the sysadmin and is probably more up-to-date
     # than /usr/lib. If you feel that this search order is
     # problematic, please raise the issue on the mailing list.
     unixdirs = ['/usr/local/lib', '/usr/lib', '/lib']
-    plat = subprocess.check_output(['uname', '-m']).decode().strip()
-    # This is a terrible hack. I admit it and I'm really sorry.
-    # I just don't know what the correct solution is.
-    if plat == 'i686':
+
+    if is_freebsd():
+        return unixdirs
+    # FIXME: this needs to be further genericized for aarch64 etc.
+    machine = platform.machine()
+    if machine in ('i386', 'i486', 'i586', 'i686'):
         plat = 'i386'
-    if plat.startswith('arm'):
+    elif machine.startswith('arm'):
         plat = 'arm'
-    unixdirs += glob('/usr/lib/' + plat + '*')
+    else:
+        plat = ''
+
+    # Solaris puts 32-bit libraries in the main /lib & /usr/lib directories
+    # and 64-bit libraries in platform specific subdirectories.
+    if is_sunos():
+        if machine == 'i86pc':
+            plat = 'amd64'
+        elif machine.startswith('sun4'):
+            plat = 'sparcv9'
+
+    usr_platdir = Path('/usr/lib/') / plat
+    if usr_platdir.is_dir():
+        unixdirs += [str(x) for x in (usr_platdir).iterdir() if x.is_dir()]
     if os.path.exists('/usr/lib64'):
         unixdirs.append('/usr/lib64')
-    unixdirs += glob('/lib/' + plat + '*')
+
+    lib_platdir = Path('/lib/') / plat
+    if lib_platdir.is_dir():
+        unixdirs += [str(x) for x in (lib_platdir).iterdir() if x.is_dir()]
     if os.path.exists('/lib64'):
         unixdirs.append('/lib64')
-    unixdirs += glob('/lib/' + plat + '*')
+
     return unixdirs
 
 def has_path_sep(name, sep='/\\'):
@@ -600,11 +737,89 @@ def has_path_sep(name, sep='/\\'):
             return True
     return False
 
-def do_replacement(regex, line, format, confdata):
+
+if is_windows():
+    # shlex.split is not suitable for splitting command line on Window (https://bugs.python.org/issue1724822);
+    # shlex.quote is similarly problematic. Below are "proper" implementations of these functions according to
+    # https://docs.microsoft.com/en-us/cpp/c-language/parsing-c-command-line-arguments and
+    # https://blogs.msdn.microsoft.com/twistylittlepassagesallalike/2011/04/23/everyone-quotes-command-line-arguments-the-wrong-way/
+
+    _whitespace = ' \t\n\r'
+    _find_unsafe_char = re.compile(r'[{}"]'.format(_whitespace)).search
+
+    def quote_arg(arg):
+        if arg and not _find_unsafe_char(arg):
+            return arg
+
+        result = '"'
+        num_backslashes = 0
+        for c in arg:
+            if c == '\\':
+                num_backslashes += 1
+            else:
+                if c == '"':
+                    # Escape all backslashes and the following double quotation mark
+                    num_backslashes = num_backslashes * 2 + 1
+
+                result += num_backslashes * '\\' + c
+                num_backslashes = 0
+
+        # Escape all backslashes, but let the terminating double quotation
+        # mark we add below be interpreted as a metacharacter
+        result += (num_backslashes * 2) * '\\' + '"'
+        return result
+
+    def split_args(cmd):
+        result = []
+        arg = ''
+        num_backslashes = 0
+        num_quotes = 0
+        in_quotes = False
+        for c in cmd:
+            if c == '\\':
+                num_backslashes += 1
+            else:
+                if c == '"' and not (num_backslashes % 2):
+                    # unescaped quote, eat it
+                    arg += (num_backslashes // 2) * '\\'
+                    num_quotes += 1
+                    in_quotes = not in_quotes
+                elif c in _whitespace and not in_quotes:
+                    if arg or num_quotes:
+                        # reached the end of the argument
+                        result.append(arg)
+                        arg = ''
+                        num_quotes = 0
+                else:
+                    if c == '"':
+                        # escaped quote
+                        num_backslashes = (num_backslashes - 1) // 2
+
+                    arg += num_backslashes * '\\' + c
+
+                num_backslashes = 0
+
+        if arg or num_quotes:
+            result.append(arg)
+
+        return result
+else:
+    def quote_arg(arg):
+        return shlex.quote(arg)
+
+    def split_args(cmd):
+        return shlex.split(cmd)
+
+
+def join_args(args):
+    return ' '.join([quote_arg(x) for x in args])
+
+
+def do_replacement(regex, line, variable_format, confdata):
     missing_variables = set()
     start_tag = '@'
     backslash_tag = '\\@'
-    if format == 'cmake':
+    if variable_format == 'cmake':
         start_tag = '${'
         backslash_tag = '\\${'
 
@@ -657,23 +872,23 @@ def do_mesondefine(line, confdata):
         raise MesonException('#mesondefine argument "%s" is of unknown type.' % varname)
 
 
-def do_conf_file(src, dst, confdata, format, encoding='utf-8'):
+def do_conf_file(src, dst, confdata, variable_format, encoding='utf-8'):
     try:
-        with open(src, encoding=encoding) as f:
+        with open(src, encoding=encoding, newline='') as f:
             data = f.readlines()
     except Exception as e:
         raise MesonException('Could not read input file %s: %s' % (src, str(e)))
     # Only allow (a-z, A-Z, 0-9, _, -) as valid characters for a define
     # Also allow escaping '@' with '\@'
-    if format in ['meson', 'cmake@']:
+    if variable_format in ['meson', 'cmake@']:
         regex = re.compile(r'(?:\\\\)+(?=\\?@)|\\@|@([-a-zA-Z0-9_]+)@')
-    elif format == 'cmake':
+    elif variable_format == 'cmake':
         regex = re.compile(r'(?:\\\\)+(?=\\?\$)|\\\${|\${([-a-zA-Z0-9_]+)}')
     else:
-        raise MesonException('Format "{}" not handled'.format(format))
+        raise MesonException('Format "{}" not handled'.format(variable_format))
 
     search_token = '#mesondefine'
-    if format != 'meson':
+    if variable_format != 'meson':
         search_token = '#cmakedefine'
 
     result = []
@@ -686,14 +901,14 @@ def do_conf_file(src, dst, confdata, format, encoding='utf-8'):
             confdata_useless = False
             line = do_mesondefine(line, confdata)
         else:
-            line, missing = do_replacement(regex, line, format, confdata)
+            line, missing = do_replacement(regex, line, variable_format, confdata)
             missing_variables.update(missing)
             if missing:
                 confdata_useless = False
         result.append(line)
     dst_tmp = dst + '~'
     try:
-        with open(dst_tmp, 'w', encoding=encoding) as f:
+        with open(dst_tmp, 'w', encoding=encoding, newline='') as f:
             f.writelines(result)
     except Exception as e:
         raise MesonException('Could not write output file %s: %s' % (dst, str(e)))
@@ -800,14 +1015,14 @@ def extract_as_list(dict_object, *keys, pop=False, **kwargs):
         result.append(listify(fetch(key, []), **kwargs))
     return result
 
-
-def typeslistify(item, types):
+def typeslistify(item: 'typing.Union[_T, typing.List[_T]]',
+                 types: 'typing.Union[typing.Type[_T], typing.Tuple[typing.Type[_T]]]') -> typing.List[_T]:
     '''
     Ensure that type(@item) is one of @types or a
     list of items all of which are of type @types
     '''
     if isinstance(item, types):
-        item = [item]
+        item = typing.cast(typing.List[_T], [item])
     if not isinstance(item, list):
         raise MesonException('Item must be a list or one of {!r}'.format(types))
     for i in item:
@@ -815,7 +1030,7 @@ def typeslistify(item, types):
             raise MesonException('List item must be one of {!r}'.format(types))
     return item
 
-def stringlistify(item):
+def stringlistify(item: typing.Union[str, typing.List[str]]) -> typing.List[str]:
     return typeslistify(item, str)
 
 def expand_arguments(args):
@@ -836,7 +1051,10 @@ def expand_arguments(args):
             return None
     return expended_args
 
-def Popen_safe(args, write=None, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **kwargs):
+def Popen_safe(args: typing.List[str], write: typing.Optional[str] = None,
+               stdout: typing.Union[typing.BinaryIO, int] = subprocess.PIPE,
+               stderr: typing.Union[typing.BinaryIO, int] = subprocess.PIPE,
+               **kwargs: typing.Any) -> typing.Tuple[subprocess.Popen, str, str]:
     import locale
     encoding = locale.getpreferredencoding()
     if sys.version_info < (3, 6) or not sys.stdout.encoding or encoding.upper() != 'UTF-8':
@@ -846,12 +1064,16 @@ def Popen_safe(args, write=None, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
     o, e = p.communicate(write)
     return p, o, e
 
-def Popen_safe_legacy(args, write=None, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **kwargs):
-    p = subprocess.Popen(args, universal_newlines=False,
+def Popen_safe_legacy(args: typing.List[str], write: typing.Optional[str] = None,
+                      stdout: typing.Union[typing.BinaryIO, int] = subprocess.PIPE,
+                      stderr: typing.Union[typing.BinaryIO, int] = subprocess.PIPE,
+                      **kwargs: typing.Any) -> typing.Tuple[subprocess.Popen, str, str]:
+    p = subprocess.Popen(args, universal_newlines=False, close_fds=False,
                          stdout=stdout, stderr=stderr, **kwargs)
+    input_ = None  # type: typing.Optional[bytes]
     if write is not None:
-        write = write.encode('utf-8')
-    o, e = p.communicate(write)
+        input_ = write.encode('utf-8')
+    o, e = p.communicate(input_)
     if o is not None:
         if sys.stdout.encoding:
             o = o.decode(encoding=sys.stdout.encoding, errors='replace').replace('\r\n', '\n')
@@ -1046,6 +1268,22 @@ def windows_proof_rmtree(f):
     shutil.rmtree(f)
 
 
+def windows_proof_rm(fpath):
+    """Like windows_proof_rmtree, but for a single file."""
+    if os.path.isfile(fpath):
+        os.chmod(fpath, os.stat(fpath).st_mode | stat.S_IWRITE | stat.S_IREAD)
+    delays = [0.1, 0.1, 0.2, 0.2, 0.2, 0.5, 0.5, 1, 1, 1, 1, 2]
+    for d in delays:
+        try:
+            os.unlink(fpath)
+            return
+        except FileNotFoundError:
+            return
+        except (OSError, PermissionError):
+            time.sleep(d)
+    os.unlink(fpath)
+
+
 def detect_subprojects(spdir_name, current_dir='', result=None):
     if result is None:
         result = {}
@@ -1070,10 +1308,17 @@ def detect_subprojects(spdir_name, current_dir='', result=None):
                 result[basename] = [trial]
     return result
 
-def get_error_location_string(fname, lineno):
+# This isn't strictly correct. What we really want here is something like:
+# class StringProtocol(typing_extensions.Protocol):
+#
+#      def __str__(self) -> str: ...
+#
+# This would more accurately embody what this funcitonc an handle, but we
+# don't have that yet, so instead we'll do some casting to work around it
+def get_error_location_string(fname: str, lineno: str) -> str:
     return '{}:{}:'.format(fname, lineno)
 
-def substring_is_in_list(substr, strlist):
+def substring_is_in_list(substr: str, strlist: typing.List[str]) -> bool:
     for s in strlist:
         if substr in s:
             return True
@@ -1152,3 +1397,144 @@ def relpath(path, start):
         return os.path.relpath(path, start)
     except ValueError:
         return path
+
+
+class LibType(Enum):
+
+    """Enumeration for library types."""
+
+    SHARED = 0
+    STATIC = 1
+    PREFER_SHARED = 2
+    PREFER_STATIC = 3
+
+
+class ProgressBarFallback:
+    '''Fallback progress bar implementation when tqdm is not found'''
+    def __init__(self, iterable=None, total=None, bar_type=None, desc=None):
+        if iterable is not None:
+            self.iterable = iter(iterable)
+            return
+        self.total = total
+        self.done = 0
+        self.printed_dots = 0
+        if self.total and bar_type == 'download':
+            print('Download size:', self.total)
+        if desc:
+            print('{}: '.format(desc), end='')
+
+    # Pretend to be an iterator when called as one and don't print any
+    # progress
+    def __iter__(self):
+        return self.iterable
+
+    def __next__(self):
+        return next(self.iterable)
+
+    def print_dot(self):
+        print('.', end='')
+        sys.stdout.flush()
+        self.printed_dots += 1
+
+    def update(self, progress):
+        self.done += progress
+        if not self.total:
+            # Just print one dot per call if we don't have a total length
+            self.print_dot()
+            return
+        ratio = int(self.done / self.total * 10)
+        while self.printed_dots < ratio:
+            self.print_dot()
+
+    def close(self):
+        print('')
+
+try:
+    from tqdm import tqdm
+
+    class ProgressBar(tqdm):
+        def __init__(self, *args, bar_type=None, **kwargs):
+            if bar_type == 'download':
+                kwargs.update({'unit': 'bytes', 'leave': True})
+            else:
+                kwargs.update({'leave': False})
+            kwargs['ncols'] = 100
+            super().__init__(*args, **kwargs)
+except ImportError:
+    ProgressBar = ProgressBarFallback
+
+
+def get_wine_shortpath(winecmd, wine_paths):
+
+    """ Get A short version of @wine_paths to avoid
+    reaching WINEPATH number of char limit.
+    """
+
+    seen = set()
+    wine_paths = [p for p in wine_paths if not (p in seen or seen.add(p))]
+
+    getShortPathScript = '%s.bat' % str(uuid.uuid4()).lower()[:5]
+    with open(getShortPathScript, mode='w') as f:
+        f.write("@ECHO OFF\nfor %%x in (%*) do (\n echo|set /p=;%~sx\n)\n")
+        f.flush()
+    try:
+        with open(os.devnull, 'w') as stderr:
+            wine_path = subprocess.check_output(
+                winecmd +
+                ['cmd', '/C', getShortPathScript] + wine_paths,
+                stderr=stderr).decode('utf-8')
+    except subprocess.CalledProcessError as e:
+        print("Could not get short paths: %s" % e)
+        wine_path = ';'.join(wine_paths)
+    finally:
+        os.remove(getShortPathScript)
+    if len(wine_path) > 2048:
+        raise MesonException(
+            'WINEPATH size {} > 2048'
+            ' this will cause random failure.'.format(
+                len(wine_path)))
+
+    return wine_path.strip(';')
+
+def run_once(func):
+    ret = []
+
+    def wrapper(*args, **kwargs):
+        if ret:
+            return ret[0]
+
+        val = func(*args, **kwargs)
+        ret.append(val)
+        return val
+
+    return update_wrapper(wrapper, func)
+
+
+class OptionProxy:
+    def __init__(self, value):
+        self.value = value
+
+class OptionOverrideProxy:
+    '''Mimic an option list but transparently override
+    selected option values.'''
+    def __init__(self, overrides, *options):
+        self.overrides = overrides
+        self.options = options
+
+    def __getitem__(self, option_name):
+        for opts in self.options:
+            if option_name in opts:
+                return self._get_override(option_name, opts[option_name])
+        raise KeyError('Option not found', option_name)
+
+    def _get_override(self, option_name, base_opt):
+        if option_name in self.overrides:
+            return OptionProxy(base_opt.validate_value(self.overrides[option_name]))
+        return base_opt
+
+    def copy(self):
+        result = {}
+        for opts in self.options:
+            for option_name in opts:
+                result[option_name] = self._get_override(option_name, opts[option_name])
+        return result

@@ -1,2 +1,0 @@
-usr/lib/libnosyms.so
-?msvc:usr/lib/libnosyms.pdb

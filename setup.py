@@ -16,25 +16,30 @@
 
 import sys
 
+if sys.version_info < (3, 5, 2):
+    raise SystemExit('ERROR: Tried to install Meson with an unsupported Python version: \n{}'
+                     '\nMeson requires Python 3.5.2 or greater'.format(sys.version))
+
 from mesonbuild.coredata import version
-
-if sys.version_info < (3, 5, 0):
-    print('Tried to install with an unsupported version of Python. '
-          'Meson requires Python 3.5.0 or greater')
-    sys.exit(1)
-
 from setuptools import setup
 
 # On windows, will create Scripts/meson.exe and Scripts/meson-script.py
 # Other platforms will create bin/meson
 entries = {'console_scripts': ['meson=mesonbuild.mesonmain:main']}
 packages = ['mesonbuild',
+            'mesonbuild.ast',
             'mesonbuild.backend',
+            'mesonbuild.cmake',
             'mesonbuild.compilers',
+            'mesonbuild.compilers.mixins',
             'mesonbuild.dependencies',
             'mesonbuild.modules',
             'mesonbuild.scripts',
             'mesonbuild.wrap']
+package_data = {
+    'mesonbuild.dependencies': ['data/CMakeLists.txt', 'data/CMakeListsLLVM.txt', 'data/CMakePathInfo.txt'],
+    'mesonbuild.cmake': ['data/run_ctgt.py'],
+}
 data_files = []
 if sys.platform != 'win32':
     # Only useful on UNIX-like systems
@@ -44,28 +49,8 @@ if sys.platform != 'win32':
 if __name__ == '__main__':
     setup(name='meson',
           version=version,
-          description='A high performance build system',
-          author='Jussi Pakkanen',
-          author_email='jpakkane@gmail.com',
-          url='http://mesonbuild.com',
-          license=' Apache License, Version 2.0',
-          python_requires='>=3.5',
+          extras_require={'progress': ['tqdm']},
           packages=packages,
+          package_data=package_data,
           entry_points=entries,
-          data_files=data_files,
-          classifiers=['Development Status :: 5 - Production/Stable',
-                       'Environment :: Console',
-                       'Intended Audience :: Developers',
-                       'License :: OSI Approved :: Apache Software License',
-                       'Natural Language :: English',
-                       'Operating System :: MacOS :: MacOS X',
-                       'Operating System :: Microsoft :: Windows',
-                       'Operating System :: POSIX :: BSD',
-                       'Operating System :: POSIX :: Linux',
-                       'Programming Language :: Python :: 3 :: Only',
-                       'Topic :: Software Development :: Build Tools',
-                       ],
-          long_description='''Meson is a cross-platform build system designed to be both as
-    fast and as user friendly as possible. It supports many languages and compilers, including
-    GCC, Clang and Visual Studio. Its build definitions are written in a simple non-turing
-    complete DSL.''')
+          data_files=data_files,)

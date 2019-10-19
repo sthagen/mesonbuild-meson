@@ -34,13 +34,13 @@ def runtests(cross_file, failfast):
     commontests = [('common', gather_tests(Path('test cases', 'common')), False)]
     try:
         (passing_tests, failing_tests, skipped_tests) = \
-            run_tests(commontests, 'meson-cross-test-run', failfast, ['--cross', cross_file])
+            run_tests(commontests, 'meson-cross-test-run', failfast, ['--cross-file', cross_file])
     except StopException:
         pass
     print('\nTotal passed cross tests:', passing_tests)
     print('Total failed cross tests:', failing_tests)
     print('Total skipped cross tests:', skipped_tests)
-    if failing_tests > 0 and ('TRAVIS' in os.environ or 'APPVEYOR' in os.environ):
+    if failing_tests > 0 and ('CI' in os.environ):
         print('\nMesonlogs of failing tests\n')
         for log in failing_logs:
             print(log, '\n')

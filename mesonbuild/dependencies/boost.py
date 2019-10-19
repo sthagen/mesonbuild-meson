@@ -22,6 +22,7 @@ from .. import mesonlib
 from ..environment import detect_cpu_family
 
 from .base import (DependencyException, ExternalDependency)
+from .misc import ThreadDependency
 
 # On windows 3 directory layouts are supported:
 # * The default layout (versioned) installed:
@@ -103,6 +104,8 @@ class BoostDependency(ExternalDependency):
         self.is_multithreading = threading == "multi"
 
         self.requested_modules = self.get_requested(kwargs)
+        if 'thread' in self.requested_modules:
+            self._add_sub_dependency(ThreadDependency, environment, kwargs)
 
         self.boost_root = None
         self.boost_roots = []
@@ -120,19 +123,16 @@ class BoostDependency(ExternalDependency):
             self.libdir = os.environ['BOOST_LIBRARYDIR']
 
         if self.boost_root is None:
-            if mesonlib.for_windows(self.want_cross, self.env):
+            if self.env.machines[self.for_machine].is_windows():
                 self.boost_roots = self.detect_win_roots()
             else:
                 self.boost_roots = self.detect_nix_roots()
 
         if self.incdir is None:
-            if mesonlib.for_windows(self.want_cross, self.env):
+            if self.env.machines[self.for_machine].is_windows():
                 self.incdir = self.detect_win_incdir()
             else:
                 self.incdir = self.detect_nix_incdir()
-
-        if self.check_invalid_modules():
-            return
 
         mlog.debug('Boost library root dir is', mlog.bold(self.boost_root))
         mlog.debug('Boost include directory is', mlog.bold(self.incdir))
@@ -140,13 +140,25 @@ class BoostDependency(ExternalDependency):
         # 1. check if we can find BOOST headers.
         self.detect_headers_and_version()
 
+        if not self.is_found:
+            return # if we can not find 'boost/version.hpp'
+
         # 2. check if we can find BOOST libraries.
-        if self.is_found:
-            self.detect_lib_modules()
-            mlog.debug('Boost library directory is', mlog.bold(self.libdir))
+        self.detect_lib_modules()
+        mlog.debug('Boost library directory is', mlog.bold(self.libdir))
+
+        mlog.debug('Installed Boost libraries: ')
+        for key in sorted(self.lib_modules.keys()):
+            mlog.debug(key, self.lib_modules[key])
+
+        # 3. check if requested modules are valid, that is, either found or in the list of known boost libraries
+        self.check_invalid_modules()
+
+        # 4. final check whether or not we find all requested and valid modules
+        self.check_find_requested_modules()
 
     def check_invalid_modules(self):
-        invalid_modules = [c for c in self.requested_modules if 'boost_' + c not in BOOST_LIBS]
+        invalid_modules = [c for c in self.requested_modules if 'boost_' + c not in self.lib_modules and 'boost_' + c not in BOOST_LIBS]
 
         # previous versions of meson allowed include dirs as modules
         remove = []
@@ -206,7 +218,7 @@ class BoostDependency(ExternalDependency):
         for root in self.boost_roots:
             globtext = os.path.join(root, 'include', 'boost-*')
             incdirs = glob.glob(globtext)
-            if len(incdirs) > 0:
+            if incdirs:
                 return incdirs[0]
             incboostdir = os.path.join(root, 'include', 'boost')
             if os.path.isdir(incboostdir):
@@ -247,7 +259,7 @@ class BoostDependency(ExternalDependency):
 
     def detect_headers_and_version(self):
         try:
-            version = self.clib_compiler.get_define('BOOST_LIB_VERSION', '#include <boost/version.hpp>', self.env, self.get_compile_args(), [])
+            version = self.clib_compiler.get_define('BOOST_LIB_VERSION', '#include <boost/version.hpp>', self.env, self.get_compile_args(), [], disable_cache=True)[0]
         except mesonlib.EnvironmentException:
             return
         except TypeError:
@@ -265,11 +277,12 @@ class BoostDependency(ExternalDependency):
             pass
         # 2. Fall back to the old method
         else:
-            if mesonlib.for_windows(self.want_cross, self.env):
+            if self.env.machines[self.for_machine].is_windows():
                 self.detect_lib_modules_win()
             else:
                 self.detect_lib_modules_nix()
 
+    def check_find_requested_modules(self):
         # 3. Check if we can find the modules
         for m in self.requested_modules:
             if 'boost_' + m not in self.lib_modules:
@@ -286,9 +299,9 @@ class BoostDependency(ExternalDependency):
 
     def compiler_tag(self):
         tag = None
-        compiler = self.env.detect_cpp_compiler(self.want_cross)
-        if mesonlib.for_windows(self.want_cross, self.env):
-            if compiler.get_id() == 'msvc':
+        compiler = self.env.detect_cpp_compiler(self.for_machine)
+        if self.env.machines[self.for_machine].is_windows():
+            if compiler.get_id() in ['msvc', 'clang-cl']:
                 comp_ts_version = compiler.get_toolset_version()
                 compiler_ts = comp_ts_version.split('.')
                 # FIXME - what about other compilers?
@@ -301,10 +314,10 @@ class BoostDependency(ExternalDependency):
         if not self.is_multithreading:
             return ''
 
-        if mesonlib.for_darwin(self.want_cross, self.env):
+        if self.env.machines[self.for_machine].is_darwin():
             # - Mac:      requires -mt for multithreading, so should not fall back to non-mt libraries.
             return '-mt'
-        elif mesonlib.for_windows(self.want_cross, self.env):
+        elif self.env.machines[self.for_machine].is_windows():
             # - Windows:  requires -mt for multithreading, so should not fall back to non-mt libraries.
             return '-mt'
         else:
@@ -320,12 +333,12 @@ class BoostDependency(ExternalDependency):
 
     def arch_tag(self):
         # currently only applies to windows msvc installed binaries
-        if self.env.detect_cpp_compiler(self.want_cross).get_id() != 'msvc':
+        if self.env.detect_cpp_compiler(self.for_machine).get_id() not in ['msvc', 'clang-cl']:
             return ''
         # pre-compiled binaries only added arch tag for versions > 1.64
         if float(self.version) < 1.65:
             return ''
-        arch = detect_cpu_family(self.env.coredata.compilers)
+        arch = detect_cpu_family(self.env.coredata.compilers.host)
         if arch == 'x86':
             return '-x32'
         elif arch == 'x86_64':
@@ -337,16 +350,16 @@ class BoostDependency(ExternalDependency):
 
     # FIXME - how to handle different distributions, e.g. for Mac? Currently we handle homebrew and macports, but not fink.
     def abi_tags(self):
-        if mesonlib.for_windows(self.want_cross, self.env):
+        if self.env.machines[self.for_machine].is_windows():
             return [self.versioned_abi_tag(), self.threading_tag()]
         else:
             return [self.threading_tag()]
 
     def sourceforge_dir(self):
-        if self.env.detect_cpp_compiler(self.want_cross).get_id() != 'msvc':
+        if self.env.detect_cpp_compiler(self.for_machine).get_id() != 'msvc':
             return None
-        comp_ts_version = self.env.detect_cpp_compiler(self.want_cross).get_toolset_version()
-        arch = detect_cpu_family(self.env.coredata.compilers)
+        comp_ts_version = self.env.detect_cpp_compiler(self.for_machine).get_toolset_version()
+        arch = detect_cpu_family(self.env.coredata.compilers.host)
         if arch == 'x86':
             return 'lib32-msvc-{}'.format(comp_ts_version)
         elif arch == 'x86_64':
@@ -424,7 +437,7 @@ class BoostDependency(ExternalDependency):
         for entry in globber2_matches:
             fname = os.path.basename(entry)
             self.lib_modules[self.modname_from_filename(fname)] = [fname]
-        if len(globber2_matches) == 0:
+        if not globber2_matches:
             # FIXME - why are we only looking for *.lib? Mingw provides *.dll.a and *.a
             for entry in glob.glob(os.path.join(self.libdir, globber1 + '.lib')):
                 if self.static:
@@ -434,7 +447,7 @@ class BoostDependency(ExternalDependency):
     def detect_lib_modules_nix(self):
         if self.static:
             libsuffix = 'a'
-        elif mesonlib.for_darwin(self.want_cross, self.env):
+        elif self.env.machines[self.for_machine].is_darwin():
             libsuffix = 'dylib'
         else:
             libsuffix = 'so'
@@ -443,7 +456,7 @@ class BoostDependency(ExternalDependency):
         if self.libdir:
             libdirs = [self.libdir]
         elif self.boost_root is None:
-            libdirs = mesonlib.get_library_dirs(self.env)
+            libdirs = mesonlib.get_library_dirs()
         else:
             libdirs = [os.path.join(self.boost_root, 'lib')]
         for libdir in libdirs:
@@ -487,10 +500,6 @@ class BoostDependency(ExternalDependency):
 
     def get_sources(self):
         return []
-
-    def need_threads(self):
-        return 'thread' in self.requested_modules
-
 
 # Generated with boost_names.py
 BOOST_LIBS = [
@@ -547,10 +556,6 @@ BOOST_LIBS = [
     'boost_math_c99l',
     'boost_mpi',
     'boost_program_options',
-    'boost_python',
-    'boost_python3',
-    'boost_numpy',
-    'boost_numpy3',
     'boost_random',
     'boost_regex',
     'boost_serialization',

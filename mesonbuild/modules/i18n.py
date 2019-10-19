@@ -15,8 +15,8 @@
 import shutil
 
 from os import path
-from .. import coredata, mesonlib, build
-from ..mesonlib import MesonException
+from .. import coredata, mesonlib, build, mlog
+from ..mesonlib import MesonException, run_once
 from . import ModuleReturnValue
 from . import ExtensionModule
 from ..interpreterbase import permittedKwargs, FeatureNew, FeatureNewKwargs
@@ -44,10 +44,25 @@ PRESET_ARGS = {
         '--flag=g_string_append_printf:2:c-format',
         '--flag=g_error_new:3:c-format',
         '--flag=g_set_error:4:c-format',
+        '--flag=g_markup_printf_escaped:1:c-format',
+        '--flag=g_log:3:c-format',
+        '--flag=g_print:1:c-format',
+        '--flag=g_printerr:1:c-format',
+        '--flag=g_printf:1:c-format',
+        '--flag=g_fprintf:2:c-format',
+        '--flag=g_sprintf:2:c-format',
+        '--flag=g_snprintf:3:c-format',
     ]
 }
 
+
 class I18nModule(ExtensionModule):
+
+    @staticmethod
+    @run_once
+    def nogettext_warning():
+        mlog.warning('Gettext not found, all translation targets will be ignored.')
+        return ModuleReturnValue(None, [])
 
     @staticmethod
     def _get_data_dirs(state, dirs):
@@ -56,9 +71,11 @@ class I18nModule(ExtensionModule):
         return [path.join(src_dir, d) for d in dirs]
 
     @FeatureNew('i18n.merge_file', '0.37.0')
-    @permittedKwargs({'languages', 'data_dirs', 'preset', 'args', 'po_dir', 'type',
-                      'input', 'output', 'install', 'install_dir'})
+    @FeatureNewKwargs('i18n.merge_file', '0.51.0', ['args'])
+    @permittedKwargs(build.CustomTarget.known_kwargs | {'data_dirs', 'po_dir', 'type', 'args'})
     def merge_file(self, state, args, kwargs):
+        if not shutil.which('xgettext'):
+            return self.nogettext_warning()
         podir = kwargs.pop('po_dir', None)
         if not podir:
             raise MesonException('i18n: po_dir is a required kwarg')
@@ -79,15 +96,23 @@ class I18nModule(ExtensionModule):
         if datadirs:
             command.append(datadirs)
 
+        if 'args' in kwargs:
+            command.append('--')
+            command.append(mesonlib.stringlistify(kwargs.pop('args', [])))
+
         kwargs['command'] = command
 
         inputfile = kwargs['input']
         if hasattr(inputfile, 'held_object'):
             ct = build.CustomTarget(kwargs['output'] + '_merge', state.subdir, state.subproject, kwargs)
         else:
+            if isinstance(inputfile, list):
+                # We only use this input file to create a name of the custom target.
+                # Thus we can ignore the other entries.
+                inputfile = inputfile[0]
             if isinstance(inputfile, str):
                 inputfile = mesonlib.File.from_source_file(state.environment.source_dir,
-                                                       state.subdir, inputfile)
+                                                           state.subdir, inputfile)
             output = kwargs['output']
             ifile_abs = inputfile.absolute_path(state.environment.source_dir,
                                                 state.environment.build_dir)
@@ -98,12 +123,13 @@ class I18nModule(ExtensionModule):
         return ModuleReturnValue(ct, [ct])
 
     @FeatureNewKwargs('i18n.gettext', '0.37.0', ['preset'])
-    @permittedKwargs({'po_dir', 'data_dirs', 'type', 'languages', 'args', 'preset', 'install'})
+    @FeatureNewKwargs('i18n.gettext', '0.50.0', ['install_dir'])
+    @permittedKwargs({'po_dir', 'data_dirs', 'type', 'languages', 'args', 'preset', 'install', 'install_dir'})
     def gettext(self, state, args, kwargs):
         if len(args) != 1:
             raise coredata.MesonException('Gettext requires one positional argument (package name).')
         if not shutil.which('xgettext'):
-            raise coredata.MesonException('Can not do gettext because xgettext is not installed.')
+            return self.nogettext_warning()
         packagename = args[0]
         languages = mesonlib.stringlistify(kwargs.get('languages', []))
         datadirs = self._get_data_dirs(state, mesonlib.stringlistify(kwargs.get('data_dirs', [])))
@@ -147,10 +173,11 @@ class I18nModule(ExtensionModule):
 
         install = kwargs.get('install', True)
         if install:
+            install_dir = kwargs.get('install_dir', state.environment.coredata.get_builtin_option('localedir'))
             script = state.environment.get_build_command()
             args = ['--internal', 'gettext', 'install',
                     '--subdir=' + state.subdir,
-                    '--localedir=' + state.environment.coredata.get_builtin_option('localedir'),
+                    '--localedir=' + install_dir,
                     pkg_arg]
             if lang_arg:
                 args.append(lang_arg)

@@ -18,8 +18,8 @@ from .. import build
 from ..mesonlib import MesonException, Popen_safe, extract_as_list, File
 from ..dependencies import Dependency, Qt4Dependency, Qt5Dependency
 import xml.etree.ElementTree as ET
-from . import ModuleReturnValue, get_include_args
-from ..interpreterbase import permittedKwargs, FeatureNewKwargs
+from . import ModuleReturnValue, get_include_args, ExtensionModule
+from ..interpreterbase import permittedKwargs, FeatureNew, FeatureNewKwargs
 
 _QT_DEPS_LUT = {
     4: Qt4Dependency,
@@ -27,10 +27,11 @@ _QT_DEPS_LUT = {
 }
 
 
-class QtBaseModule:
+class QtBaseModule(ExtensionModule):
     tools_detected = False
 
-    def __init__(self, qt_version=5):
+    def __init__(self, interpreter, qt_version=5):
+        ExtensionModule.__init__(self, interpreter)
         self.qt_version = qt_version
 
     def _detect_tools(self, env, method):
@@ -43,7 +44,7 @@ class QtBaseModule:
         kwargs = {'required': 'true', 'modules': 'Core', 'silent': 'true', 'method': method}
         qt = _QT_DEPS_LUT[self.qt_version](env, kwargs)
         # Get all tools and then make sure that they are the right version
-        self.moc, self.uic, self.rcc, self.lrelease = qt.compilers_detect()
+        self.moc, self.uic, self.rcc, self.lrelease = qt.compilers_detect(self.interpreter)
         # Moc, uic and rcc write their version strings to stderr.
         # Moc and rcc return a non-zero result when doing so.
         # What kind of an idiot thought that was a good idea?
@@ -118,29 +119,30 @@ class QtBaseModule:
 
     @FeatureNewKwargs('qt.preprocess', '0.49.0', ['uic_extra_arguments'])
     @FeatureNewKwargs('qt.preprocess', '0.44.0', ['moc_extra_arguments'])
-    @permittedKwargs({'moc_headers', 'moc_sources', 'uic_extra_arguments', 'moc_extra_arguments', 'include_directories', 'dependencies', 'ui_files', 'qresources', 'method'})
+    @FeatureNewKwargs('qt.preprocess', '0.49.0', ['rcc_extra_arguments'])
+    @permittedKwargs({'moc_headers', 'moc_sources', 'uic_extra_arguments', 'moc_extra_arguments', 'rcc_extra_arguments', 'include_directories', 'dependencies', 'ui_files', 'qresources', 'method'})
     def preprocess(self, state, args, kwargs):
-        rcc_files, ui_files, moc_headers, moc_sources, uic_extra_arguments, moc_extra_arguments, sources, include_directories, dependencies \
-            = extract_as_list(kwargs, 'qresources', 'ui_files', 'moc_headers', 'moc_sources', 'uic_extra_arguments', 'moc_extra_arguments', 'sources', 'include_directories', 'dependencies', pop = True)
+        rcc_files, ui_files, moc_headers, moc_sources, uic_extra_arguments, moc_extra_arguments, rcc_extra_arguments, sources, include_directories, dependencies \
+            = extract_as_list(kwargs, 'qresources', 'ui_files', 'moc_headers', 'moc_sources', 'uic_extra_arguments', 'moc_extra_arguments', 'rcc_extra_arguments', 'sources', 'include_directories', 'dependencies', pop = True)
         sources += args[1:]
         method = kwargs.get('method', 'auto')
         self._detect_tools(state.environment, method)
         err_msg = "{0} sources specified and couldn't find {1}, " \
                   "please check your qt{2} installation"
-        if len(moc_headers) + len(moc_sources) > 0 and not self.moc.found():
+        if (moc_headers or moc_sources) and not self.moc.found():
             raise MesonException(err_msg.format('MOC', 'moc-qt{}'.format(self.qt_version), self.qt_version))
-        if len(rcc_files) > 0:
+        if rcc_files:
             if not self.rcc.found():
                 raise MesonException(err_msg.format('RCC', 'rcc-qt{}'.format(self.qt_version), self.qt_version))
             # custom output name set? -> one output file, multiple otherwise
-            if len(args) > 0:
+            if args:
                 qrc_deps = []
                 for i in rcc_files:
                     qrc_deps += self.parse_qrc(state, i)
                 name = args[0]
                 rcc_kwargs = {'input': rcc_files,
                               'output': name + '.cpp',
-                              'command': [self.rcc, '-name', name, '-o', '@OUTPUT@', '@INPUT@'],
+                              'command': [self.rcc, '-name', name, '-o', '@OUTPUT@', rcc_extra_arguments, '@INPUT@'],
                               'depend_files': qrc_deps}
                 res_target = build.CustomTarget(name, state.subdir, state.subproject, rcc_kwargs)
                 sources.append(res_target)
@@ -154,13 +156,13 @@ class QtBaseModule:
                     name = 'qt' + str(self.qt_version) + '-' + basename.replace('.', '_')
                     rcc_kwargs = {'input': rcc_file,
                                   'output': name + '.cpp',
-                                  'command': [self.rcc, '-name', '@BASENAME@', '-o', '@OUTPUT@', '@INPUT@'],
+                                  'command': [self.rcc, '-name', '@BASENAME@', '-o', '@OUTPUT@', rcc_extra_arguments, '@INPUT@'],
                                   'depend_files': qrc_deps}
                     res_target = build.CustomTarget(name, state.subdir, state.subproject, rcc_kwargs)
                     sources.append(res_target)
-        if len(ui_files) > 0:
+        if ui_files:
             if not self.uic.found():
-                raise MesonException(err_msg.format('UIC', 'uic-qt' + self.qt_version))
+                raise MesonException(err_msg.format('UIC', 'uic-qt{}'.format(self.qt_version), self.qt_version))
             arguments = uic_extra_arguments + ['-o', '@OUTPUT@', '@INPUT@']
             ui_kwargs = {'output': 'ui_@BASENAME@.h',
                          'arguments': arguments}
@@ -181,14 +183,14 @@ class QtBaseModule:
                                      'either an external dependency (returned by find_library() or '
                                      'dependency()) or an internal dependency (returned by '
                                      'declare_dependency()).'.format(type(dep).__name__))
-        if len(moc_headers) > 0:
+        if moc_headers:
             arguments = moc_extra_arguments + inc + compile_args + ['@INPUT@', '-o', '@OUTPUT@']
             moc_kwargs = {'output': 'moc_@BASENAME@.cpp',
                           'arguments': arguments}
             moc_gen = build.Generator([self.moc], moc_kwargs)
             moc_output = moc_gen.process_files('Qt{} moc header'.format(self.qt_version), moc_headers, state)
             sources.append(moc_output)
-        if len(moc_sources) > 0:
+        if moc_sources:
             arguments = moc_extra_arguments + inc + compile_args + ['@INPUT@', '-o', '@OUTPUT@']
             moc_kwargs = {'output': '@BASENAME@.moc',
                           'arguments': arguments}
@@ -197,7 +199,7 @@ class QtBaseModule:
             sources.append(moc_output)
         return ModuleReturnValue(sources, sources)
 
-    @FeatureNewKwargs('build target', '0.40.0', ['build_by_default'])
+    @FeatureNew('qt.compile_translations', '0.44.0')
     @permittedKwargs({'ts_files', 'install', 'install_dir', 'build_by_default', 'method'})
     def compile_translations(self, state, args, kwargs):
         ts_files, install_dir = extract_as_list(kwargs, 'ts_files', 'install_dir', pop=True)

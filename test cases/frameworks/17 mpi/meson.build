@@ -1,11 +1,6 @@
-project('mpi', 'c', 'cpp')
+project('mpi', 'c', 'cpp', default_options: ['b_asneeded=false'])
 
 cc = meson.get_compiler('c')
-
-if build_machine.system() == 'windows' and cc.get_id() != 'msvc'
-  error('MESON_SKIP_TEST: MPI not available on Windows without MSVC.')
-endif
-
 mpic = dependency('mpi', language : 'c', required : false)
 if not mpic.found()
   error('MESON_SKIP_TEST: MPI not found, skipping.')
@@ -14,34 +9,42 @@ exec = executable('exec',
   'main.c',
   dependencies : [mpic])
 
-test('MPI C', exec)
+test('MPI C', exec, timeout: 10)
 
-if build_machine.system() != 'windows'
-  # C++ MPI not supported by MS-MPI used on AppVeyor.
-  mpicpp = dependency('mpi', language : 'cpp')
-  execpp = executable('execpp',
-    'main.cpp',
-    dependencies : [mpicpp])
 
-  test('MPI C++', execpp)
+# C++ MPI not supported by MS-MPI
+cpp = meson.get_compiler('cpp')
+mpicpp = dependency('mpi', language : 'cpp', required: false)
+if not cpp.links('''
+#include <mpi.h>
+#include <stdio.h>
+int main(int argc, char **argv) {MPI::Init(argc, argv);}
+''', dependencies: mpicpp, name: 'C++ MPI')
+  mpicpp = disabler()
 endif
+execpp = executable('execpp',
+  'main.cpp',
+  dependencies : [mpicpp])
 
-# OpenMPI is broken with Fortran on Ubuntu Artful.
-# Remove this once the following bug has been fixed:
-#
-# https://bugs.launchpad.net/ubuntu/+source/gcc-defaults/+bug/1727474
+test('MPI C++', execpp, timeout: 10)
 
-ubudetector = find_program('is_broken_ubuntu.py')
-uburesult = run_command(ubudetector)
 
-if uburesult.returncode() != 0 and add_languages('fortran', required : false)
-  mpifort = dependency('mpi', language : 'fortran')
+if add_languages('fortran', required : false)
+  fc = meson.get_compiler('fortran')
+  mpif = dependency('mpi', language : 'fortran', required: false)
+  if not fc.links('use mpi; end', dependencies: mpif, name: 'Fortran MPI')
+    mpif = disabler()
+  endif
+
   exef = executable('exef',
-    'main.f90',
-    dependencies : [mpifort])
+  'main.f90',
+  dependencies : mpif)
 
-  test('MPI Fortran', exef)
+  test('MPI Fortran', exef, timeout: 10)
 endif
+
 
 # Check we can apply a version constraint
-dependency('mpi', version: '>=@0@'.format(mpic.version()))
+if mpic.version() != 'unknown'
+  dependency('mpi', version: '>=@0@'.format(mpic.version()))
+endif
