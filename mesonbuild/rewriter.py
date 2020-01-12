@@ -27,21 +27,21 @@ from .ast import IntrospectionInterpreter, build_target_functions, AstConditionL
 from mesonbuild.mesonlib import MesonException
 from . import mlog, environment
 from functools import wraps
-from typing import List, Dict, Optional
 from .mparser import Token, ArrayNode, ArgumentNode, AssignmentNode, BaseNode, BooleanNode, ElementaryNode, IdNode, FunctionNode, StringNode
 import json, os, re, sys
+import typing as T
 
 class RewriterException(MesonException):
     pass
 
-def add_arguments(parser, formater=None):
+def add_arguments(parser, formatter=None):
     parser.add_argument('-s', '--sourcedir', type=str, default='.', metavar='SRCDIR', help='Path to source directory.')
     parser.add_argument('-V', '--verbose', action='store_true', default=False, help='Enable verbose output')
     parser.add_argument('-S', '--skip-errors', dest='skip', action='store_true', default=False, help='Skip errors instead of aborting')
     subparsers = parser.add_subparsers(dest='type', title='Rewriter commands', description='Rewrite command to execute')
 
     # Target
-    tgt_parser = subparsers.add_parser('target', help='Modify a target', formatter_class=formater)
+    tgt_parser = subparsers.add_parser('target', help='Modify a target', formatter_class=formatter)
     tgt_parser.add_argument('-s', '--subdir', default='', dest='subdir', help='Subdirectory of the new target (only for the "add_target" action)')
     tgt_parser.add_argument('--type', dest='tgt_type', choices=rewriter_keys['target']['target_type'][2], default='executable',
                             help='Type of the target to add (only for the "add_target" action)')
@@ -51,7 +51,7 @@ def add_arguments(parser, formater=None):
     tgt_parser.add_argument('sources', nargs='*', help='Sources to add/remove')
 
     # KWARGS
-    kw_parser = subparsers.add_parser('kwargs', help='Modify keyword arguments', formatter_class=formater)
+    kw_parser = subparsers.add_parser('kwargs', help='Modify keyword arguments', formatter_class=formatter)
     kw_parser.add_argument('operation', choices=rewriter_keys['kwargs']['operation'][2],
                            help='Action to execute')
     kw_parser.add_argument('function', choices=list(rewriter_func_kwargs.keys()),
@@ -60,13 +60,13 @@ def add_arguments(parser, formater=None):
     kw_parser.add_argument('kwargs', nargs='*', help='Pairs of keyword and value')
 
     # Default options
-    def_parser = subparsers.add_parser('default-options', help='Modify the project default options', formatter_class=formater)
+    def_parser = subparsers.add_parser('default-options', help='Modify the project default options', formatter_class=formatter)
     def_parser.add_argument('operation', choices=rewriter_keys['default_options']['operation'][2],
                             help='Action to execute')
     def_parser.add_argument('options', nargs='*', help='Key, value pairs of configuration option')
 
     # JSON file/command
-    cmd_parser = subparsers.add_parser('command', help='Execute a JSON array of commands', formatter_class=formater)
+    cmd_parser = subparsers.add_parser('command', help='Execute a JSON array of commands', formatter_class=formatter)
     cmd_parser.add_argument('json', help='JSON string or file to execute')
 
 class RequiredKeys:
@@ -101,13 +101,13 @@ class RequiredKeys:
         return wrapped
 
 class MTypeBase:
-    def __init__(self, node: Optional[BaseNode] = None):
+    def __init__(self, node: T.Optional[BaseNode] = None):
         if node is None:
-            self.node = self._new_node()
+            self.node = self._new_node()  # lgtm [py/init-calls-subclass] (node creation does not depend on base class state)
         else:
             self.node = node
         self.node_type = None
-        for i in self.supported_nodes():
+        for i in self.supported_nodes():  # lgtm [py/init-calls-subclass] (listing nodes does not depend on base class state)
             if isinstance(self.node, i):
                 self.node_type = i
 
@@ -142,7 +142,7 @@ class MTypeBase:
         mlog.warning('Cannot remove a regex in type', mlog.bold(type(self).__name__), '--> skipping')
 
 class MTypeStr(MTypeBase):
-    def __init__(self, node: Optional[BaseNode] = None):
+    def __init__(self, node: T.Optional[BaseNode] = None):
         super().__init__(node)
 
     def _new_node(self):
@@ -155,7 +155,7 @@ class MTypeStr(MTypeBase):
         self.node.value = str(value)
 
 class MTypeBool(MTypeBase):
-    def __init__(self, node: Optional[BaseNode] = None):
+    def __init__(self, node: T.Optional[BaseNode] = None):
         super().__init__(node)
 
     def _new_node(self):
@@ -168,7 +168,7 @@ class MTypeBool(MTypeBase):
         self.node.value = bool(value)
 
 class MTypeID(MTypeBase):
-    def __init__(self, node: Optional[BaseNode] = None):
+    def __init__(self, node: T.Optional[BaseNode] = None):
         super().__init__(node)
 
     def _new_node(self):
@@ -181,7 +181,7 @@ class MTypeID(MTypeBase):
         self.node.value = str(value)
 
 class MTypeList(MTypeBase):
-    def __init__(self, node: Optional[BaseNode] = None):
+    def __init__(self, node: T.Optional[BaseNode] = None):
         super().__init__(node)
 
     def _new_node(self):
@@ -256,7 +256,7 @@ class MTypeList(MTypeBase):
         self._remove_helper(regex, self._check_regex_matches)
 
 class MTypeStrList(MTypeList):
-    def __init__(self, node: Optional[BaseNode] = None):
+    def __init__(self, node: T.Optional[BaseNode] = None):
         super().__init__(node)
 
     def _new_element_node(self, value):
@@ -276,7 +276,7 @@ class MTypeStrList(MTypeList):
         return [StringNode]
 
 class MTypeIDList(MTypeList):
-    def __init__(self, node: Optional[BaseNode] = None):
+    def __init__(self, node: T.Optional[BaseNode] = None):
         super().__init__(node)
 
     def _new_element_node(self, value):
@@ -392,7 +392,7 @@ class Rewriter:
         raise MesonException('Rewriting the meson.build failed')
 
     def find_target(self, target: str):
-        def check_list(name: str) -> List[BaseNode]:
+        def check_list(name: str) -> T.List[BaseNode]:
             result = []
             for i in self.interpreter.targets:
                 if name == i['name'] or name == i['id']:
@@ -744,7 +744,7 @@ class Rewriter:
                      mlog.yellow('{}:{}'.format(os.path.join(to_remove.subdir, environment.build_filename), to_remove.lineno)))
 
         elif cmd['operation'] == 'info':
-            # List all sources in the target
+            # T.List all sources in the target
             src_list = []
             for i in target['sources']:
                 for j in arg_list_from_node(i):
@@ -854,7 +854,7 @@ class Rewriter:
                 while raw[end] in [' ', '\n', '\t']:
                     end += 1
 
-            raw = files[i['file']]['raw'] = raw[:start] + i['str'] + raw[end:]
+            files[i['file']]['raw'] = raw[:start] + i['str'] + raw[end:]
 
         for i in str_list:
             if i['action'] in ['modify', 'rm']:
@@ -876,20 +876,20 @@ target_operation_map = {
     'info': 'info',
 }
 
-def list_to_dict(in_list: List[str]) -> Dict[str, str]:
+def list_to_dict(in_list: T.List[str]) -> T.Dict[str, str]:
     result = {}
     it = iter(in_list)
     try:
         for i in it:
             # calling next(it) is not a mistake, we're taking the next element from
-            # the iterator, avoiding te need to preprocess it into a sequence of
+            # the iterator, avoiding the need to preprocess it into a sequence of
             # key value pairs.
             result[i] = next(it)
     except StopIteration:
         raise TypeError('in_list parameter of list_to_dict must have an even length.')
     return result
 
-def generate_target(options) -> List[dict]:
+def generate_target(options) -> T.List[dict]:
     return [{
         'type': 'target',
         'target': options.target,
@@ -899,7 +899,7 @@ def generate_target(options) -> List[dict]:
         'target_type': options.tgt_type,
     }]
 
-def generate_kwargs(options) -> List[dict]:
+def generate_kwargs(options) -> T.List[dict]:
     return [{
         'type': 'kwargs',
         'function': options.function,
@@ -908,14 +908,14 @@ def generate_kwargs(options) -> List[dict]:
         'kwargs': list_to_dict(options.kwargs),
     }]
 
-def generate_def_opts(options) -> List[dict]:
+def generate_def_opts(options) -> T.List[dict]:
     return [{
         'type': 'default_options',
         'operation': options.operation,
         'options': list_to_dict(options.options),
     }]
 
-def genreate_cmd(options) -> List[dict]:
+def genreate_cmd(options) -> T.List[dict]:
     if os.path.exists(options.json):
         with open(options.json, 'r') as fp:
             return json.load(fp)

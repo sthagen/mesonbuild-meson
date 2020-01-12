@@ -13,7 +13,7 @@
 # limitations under the License.
 
 import os.path, subprocess
-import typing
+import typing as T
 
 from ..mesonlib import (
     EnvironmentException, MachineChoice, version_compare,
@@ -30,7 +30,7 @@ from .compilers import (
 from .mixins.gnu import GnuCompiler
 from .mixins.islinker import LinkerEnvVarsMixin, BasicLinkerIsCompilerMixin
 
-if typing.TYPE_CHECKING:
+if T.TYPE_CHECKING:
     from ..envconfig import MachineInfo
 
 d_feature_args = {'gcc':  {'unittest': '-funittest',
@@ -388,13 +388,19 @@ class DmdLikeCompilerMixin:
             assert(buildtype == 'custom')
             raise EnvironmentException('Requested C runtime based on buildtype, but buildtype is "custom".')
 
-    def get_soname_args(self, *args, **kwargs) -> typing.List[str]:
+    def get_soname_args(self, *args, **kwargs) -> T.List[str]:
         # LDC and DMD actually do use a linker, but they proxy all of that with
         # their own arguments
-        return Compiler.get_soname_args(self, *args, **kwargs)
+        soargs = []
+        for arg in Compiler.get_soname_args(self, *args, **kwargs):
+            soargs.append('-L=' + arg)
+        return soargs
 
-    def get_allow_undefined_link_args(self) -> typing.List[str]:
-        return self.linker.get_allow_undefined_args()
+    def get_allow_undefined_link_args(self) -> T.List[str]:
+        args = []
+        for arg in self.linker.get_allow_undefined_args():
+            args.append('-L=' + arg)
+        return args
 
 
 class DCompiler(Compiler):
@@ -406,12 +412,15 @@ class DCompiler(Compiler):
         'mtd': ['-mscrtlib=libcmtd'],
     }
 
+    language = 'd'
+
     def __init__(self, exelist, version, for_machine: MachineChoice,
-                 info: 'MachineInfo', arch, **kwargs):
-        self.language = 'd'
+                 info: 'MachineInfo', arch, is_cross, exe_wrapper, **kwargs):
         super().__init__(exelist, version, for_machine, info, **kwargs)
         self.id = 'unknown'
         self.arch = arch
+        self.exe_wrapper = exe_wrapper
+        self.is_cross = is_cross
 
     def sanity_check(self, work_dir, environment):
         source_name = os.path.join(work_dir, 'sanity.d')
@@ -422,7 +431,14 @@ class DCompiler(Compiler):
         pc.wait()
         if pc.returncode != 0:
             raise EnvironmentException('D compiler %s can not compile programs.' % self.name_string())
-        if subprocess.call(output_name) != 0:
+        if self.is_cross:
+            if self.exe_wrapper is None:
+                # Can't check if the binaries run so we have to assume they do
+                return
+            cmdlist = self.exe_wrapper.get_command() + [output_name]
+        else:
+            cmdlist = [output_name]
+        if subprocess.call(cmdlist) != 0:
             raise EnvironmentException('Executables created by D compiler %s are not runnable.' % self.name_string())
 
     def needs_static_linker(self):
@@ -596,8 +612,9 @@ class GnuDCompiler(DCompiler, GnuCompiler):
     LINKER_PREFIX = GnuCompiler.LINKER_PREFIX
 
     def __init__(self, exelist, version, for_machine: MachineChoice,
-                 info: 'MachineInfo', arch, **kwargs):
-        DCompiler.__init__(self, exelist, version, for_machine, info, arch, **kwargs)
+                 info: 'MachineInfo', is_cross, exe_wrapper, arch, **kwargs):
+        DCompiler.__init__(self, exelist, version, for_machine, info, is_cross, exe_wrapper, arch, **kwargs)
+        GnuCompiler.__init__(self, {})
         self.id = 'gcc'
         default_warn_args = ['-Wall', '-Wdeprecated']
         self.warn_args = {'0': [],
@@ -637,12 +654,15 @@ class GnuDCompiler(DCompiler, GnuCompiler):
 
         return parameter_list
 
+    def get_allow_undefined_link_args(self) -> T.List[str]:
+        return self.linker.get_allow_undefined_args()
+
 
 class LLVMDCompiler(DmdLikeCompilerMixin, LinkerEnvVarsMixin, BasicLinkerIsCompilerMixin, DCompiler):
 
     def __init__(self, exelist, version, for_machine: MachineChoice,
                  info: 'MachineInfo', arch, **kwargs):
-        DCompiler.__init__(self, exelist, version, for_machine, info, arch, **kwargs)
+        DCompiler.__init__(self, exelist, version, for_machine, info, arch, False, None, **kwargs)
         self.id = 'llvm'
         self.base_options = ['b_coverage', 'b_colorout', 'b_vscrt']
 
@@ -667,6 +687,9 @@ class LLVMDCompiler(DmdLikeCompilerMixin, LinkerEnvVarsMixin, BasicLinkerIsCompi
     def get_pic_args(self):
         return ['-relocation-model=pic']
 
+    def get_std_shared_lib_link_args(self):
+        return ['-shared']
+
     def get_crt_link_args(self, crt_val, buildtype):
         return self.get_crt_args(crt_val, buildtype)
 
@@ -681,7 +704,7 @@ class DmdDCompiler(DmdLikeCompilerMixin, LinkerEnvVarsMixin, BasicLinkerIsCompil
 
     def __init__(self, exelist, version, for_machine: MachineChoice,
                  info: 'MachineInfo', arch, **kwargs):
-        DCompiler.__init__(self, exelist, version, for_machine, info, arch, **kwargs)
+        DCompiler.__init__(self, exelist, version, for_machine, info, arch, False, None, **kwargs)
         self.id = 'dmd'
         self.base_options = ['b_coverage', 'b_colorout', 'b_vscrt']
 

@@ -80,13 +80,13 @@ It is also possible to set kwargs of specific functions with the rewriter. The
 general command for setting or removing kwargs is:
 
 ```bash
-meson rewriter kwargs {set/delete} <function type> <function ID> <key1> <value1> <key2> <value2> ...
+meson rewrite kwargs {set/delete} <function type> <function ID> <key1> <value1> <key2> <value2> ...
 ```
 
 For instance, setting the project version can be achieved with this command:
 
 ```bash
-meson rewriter kwargs set project / version 1.0.0
+meson rewrite kwargs set project / version 1.0.0
 ```
 
 Currently, only the following function types are supported:
@@ -95,7 +95,7 @@ Currently, only the following function types are supported:
 - target (any build target, the function ID is the target name/ID)
 - project (the function ID must be `/` since project() can only be called once)
 
-For more information see the help output of the rewriter kwargs command.
+For more information see the help output of the rewrite kwargs command.
 
 ### Setting the project default options
 
@@ -107,7 +107,7 @@ meson rewrite default-options {set/delete} <opt1> <value1> <opt2> <value2> ...
 
 ## Limitations
 
-Rewriting a meson file is not guranteed to keep the indentation of the modified
+Rewriting a meson file is not guaranteed to keep the indentation of the modified
 functions. Additionally, comments inside a modified statement will be removed.
 Furthermore, all source files will be sorted alphabetically.
 

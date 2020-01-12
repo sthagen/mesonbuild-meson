@@ -21,10 +21,10 @@ import re
 import json
 import shlex
 import shutil
+import stat
 import textwrap
 import platform
-import typing
-from typing import Any, Dict, List, Tuple
+import typing as T
 from enum import Enum
 from pathlib import Path, PurePath
 
@@ -33,7 +33,6 @@ from .. import mesonlib
 from ..compilers import clib_langs
 from ..environment import BinaryTable, Environment, MachineInfo
 from ..cmake import CMakeExecutor, CMakeTraceParser, CMakeException
-from ..linkers import GnuLikeDynamicLinkerMixin
 from ..mesonlib import MachineChoice, MesonException, OrderedSet, PerMachine
 from ..mesonlib import Popen_safe, version_compare_many, version_compare, listify, stringlistify, extract_as_list, split_args
 from ..mesonlib import Version, LibType
@@ -128,7 +127,7 @@ class Dependency:
         self.sources = []
         self.methods = self._process_method_kw(kwargs)
         self.include_type = self._process_include_type_kw(kwargs)
-        self.ext_deps = []  # type: List[Dependency]
+        self.ext_deps = []  # type: T.List[Dependency]
 
     def __repr__(self):
         s = '<{0} {1}: {2}>'
@@ -153,7 +152,7 @@ class Dependency:
             return converted
         return self.compile_args
 
-    def get_link_args(self, raw=False):
+    def get_link_args(self, raw: bool = False) -> T.List[str]:
         if raw and self.raw_link_args is not None:
             return self.raw_link_args
         return self.link_args
@@ -197,7 +196,7 @@ class Dependency:
         """Create a new dependency that contains part of the parent dependency.
 
         The following options can be inherited:
-            links -- all link_with arguemnts
+            links -- all link_with arguments
             includes -- all include_directory and -I/-isystem calls
             sources -- any source, header, or generated sources
             compile_args -- any compile args
@@ -209,8 +208,8 @@ class Dependency:
         """
         raise RuntimeError('Unreachable code in partial_dependency called')
 
-    def _add_sub_dependency(self, dep_type: typing.Type['Dependency'], env: Environment,
-                            kwargs: typing.Dict[str, typing.Any], *,
+    def _add_sub_dependency(self, dep_type: T.Type['Dependency'], env: Environment,
+                            kwargs: T.Dict[str, T.Any], *,
                             method: DependencyMethods = DependencyMethods.AUTO) -> None:
         """Add an internal dependency of of the given type.
 
@@ -223,14 +222,14 @@ class Dependency:
         kwargs['method'] = method
         self.ext_deps.append(dep_type(env, kwargs))
 
-    def get_variable(self, *, cmake: typing.Optional[str] = None, pkgconfig: typing.Optional[str] = None,
-                     configtool: typing.Optional[str] = None, default_value: typing.Optional[str] = None,
-                     pkgconfig_define: typing.Optional[typing.List[str]] = None) -> typing.Union[str, typing.List[str]]:
+    def get_variable(self, *, cmake: T.Optional[str] = None, pkgconfig: T.Optional[str] = None,
+                     configtool: T.Optional[str] = None, default_value: T.Optional[str] = None,
+                     pkgconfig_define: T.Optional[T.List[str]] = None) -> T.Union[str, T.List[str]]:
         if default_value is not None:
             return default_value
         raise DependencyException('No default provided for dependency {!r}, which is not pkg-config, cmake, or config-tool based.'.format(self))
 
-    def generate_system_dependency(self, include_type: str) -> typing.Type['Dependency']:
+    def generate_system_dependency(self, include_type: str) -> T.Type['Dependency']:
         new_dep = copy.deepcopy(self)
         new_dep.include_type = self._process_include_type_kw({'include_type': include_type})
         return new_dep
@@ -275,7 +274,10 @@ class InternalDependency(Dependency):
 
 class HasNativeKwarg:
     def __init__(self, kwargs):
-        self.for_machine = MachineChoice.BUILD if kwargs.get('native', False) else MachineChoice.HOST
+        self.for_machine = self.get_for_machine_from_kwargs(kwargs)
+
+    def get_for_machine_from_kwargs(self, kwargs):
+        return MachineChoice.BUILD if kwargs.get('native', False) else MachineChoice.HOST
 
 class ExternalDependency(Dependency, HasNativeKwarg):
     def __init__(self, type_name, environment, language, kwargs):
@@ -366,8 +368,8 @@ class ExternalDependency(Dependency, HasNativeKwarg):
                 if not self.is_found:
                     found_msg = ['Dependency', mlog.bold(self.name), 'found:']
                     found_msg += [mlog.red('NO'),
-                                  'found {!r} but need:'.format(self.version),
-                                  ', '.join(["'{}'".format(e) for e in not_found])]
+                                  'found', mlog.normal_cyan(self.version), 'but need:',
+                                  mlog.bold(', '.join(["'{}'".format(e) for e in not_found]))]
                     if found:
                         found_msg += ['; matched:',
                                       ', '.join(["'{}'".format(e) for e in found])]
@@ -450,7 +452,7 @@ class ConfigToolDependency(ExternalDependency):
         return cls.__new__(cls)
 
     def find_config(self, versions=None):
-        """Helper method that searchs for config tool binaries in PATH and
+        """Helper method that searches for config tool binaries in PATH and
         returns the one that best matches the given version requirements.
         """
         if not isinstance(versions, list) and versions is not None:
@@ -551,9 +553,9 @@ class ConfigToolDependency(ExternalDependency):
     def log_tried(self):
         return self.type_name
 
-    def get_variable(self, *, cmake: typing.Optional[str] = None, pkgconfig: typing.Optional[str] = None,
-                     configtool: typing.Optional[str] = None, default_value: typing.Optional[str] = None,
-                     pkgconfig_define: typing.Optional[typing.List[str]] = None) -> typing.Union[str, typing.List[str]]:
+    def get_variable(self, *, cmake: T.Optional[str] = None, pkgconfig: T.Optional[str] = None,
+                     configtool: T.Optional[str] = None, default_value: T.Optional[str] = None,
+                     pkgconfig_define: T.Optional[T.List[str]] = None) -> T.Union[str, T.List[str]]:
         if configtool:
             # In the not required case '' (empty string) will be returned if the
             # variable is not found. Since '' is a valid value to return we
@@ -645,9 +647,11 @@ class PkgConfigDependency(ExternalDependency):
 
         mlog.debug('Determining dependency {!r} with pkg-config executable '
                    '{!r}'.format(name, self.pkgbin.get_path()))
-        ret, self.version = self._call_pkgbin(['--modversion', name])
+        ret, self.version, _ = self._call_pkgbin(['--modversion', name])
         if ret != 0:
             return
+
+        self.is_found = True
 
         try:
             # Fetch cargs to be used while using this dependency
@@ -655,6 +659,7 @@ class PkgConfigDependency(ExternalDependency):
             # Fetch the libraries and library paths needed for using this
             self._set_libs()
         except DependencyException as e:
+            mlog.debug("pkg-config error with '%s': %s" % (name, e))
             if self.required:
                 raise
             else:
@@ -663,8 +668,6 @@ class PkgConfigDependency(ExternalDependency):
                 self.is_found = False
                 self.reason = e
 
-        self.is_found = True
-
     def __repr__(self):
         s = '<{0} {1}: {2} {3}>'
         return s.format(self.__class__.__name__, self.name, self.is_found,
@@ -672,11 +675,11 @@ class PkgConfigDependency(ExternalDependency):
 
     def _call_pkgbin_real(self, args, env):
         cmd = self.pkgbin.get_command() + args
-        p, out = Popen_safe(cmd, env=env)[0:2]
-        rc, out = p.returncode, out.strip()
+        p, out, err = Popen_safe(cmd, env=env)
+        rc, out, err = p.returncode, out.strip(), err.strip()
         call = ' '.join(cmd)
         mlog.debug("Called `{}` -> {}\n{}".format(call, rc, out))
-        return rc, out
+        return rc, out, err
 
     def _call_pkgbin(self, args, env=None):
         # Always copy the environment since we're going to modify it
@@ -701,7 +704,7 @@ class PkgConfigDependency(ExternalDependency):
             cache[(self.pkgbin, targs, fenv)] = self._call_pkgbin_real(args, env)
         return cache[(self.pkgbin, targs, fenv)]
 
-    def _convert_mingw_paths(self, args):
+    def _convert_mingw_paths(self, args: T.List[str]) -> T.List[str]:
         '''
         Both MSVC and native Python on Windows cannot handle MinGW-esque /c/foo
         paths so convert them to C:/foo. We cannot resolve other paths starting
@@ -724,6 +727,9 @@ class PkgConfigDependency(ExternalDependency):
             elif arg.startswith('/'):
                 pargs = PurePath(arg).parts
                 tmpl = '{}:/{}'
+            elif arg.startswith(('-L', '-I')) or (len(arg) > 2 and arg[1] == ':'):
+                # clean out improper '\\ ' as comes from some Windows pkg-config files
+                arg = arg.replace('\\ ', ' ')
             if len(pargs) > 1 and len(pargs[1]) == 1:
                 arg = tmpl.format(pargs[1], '/'.join(pargs[2:]))
             converted.append(arg)
@@ -741,24 +747,22 @@ class PkgConfigDependency(ExternalDependency):
             # so don't allow pkg-config to suppress -I flags for system paths
             env = os.environ.copy()
             env['PKG_CONFIG_ALLOW_SYSTEM_CFLAGS'] = '1'
-        ret, out = self._call_pkgbin(['--cflags', self.name], env=env)
+        ret, out, err = self._call_pkgbin(['--cflags', self.name], env=env)
         if ret != 0:
-            raise DependencyException('Could not generate cargs for %s:\n\n%s' %
-                                      (self.name, out))
+            raise DependencyException('Could not generate cargs for %s:\n%s\n' %
+                                      (self.name, err))
         self.compile_args = self._convert_mingw_paths(self._split_args(out))
 
-    def _search_libs(self, out, out_raw, out_all):
+    def _search_libs(self, out, out_raw):
         '''
         @out: PKG_CONFIG_ALLOW_SYSTEM_LIBS=1 pkg-config --libs
         @out_raw: pkg-config --libs
-        @out_all: pkg-config --libs --static
 
         We always look for the file ourselves instead of depending on the
         compiler to find it with -lfoo or foo.lib (if possible) because:
         1. We want to be able to select static or shared
         2. We need the full path of the library to calculate RPATH values
         3. De-dup of libraries is easier when we have absolute paths
-        4. We need to find the directories in which secondary dependencies reside
 
         Libraries that are provided by the toolchain or are not found by
         find_library() will be added with -L -l pairs.
@@ -784,6 +788,22 @@ class PkgConfigDependency(ExternalDependency):
                     # Resolve the path as a compiler in the build directory would
                     path = os.path.join(self.env.get_build_dir(), path)
                 prefix_libpaths.add(path)
+        # Library paths are not always ordered in a meaningful way
+        #
+        # Instead of relying on pkg-config or pkgconf to provide -L flags in a
+        # specific order, we reorder library paths ourselves, according to th
+        # order specified in PKG_CONFIG_PATH. See:
+        # https://github.com/mesonbuild/meson/issues/4271
+        #
+        # Only prefix_libpaths are reordered here because there should not be
+        # too many system_libpaths to cause library version issues.
+        pkg_config_path = os.environ.get('PKG_CONFIG_PATH')
+        if pkg_config_path:
+            pkg_config_path = pkg_config_path.split(os.pathsep)
+        else:
+            pkg_config_path = []
+        pkg_config_path = self._convert_mingw_paths(pkg_config_path)
+        prefix_libpaths = sort_libpaths(prefix_libpaths, pkg_config_path)
         system_libpaths = OrderedSet()
         full_args = self._convert_mingw_paths(self._split_args(out))
         for arg in full_args:
@@ -792,18 +812,6 @@ class PkgConfigDependency(ExternalDependency):
                 continue
             if arg.startswith('-L') and arg[2:] not in prefix_libpaths:
                 system_libpaths.add(arg[2:])
-        # collect all secondary library paths
-        secondary_libpaths = OrderedSet()
-        all_args = self._convert_mingw_paths(shlex.split(out_all))
-        for arg in all_args:
-            if arg.startswith('-L') and not arg.startswith(('-L-l', '-L-L')):
-                path = arg[2:]
-                if not os.path.isabs(path):
-                    # Resolve the path as a compiler in the build directory would
-                    path = os.path.join(self.env.get_build_dir(), path)
-                if path not in prefix_libpaths and path not in system_libpaths:
-                    secondary_libpaths.add(path)
-
         # Use this re-ordered path list for library resolution
         libpaths = list(prefix_libpaths) + list(system_libpaths)
         # Track -lfoo libraries to avoid duplicate work
@@ -811,12 +819,8 @@ class PkgConfigDependency(ExternalDependency):
         # Track not-found libraries to know whether to add library paths
         libs_notfound = []
         libtype = LibType.STATIC if self.static else LibType.PREFER_SHARED
-        # Generate link arguments for this library, by
-        # first appending secondary link arguments for ld
+        # Generate link arguments for this library
         link_args = []
-        if self.clib_compiler and self.clib_compiler.linker and isinstance(self.clib_compiler.linker, GnuLikeDynamicLinkerMixin):
-            link_args = ['-Wl,-rpath-link,' + p for p in secondary_libpaths]
-
         for lib in full_args:
             if lib.startswith(('-L-l', '-L-L')):
                 # These are D language arguments, add them as-is
@@ -886,45 +890,22 @@ class PkgConfigDependency(ExternalDependency):
         libcmd = [self.name, '--libs']
         if self.static:
             libcmd.append('--static')
-        # We need to find *all* secondary dependencies of a library
-        #
-        # Say we have libA.so, located in /non/standard/dir1/, and
-        # libB.so, located in /non/standard/dir2/, which links to
-        # libA.so. Now when linking exeC to libB.so, the linker will
-        # walk the complete symbol tree to determine that all undefined
-        # symbols can be resolved. Because libA.so lives in a directory
-        # not known to the linker by default, you will get errors like
-        #
-        #   ld: warning: libA.so, needed by /non/standard/dir2/libB.so,
-        #       not found (try using -rpath or -rpath-link)
-        #   ld: /non/standard/dir2/libB.so: undefined reference to `foo()'
-        #
-        # To solve this, we load the -L paths of *all* dependencies, by
-        # relying on --static to provide us with a complete picture. All
-        # -L paths that are found via a --static lookup but that are not
-        # contained in the normal lookup have to originate from secondary
-        # dependencies. See also:
-        #   http://www.kaizou.org/2015/01/linux-libraries/
-        libcmd_all = [self.name, '--libs', '--static']
         # Force pkg-config to output -L fields even if they are system
         # paths so we can do manual searching with cc.find_library() later.
         env = os.environ.copy()
         env['PKG_CONFIG_ALLOW_SYSTEM_LIBS'] = '1'
-        ret, out = self._call_pkgbin(libcmd, env=env)
+        ret, out, err = self._call_pkgbin(libcmd, env=env)
         if ret != 0:
-            raise DependencyException('Could not generate libs for %s:\n\n%s' %
-                                      (self.name, out))
+            raise DependencyException('Could not generate libs for %s:\n%s\n' %
+                                      (self.name, err))
         # Also get the 'raw' output without -Lfoo system paths for adding -L
         # args with -lfoo when a library can't be found, and also in
         # gnome.generate_gir + gnome.gtkdoc which need -L -l arguments.
-        ret, out_raw = self._call_pkgbin(libcmd)
+        ret, out_raw, err_raw = self._call_pkgbin(libcmd)
         if ret != 0:
             raise DependencyException('Could not generate libs for %s:\n\n%s' %
                                       (self.name, out_raw))
-        ret, out_all = self._call_pkgbin(libcmd_all)
-        if ret != 0:
-            mlog.warning('Could not determine complete list of dependencies for %s' % self.name)
-        self.link_args, self.raw_link_args = self._search_libs(out, out_raw, out_all)
+        self.link_args, self.raw_link_args = self._search_libs(out, out_raw)
 
     def get_pkgconfig_variable(self, variable_name, kwargs):
         options = ['--variable=' + variable_name, self.name]
@@ -939,19 +920,19 @@ class PkgConfigDependency(ExternalDependency):
 
             options = ['--define-variable=' + '='.join(definition)] + options
 
-        ret, out = self._call_pkgbin(options)
+        ret, out, err = self._call_pkgbin(options)
         variable = ''
         if ret != 0:
             if self.required:
-                raise DependencyException('dependency %s not found.' %
-                                          (self.name))
+                raise DependencyException('dependency %s not found:\n%s\n' %
+                                          (self.name, err))
         else:
             variable = out.strip()
 
             # pkg-config doesn't distinguish between empty and non-existent variables
             # use the variable list to check for variable existence
             if not variable:
-                ret, out = self._call_pkgbin(['--print-variables', self.name])
+                ret, out, _ = self._call_pkgbin(['--print-variables', self.name])
                 if not re.search(r'^' + variable_name + r'$', out, re.MULTILINE):
                     if 'default' in kwargs:
                         variable = kwargs['default']
@@ -1025,9 +1006,9 @@ class PkgConfigDependency(ExternalDependency):
     def log_tried(self):
         return self.type_name
 
-    def get_variable(self, *, cmake: typing.Optional[str] = None, pkgconfig: typing.Optional[str] = None,
-                     configtool: typing.Optional[str] = None, default_value: typing.Optional[str] = None,
-                     pkgconfig_define: typing.Optional[typing.List[str]] = None) -> typing.Union[str, typing.List[str]]:
+    def get_variable(self, *, cmake: T.Optional[str] = None, pkgconfig: T.Optional[str] = None,
+                     configtool: T.Optional[str] = None, default_value: T.Optional[str] = None,
+                     pkgconfig_define: T.Optional[T.List[str]] = None) -> T.Union[str, T.List[str]]:
         if pkgconfig:
             kwargs = {}
             if default_value is not None:
@@ -1058,10 +1039,10 @@ class CMakeDependency(ExternalDependency):
     def _main_cmake_file(self) -> str:
         return 'CMakeLists.txt'
 
-    def _extra_cmake_opts(self) -> List[str]:
+    def _extra_cmake_opts(self) -> T.List[str]:
         return []
 
-    def _map_module_list(self, modules: List[Tuple[str, bool]]) -> List[Tuple[str, bool]]:
+    def _map_module_list(self, modules: T.List[T.Tuple[str, bool]]) -> T.List[T.Tuple[str, bool]]:
         # Map the input module list to something else
         # This function will only be executed AFTER the initial CMake
         # interpreter pass has completed. Thus variables defined in the
@@ -1073,7 +1054,23 @@ class CMakeDependency(ExternalDependency):
         # one module
         return module
 
-    def __init__(self, name: str, environment: Environment, kwargs, language=None):
+    def __init__(self, name: str, environment: Environment, kwargs, language: str = None):
+        if language is None:
+            if kwargs.get('native', False):
+                if 'c' in environment.coredata.compilers.build.keys():
+                    language = 'c'
+                elif 'cpp' in environment.coredata.compilers.build.keys():
+                    language = 'cpp'
+                elif 'fortran' in environment.coredata.compilers.build.keys():
+                    language = 'fortran'
+            else:
+                if 'c' in environment.coredata.compilers.host.keys():
+                    language = 'c'
+                elif 'cpp' in environment.coredata.compilers.host.keys():
+                    language = 'cpp'
+                elif 'fortran' in environment.coredata.compilers.host.keys():
+                    language = 'fortran'
+
         super().__init__('cmake', environment, language, kwargs)
         self.name = name
         self.is_libtool = False
@@ -1086,7 +1083,7 @@ class CMakeDependency(ExternalDependency):
         # Where all CMake "build dirs" are located
         self.cmake_root_dir = environment.scratch_dir
 
-        # List of successfully found modules
+        # T.List of successfully found modules
         self.found_modules = []
 
         self.cmakebin = CMakeExecutor(environment, CMakeDependency.class_cmake_version, self.for_machine, silent=self.silent)
@@ -1114,8 +1111,8 @@ class CMakeDependency(ExternalDependency):
 
         pref_path = self.env.coredata.builtins_per_machine[self.for_machine]['cmake_prefix_path'].value
         if 'CMAKE_PREFIX_PATH' in os.environ:
-            env_pref_path = os.environ['CMAKE_PREFIX_PATH'].split(':')
-            env_pref_path = [x for x in env_pref_path if x]  # Filter out enpty strings
+            env_pref_path = os.environ['CMAKE_PREFIX_PATH'].split(os.pathsep)
+            env_pref_path = [x for x in env_pref_path if x]  # Filter out empty strings
             if not pref_path:
                 pref_path = []
             pref_path += env_pref_path
@@ -1206,7 +1203,7 @@ class CMakeDependency(ExternalDependency):
 
     @staticmethod
     @functools.lru_cache(maxsize=None)
-    def _cached_listdir(path: str) -> Tuple[Tuple[str, str]]:
+    def _cached_listdir(path: str) -> T.Tuple[T.Tuple[str, str]]:
         try:
             return tuple((x, str(x).lower()) for x in os.listdir(path))
         except OSError:
@@ -1220,7 +1217,7 @@ class CMakeDependency(ExternalDependency):
         except OSError:
             return False
 
-    def _preliminary_find_check(self, name: str, module_path: List[str], prefix_path: List[str], machine: MachineInfo) -> bool:
+    def _preliminary_find_check(self, name: str, module_path: T.List[str], prefix_path: T.List[str], machine: MachineInfo) -> bool:
         lname = str(name).lower()
 
         # Checks <path>, <path>/cmake, <path>/CMake
@@ -1298,7 +1295,7 @@ class CMakeDependency(ExternalDependency):
 
         return False
 
-    def _detect_dep(self, name: str, modules: List[Tuple[str, bool]], args: List[str]):
+    def _detect_dep(self, name: str, modules: T.List[T.Tuple[str, bool]], args: T.List[str]):
         # Detect a dependency with CMake using the '--find-package' mode
         # and the trace output (stderr)
         #
@@ -1413,7 +1410,7 @@ class CMakeDependency(ExternalDependency):
         for i, required in modules:
             if i not in self.traceparser.targets:
                 if not required:
-                    mlog.warning('CMake: Optional module', mlog.bold(self._original_module_name(i)), 'for', mlog.bold(name), 'was not found')
+                    mlog.warning('CMake: T.Optional module', mlog.bold(self._original_module_name(i)), 'for', mlog.bold(name), 'was not found')
                     continue
                 raise self._gen_exception('CMake: invalid module {} for {}.\n'
                                           'Try to explicitly specify one or more targets with the "modules" property.\n'
@@ -1496,9 +1493,40 @@ class CMakeDependency(ExternalDependency):
         build_dir = Path(self.cmake_root_dir) / 'cmake_{}'.format(self.name)
         build_dir.mkdir(parents=True, exist_ok=True)
 
-        # Copy the CMakeLists.txt
+        # Insert language parameters into the CMakeLists.txt and write new CMakeLists.txt
         src_cmake = Path(__file__).parent / 'data' / cmake_file
-        shutil.copyfile(str(src_cmake), str(build_dir / 'CMakeLists.txt'))  # str() is for Python 3.5
+        cmake_txt = src_cmake.read_text()
+
+        # In general, some Fortran CMake find_package() also require C language enabled,
+        # even if nothing from C is directly used. An easy Fortran example that fails
+        # without C language is
+        #   find_package(Threads)
+        # To make this general to
+        # any other language that might need this, we use a list for all
+        # languages and expand in the cmake Project(... LANGUAGES ...) statement.
+        if self.language is None:
+            cmake_language = ['NONE']
+        elif self.language == 'c':
+            cmake_language = ['C']
+        elif self.language == 'cpp':
+            cmake_language = ['CXX']
+        elif self.language == 'cs':
+            cmake_language = ['CSharp']
+        elif self.language == 'cuda':
+            cmake_language = ['CUDA']
+        elif self.language == 'fortran':
+            cmake_language = ['C', 'Fortran']
+        elif self.language == 'objc':
+            cmake_language = ['OBJC']
+        elif self.language == 'objcpp':
+            cmake_language = ['OBJCXX']
+
+        cmake_txt = """
+cmake_minimum_required(VERSION ${{CMAKE_VERSION}})
+project(MesonTemp LANGUAGES {})
+""".format(' '.join(cmake_language)) + cmake_txt
+
+        (build_dir / 'CMakeLists.txt').write_text(cmake_txt)
 
         return str(build_dir)
 
@@ -1520,9 +1548,9 @@ class CMakeDependency(ExternalDependency):
             return 'modules: ' + ', '.join(modules)
         return ''
 
-    def get_variable(self, *, cmake: typing.Optional[str] = None, pkgconfig: typing.Optional[str] = None,
-                     configtool: typing.Optional[str] = None, default_value: typing.Optional[str] = None,
-                     pkgconfig_define: typing.Optional[typing.List[str]] = None) -> typing.Union[str, typing.List[str]]:
+    def get_variable(self, *, cmake: T.Optional[str] = None, pkgconfig: T.Optional[str] = None,
+                     configtool: T.Optional[str] = None, default_value: T.Optional[str] = None,
+                     pkgconfig_define: T.Optional[T.List[str]] = None) -> T.Union[str, T.List[str]]:
         if cmake:
             try:
                 v = self.traceparser.vars[cmake]
@@ -1737,13 +1765,20 @@ class ExternalProgram:
     # An 'ExternalProgram' always runs on the build machine
     for_machine = MachineChoice.BUILD
 
-    def __init__(self, name: str, command: typing.Optional[typing.List[str]] = None,
-                 silent: bool = False, search_dir: typing.Optional[str] = None):
+    def __init__(self, name: str, command: T.Optional[T.List[str]] = None,
+                 silent: bool = False, search_dir: T.Optional[str] = None,
+                 extra_search_dirs: T.Optional[T.List[str]] = None):
         self.name = name
         if command is not None:
             self.command = listify(command)
         else:
-            self.command = self._search(name, search_dir)
+            all_search_dirs = [search_dir]
+            if extra_search_dirs:
+                all_search_dirs += extra_search_dirs
+            for d in all_search_dirs:
+                self.command = self._search(name, d)
+                if self.found():
+                    break
 
         # Set path to be the last item that is actually a file (in order to
         # skip options in something like ['python', '-u', 'file.py']. If we
@@ -1756,7 +1791,9 @@ class ExternalProgram:
                 break
 
         if not silent:
-            if self.found():
+            # ignore the warning because derived classes never call this __init__
+            # method, and thus only the found() method of this class is ever executed
+            if self.found():  # lgtm [py/init-calls-subclass]
                 mlog.log('Program', mlog.bold(name), 'found:', mlog.green('YES'),
                          '(%s)' % ' '.join(self.command))
             else:
@@ -1834,16 +1871,16 @@ class ExternalProgram:
                 return commands + [script]
         except Exception as e:
             mlog.debug(e)
-            pass
         mlog.debug('Unusable script {!r}'.format(script))
         return False
 
     def _is_executable(self, path):
         suffix = os.path.splitext(path)[-1].lower()[1:]
+        execmask = stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
         if mesonlib.is_windows():
             if suffix in self.windows_exts:
                 return True
-        elif os.access(path, os.X_OK):
+        elif os.stat(path).st_mode & execmask:
             return not os.path.isdir(path)
         return False
 
@@ -1938,7 +1975,7 @@ class ExternalProgram:
         return self.name
 
 
-class NonExistingExternalProgram(ExternalProgram):
+class NonExistingExternalProgram(ExternalProgram):  # lgtm [py/missing-call-to-init]
     "A program that will never exist"
 
     def __init__(self, name='nonexistingprogram'):
@@ -1954,7 +1991,7 @@ class NonExistingExternalProgram(ExternalProgram):
         return False
 
 
-class EmptyExternalProgram(ExternalProgram):
+class EmptyExternalProgram(ExternalProgram):  # lgtm [py/missing-call-to-init]
     '''
     A program object that returns an empty list of commands. Used for cases
     such as a cross file exe_wrapper to represent that it's not required.
@@ -2116,7 +2153,7 @@ class ExtraFrameworkDependency(ExternalDependency):
         return 'framework'
 
 
-def get_dep_identifier(name, kwargs) -> Tuple:
+def get_dep_identifier(name, kwargs) -> T.Tuple:
     identifier = (name, )
     for key, value in kwargs.items():
         # 'version' is irrelevant for caching; the caller must check version matches
@@ -2134,6 +2171,7 @@ def get_dep_identifier(name, kwargs) -> Tuple:
 
 display_name_map = {
     'boost': 'Boost',
+    'cuda': 'CUDA',
     'dub': 'DUB',
     'gmock': 'GMock',
     'gtest': 'GTest',
@@ -2194,15 +2232,13 @@ def find_external_dependency(name, env, kwargs):
 
                 info = []
                 if d.version:
-                    info.append(d.version)
+                    info.append(mlog.normal_cyan(d.version))
 
                 log_info = d.log_info()
                 if log_info:
                     info.append('(' + log_info + ')')
 
-                info = ' '.join(info)
-
-                mlog.log(type_text, mlog.bold(display_name), details + 'found:', mlog.green('YES'), info)
+                mlog.log(type_text, mlog.bold(display_name), details + 'found:', mlog.green('YES'), *info)
 
                 return d
 
@@ -2231,7 +2267,7 @@ def find_external_dependency(name, env, kwargs):
     return NotFoundDependency(env)
 
 
-def _build_external_dependency_list(name, env: Environment, kwargs: Dict[str, Any]) -> list:
+def _build_external_dependency_list(name, env: Environment, kwargs: T.Dict[str, T.Any]) -> list:
     # First check if the method is valid
     if 'method' in kwargs and kwargs['method'] not in [e.value for e in DependencyMethods]:
         raise DependencyException('method {!r} is invalid'.format(kwargs['method']))
@@ -2276,14 +2312,40 @@ def _build_external_dependency_list(name, env: Environment, kwargs: Dict[str, An
     # Otherwise, just use the pkgconfig and cmake dependency detector
     if 'auto' == kwargs.get('method', 'auto'):
         candidates.append(functools.partial(PkgConfigDependency, name, env, kwargs))
-        candidates.append(functools.partial(CMakeDependency,     name, env, kwargs))
 
         # On OSX, also try framework dependency detector
         if mesonlib.is_osx():
             candidates.append(functools.partial(ExtraFrameworkDependency, name,
                                                 False, None, env, None, kwargs))
 
+        # Only use CMake as a last resort, since it might not work 100% (see #6113)
+        candidates.append(functools.partial(CMakeDependency, name, env, kwargs))
+
     return candidates
+
+
+def sort_libpaths(libpaths: T.List[str], refpaths: T.List[str]) -> T.List[str]:
+    """Sort <libpaths> according to <refpaths>
+
+    It is intended to be used to sort -L flags returned by pkg-config.
+    Pkg-config returns flags in random order which cannot be relied on.
+    """
+    if len(refpaths) == 0:
+        return list(libpaths)
+
+    def key_func(libpath):
+        common_lengths = []
+        for refpath in refpaths:
+            try:
+                common_path = os.path.commonpath([libpath, refpath])
+            except ValueError:
+                common_path = ''
+            common_lengths.append(len(common_path))
+        max_length = max(common_lengths)
+        max_index = common_lengths.index(max_length)
+        reversed_max_length = len(refpaths[max_index]) - max_length
+        return (max_index, reversed_max_length)
+    return sorted(libpaths, key=key_func)
 
 
 def strip_system_libdirs(environment, for_machine: MachineChoice, link_args):

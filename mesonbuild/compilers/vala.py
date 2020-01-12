@@ -13,20 +13,22 @@
 # limitations under the License.
 
 import os.path
-import typing
+import typing as T
 
 from .. import mlog
 from ..mesonlib import EnvironmentException, MachineChoice, version_compare
 
 from .compilers import Compiler
 
-if typing.TYPE_CHECKING:
+if T.TYPE_CHECKING:
     from ..envconfig import MachineInfo
 
 class ValaCompiler(Compiler):
+
+    language = 'vala'
+
     def __init__(self, exelist, version, for_machine: MachineChoice,
                  is_cross, info: 'MachineInfo'):
-        self.language = 'vala'
         super().__init__(exelist, version, for_machine, info)
         self.version = version
         self.is_cross = is_cross

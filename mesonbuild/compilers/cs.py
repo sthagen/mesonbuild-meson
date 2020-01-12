@@ -13,14 +13,14 @@
 # limitations under the License.
 
 import os.path, subprocess
-import typing
+import typing as T
 
 from ..mesonlib import EnvironmentException
 
 from .compilers import Compiler, MachineChoice, mono_buildtype_args
 from .mixins.islinker import BasicLinkerIsCompilerMixin
 
-if typing.TYPE_CHECKING:
+if T.TYPE_CHECKING:
     from ..envconfig import MachineInfo
 
 cs_optimization_args = {'0': [],
@@ -33,15 +33,18 @@ cs_optimization_args = {'0': [],
 
 
 class CsCompiler(BasicLinkerIsCompilerMixin, Compiler):
+
+    language = 'cs'
+
     def __init__(self, exelist, version, for_machine: MachineChoice,
                  info: 'MachineInfo', comp_id, runner=None):
-        self.language = 'cs'
         super().__init__(exelist, version, for_machine, info)
         self.id = comp_id
         self.is_cross = False
         self.runner = runner
 
-    def get_display_language(self):
+    @classmethod
+    def get_display_language(cls):
         return 'C sharp'
 
     def get_always_args(self):

@@ -26,7 +26,7 @@ import itertools
 import os
 import re
 import subprocess
-import typing
+import typing as T
 from pathlib import Path
 
 from ... import mesonlib
@@ -35,7 +35,7 @@ from ... import mlog
 from .. import compilers
 from .visualstudio import VisualStudioLikeCompiler
 
-if typing.TYPE_CHECKING:
+if T.TYPE_CHECKING:
     from ...environment import Environment
 
 
@@ -50,7 +50,7 @@ class CLikeCompiler:
     find_framework_cache = {}
     internal_libs = compilers.unixy_compiler_internal_libs
 
-    def __init__(self, is_cross: bool, exe_wrapper: typing.Optional[str] = None):
+    def __init__(self, is_cross: bool, exe_wrapper: T.Optional[str] = None):
         # If a child ObjC or CPP class has already set it, don't set it ourselves
         self.is_cross = is_cross
         self.can_compile_suffixes.add('h')
@@ -117,7 +117,7 @@ class CLikeCompiler:
     def get_coverage_args(self):
         return ['--coverage']
 
-    def get_coverage_link_args(self) -> typing.List[str]:
+    def get_coverage_link_args(self) -> T.List[str]:
         return self.linker.get_coverage_args()
 
     def get_werror_args(self):
@@ -134,7 +134,7 @@ class CLikeCompiler:
             return ['-isystem', path]
         return ['-I' + path]
 
-    def get_compiler_dirs(self, env: 'Environment', name: str) -> typing.List[str]:
+    def get_compiler_dirs(self, env: 'Environment', name: str) -> T.List[str]:
         '''
         Get dirs from the compiler, either `libraries:` or `programs:`
         '''
@@ -167,7 +167,6 @@ class CLikeCompiler:
                     retval.append(d)
                 # at this point, it's an ELF file which doesn't match the
                 # appropriate elf_class, so skip this one
-                pass
         return tuple(retval)
 
     @functools.lru_cache()
@@ -178,28 +177,28 @@ class CLikeCompiler:
         '''
         return self.get_compiler_dirs(env, 'programs')
 
-    def get_pic_args(self) -> typing.List[str]:
+    def get_pic_args(self) -> T.List[str]:
         return ['-fPIC']
 
     def name_string(self) -> str:
         return ' '.join(self.exelist)
 
-    def get_pch_use_args(self, pch_dir: str, header: str) -> typing.List[str]:
+    def get_pch_use_args(self, pch_dir: str, header: str) -> T.List[str]:
         return ['-include', os.path.basename(header)]
 
     def get_pch_name(self, header_name: str) -> str:
         return os.path.basename(header_name) + '.' + self.get_pch_suffix()
 
-    def get_linker_search_args(self, dirname: str) -> typing.List[str]:
+    def get_linker_search_args(self, dirname: str) -> T.List[str]:
         return self.linker.get_search_args(dirname)
 
     def get_default_include_dirs(self):
         return []
 
-    def gen_export_dynamic_link_args(self, env: 'Environment') -> typing.List[str]:
+    def gen_export_dynamic_link_args(self, env: 'Environment') -> T.List[str]:
         return self.linker.export_dynamic_args(env)
 
-    def gen_import_library_args(self, implibname: str) -> typing.List[str]:
+    def gen_import_library_args(self, implibname: str) -> T.List[str]:
         return self.linker.import_library_args(implibname)
 
     def sanity_check_impl(self, work_dir, environment, sname, code):
@@ -258,7 +257,7 @@ class CLikeCompiler:
             raise mesonlib.EnvironmentException('Executables created by {0} compiler {1} are not runnable.'.format(self.language, self.name_string()))
 
     def sanity_check(self, work_dir, environment):
-        code = 'int main() { int class=0; return class; }\n'
+        code = 'int main(void) { int class=0; return class; }\n'
         return self.sanity_check_impl(work_dir, environment, 'sanitycheckc.c', code)
 
     def check_header(self, hname, prefix, env, *, extra_args=None, dependencies=None):
@@ -285,7 +284,7 @@ class CLikeCompiler:
         fargs = {'prefix': prefix, 'header': hname, 'symbol': symbol}
         t = '''{prefix}
         #include <{header}>
-        int main () {{
+        int main(void) {{
             /* If it's not defined as a macro, try to use as a symbol */
             #ifndef {symbol}
                 {symbol};
@@ -398,7 +397,7 @@ class CLikeCompiler:
         fargs = {'prefix': prefix, 'expression': expression}
         t = '''#include <stdio.h>
         {prefix}
-        int main() {{ static int a[1-2*!({expression})]; a[0]=0; return 0; }}'''
+        int main(void) {{ static int a[1-2*!({expression})]; a[0]=0; return 0; }}'''
         return self.compiles(t.format(**fargs), env, extra_args=extra_args,
                              dependencies=dependencies)[0]
 
@@ -423,7 +422,7 @@ class CLikeCompiler:
                         cur = maxint
                 high = cur
             else:
-                low = cur = -1
+                high = cur = -1
                 while self._compile_int('%s < %d' % (expression, cur), prefix, env, extra_args, dependencies):
                     high = cur - 1
                     if high < minint:
@@ -458,7 +457,7 @@ class CLikeCompiler:
         fargs = {'prefix': prefix, 'expression': expression}
         t = '''#include<stdio.h>
         {prefix}
-        int main() {{
+        int main(void) {{
             printf("%ld\\n", (long)({expression}));
             return 0;
         }};'''
@@ -476,7 +475,7 @@ class CLikeCompiler:
         fargs = {'prefix': prefix, 'type': typename}
         t = '''#include <stdio.h>
         {prefix}
-        int main() {{
+        int main(void) {{
             {type} something;
             return 0;
         }}'''
@@ -494,7 +493,7 @@ class CLikeCompiler:
                                      dependencies=dependencies)
         t = '''#include<stdio.h>
         {prefix}
-        int main() {{
+        int main(void) {{
             printf("%ld\\n", (long)(sizeof({type})));
             return 0;
         }};'''
@@ -512,7 +511,7 @@ class CLikeCompiler:
         fargs = {'prefix': prefix, 'type': typename}
         t = '''#include <stdio.h>
         {prefix}
-        int main() {{
+        int main(void) {{
             {type} something;
             return 0;
         }}'''
@@ -541,7 +540,7 @@ class CLikeCompiler:
             char c;
             {type} target;
         }};
-        int main() {{
+        int main(void) {{
             printf("%d", (int)offsetof(struct tmp, target));
             return 0;
         }}'''
@@ -591,7 +590,7 @@ class CLikeCompiler:
         fargs = {'prefix': prefix, 'f': fname, 'cast': cast, 'fmt': fmt}
         code = '''{prefix}
         #include <stdio.h>
-        int main() {{
+        int main(void) {{
             printf ("{fmt}", {cast} {f}());
             return 0;
         }}'''.format(**fargs)
@@ -634,11 +633,11 @@ class CLikeCompiler:
         #ifdef __cplusplus
         extern "C"
         #endif
-        char {func} ();
+        char {func} (void);
         '''
         # The actual function call
         main = '''
-        int main () {{
+        int main(void) {{
           return {func} ();
         }}'''
         return head, main
@@ -657,7 +656,7 @@ class CLikeCompiler:
         # Just taking the address or comparing it to void is not enough because
         # compilers are smart enough to optimize it away. The resulting binary
         # is not run so we don't care what the return value is.
-        main = '''\nint main() {{
+        main = '''\nint main(void) {{
             void *a = (void*) &{func};
             long b = (long) a;
             return (int) b;
@@ -729,7 +728,7 @@ class CLikeCompiler:
         # can just directly use the __has_builtin() macro.
         fargs['no_includes'] = '#include' not in prefix
         t = '''{prefix}
-        int main() {{
+        int main(void) {{
         #ifdef __has_builtin
             #if !__has_builtin(__builtin_{func})
                 #error "__builtin_{func} not found"
@@ -761,7 +760,7 @@ class CLikeCompiler:
             members += '{}.{};\n'.format(fargs['name'], member)
         fargs['members'] = members
         t = '''{prefix}
-        void bar() {{
+        void bar(void) {{
             {type} {name};
             {members}
         }};'''
@@ -771,7 +770,7 @@ class CLikeCompiler:
     def has_type(self, typename, prefix, env, extra_args, dependencies=None):
         fargs = {'prefix': prefix, 'type': typename}
         t = '''{prefix}
-        void bar() {{
+        void bar(void) {{
             sizeof({type});
         }};'''
         return self.compiles(t.format(**fargs), env, extra_args=extra_args,
@@ -785,7 +784,7 @@ class CLikeCompiler:
         code = '''#ifdef __cplusplus
         extern "C" {
         #endif
-        void ''' + symbol_name.decode() + ''' () {}
+        void ''' + symbol_name.decode() + ''' (void) {}
         #ifdef __cplusplus
         }
         #endif
@@ -902,7 +901,7 @@ class CLikeCompiler:
         return [f]
 
     @staticmethod
-    def _get_file_from_list(env, files: typing.List[str]) -> Path:
+    def _get_file_from_list(env, files: T.List[str]) -> Path:
         '''
         We just check whether the library exists. We can't do a link check
         because the library might have unresolved symbols that require other
@@ -993,7 +992,7 @@ class CLikeCompiler:
         return value[:]
 
     def find_library(self, libname, env, extra_dirs, libtype: LibType = LibType.PREFER_SHARED):
-        code = 'int main() { return 0; }'
+        code = 'int main(void) { return 0; }'
         return self.find_library_impl(libname, env, extra_dirs, code, libtype)
 
     def find_framework_paths(self, env):
@@ -1023,7 +1022,7 @@ class CLikeCompiler:
         return paths
 
     def find_framework_real(self, name, env, extra_dirs, allow_system):
-        code = 'int main() { return 0; }'
+        code = 'int main(void) { return 0; }'
         link_args = []
         for d in extra_dirs:
             link_args += ['-F' + d]
@@ -1056,10 +1055,10 @@ class CLikeCompiler:
             raise mesonlib.MesonException('Cannot find frameworks with non-clang compiler')
         return self.find_framework_impl(name, env, extra_dirs, allow_system)
 
-    def get_crt_compile_args(self, crt_val: str, buildtype: str) -> typing.List[str]:
+    def get_crt_compile_args(self, crt_val: str, buildtype: str) -> T.List[str]:
         return []
 
-    def get_crt_link_args(self, crt_val: str, buildtype: str) -> typing.List[str]:
+    def get_crt_link_args(self, crt_val: str, buildtype: str) -> T.List[str]:
         return []
 
     def thread_flags(self, env):
@@ -1068,7 +1067,7 @@ class CLikeCompiler:
             return []
         return ['-pthread']
 
-    def thread_link_flags(self, env: 'Environment') -> typing.List[str]:
+    def thread_link_flags(self, env: 'Environment') -> T.List[str]:
         return self.linker.thread_flags(env)
 
     def linker_to_compiler_args(self, args):
@@ -1102,7 +1101,7 @@ class CLikeCompiler:
         # false positive.
         args = self.linker.fatal_warnings() + args
         args = self.linker_to_compiler_args(args)
-        code = 'int main() { return 0; }'
+        code = 'int main(void) { return 0; }'
         return self.has_arguments(args, env, code, mode='link')
 
     @staticmethod

@@ -82,7 +82,7 @@ development files. The VAPI is installed in Vala's standard search path and so
 works just as seamlessly using the `dependency()` function.
 
 
-### Targetting a version of GLib
+### Targeting a version of GLib
 Meson's [`dependency()`](Reference-manual.md#dependency) function allows a
 version check of a library. This is often used to check a minimum version is
 installed. When setting a minimum version of GLib, Meson will also pass this to
@@ -251,7 +251,12 @@ The `find_library()` method of the Vala compiler object needs to have the `dir`
 keyword added to include the project VAPI directory. This is not added
 automatically by `add_project_arguments()`.
 
+### Working with the Vala Preprocessor
+Passing arguments to [Vala's preprocessor](https://wiki.gnome.org/Projects/Vala/Manual/Preprocessor) requires specifying the language as `c`.  For example, the following statement sets the preprocessor symbol `FUSE_USE_VERSION` to the value `26`:
 
+```meson
+add_project_arguments('-DFUSE_USE_VERSION=26', language: 'c')
+```
 
 ## Building libraries
 

@@ -324,7 +324,6 @@ class Installer:
                 # FIXME: what about symlinks?
                 self.do_copyfile(abs_src, abs_dst)
                 set_mode(abs_dst, install_mode, data.install_umask)
-                append_to_log(self.lf, abs_dst)
 
     def do_install(self, datafilename):
         with open(datafilename, 'rb') as ifile:
@@ -504,7 +503,6 @@ def run(opts):
     log_dir = os.path.join(private_dir, '../meson-logs')
     if not os.path.exists(os.path.join(opts.wd, datafilename)):
         sys.exit('Install data not found. Run this command in build directory root.')
-    log_dir = os.path.join(private_dir, '../meson-logs')
     if not opts.no_rebuild:
         if not rebuild_all(opts.wd):
             sys.exit(-1)

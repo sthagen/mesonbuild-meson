@@ -137,7 +137,7 @@ of all the work behind the scenes to make this work.
 
 You can use the keyword `method` to let meson know what method to use
 when searching for the dependency. The default value is `auto`.
-Aditional dependencies methods are `pkg-config`, `config-tool`, `cmake`,
+Additional dependencies methods are `pkg-config`, `config-tool`, `cmake`,
 `system`, `sysconfig`, `qmake`, `extraframework` and `dub`.
 
 ```meson
@@ -159,11 +159,11 @@ to use both the old-style `<NAME>_LIBRARIES` variables as well as
 imported targets.
 
 It is possible to manually specify a list of CMake targets that should
-be used with the `modules` property. Howerver, this step is optional
+be used with the `modules` property. However, this step is optional
 since meson tries to automatically guess the correct target based on the
 name of the dependency.
 
-Depending on the dependency it may be neccessary to explicitly specify
+Depending on the dependency it may be necessary to explicitly specify
 a CMake target with the `modules` property if meson is unable to guess
 it automatically.
 
@@ -285,6 +285,22 @@ environment variables.
 You can set the argument `threading` to `single` to use boost
 libraries that have been compiled for single-threaded use instead.
 
+## CUDA
+
+*(added 0.53.0)*
+
+Enables compiling and linking against the CUDA Toolkit. The `version` 
+and `modules` keywords may be passed to request the use of a specific 
+CUDA Toolkit version and/or additional CUDA libraries, correspondingly:
+
+```meson
+dep = dependency('cuda', version : '>=10', modules : ['cublas'])
+```
+
+Note that explicitly adding this dependency is only necessary if you are 
+using CUDA Toolkit from a C/C++ file or project, or if you are utilizing 
+additional toolkit libraries that need to be explicitly linked to.
+
 ## CUPS
 
 `method` may be `auto`, `config-tool`, `pkg-config`, `cmake` or `extraframework`.
@@ -315,7 +331,8 @@ as getting it to work standalone is tricky.
 
 You can set the `main` keyword argument to `true` to use the `main()`
 function provided by GTest:
-```
+
+```meson
 gtest_dep = dependency('gtest', main : true, required : false)
 e = executable('testprog', 'test.cc', dependencies : gtest_dep)
 test('gtest test', e)
@@ -523,18 +540,6 @@ Meson substitutes `modules` to `wx-config` invocation, it generates
 - `compile_args` using `wx-config --cxxflags $modules...`
 - `link_args` using `wx-config --libs $modules...`
 
-## Shaderc
-
-*(added 0.51.0)*
-
-Shaderc currently does not ship with any means of detection. Nevertheless, Meson
-can try to detect it using `pkg-config`, but will default to looking for the
-appropriate library manually. If the `static` keyword argument is `true`,
-`shaderc_combined` is preferred. Otherwise, `shaderc_shared` is preferred. Note
-that it is not possible to obtain the shaderc version using this method.
-
-`method` may be `auto`, `pkg-config` or `system`.
-
 ### Example
 
 ```meson
@@ -550,6 +555,18 @@ $ wx-config --cxxflags std stc
 # link_args:
 $ wx-config --libs std stc
 ```
+
+## Shaderc
+
+*(added 0.51.0)*
+
+Shaderc currently does not ship with any means of detection. Nevertheless, Meson
+can try to detect it using `pkg-config`, but will default to looking for the
+appropriate library manually. If the `static` keyword argument is `true`,
+`shaderc_combined` is preferred. Otherwise, `shaderc_shared` is preferred. Note
+that it is not possible to obtain the shaderc version using this method.
+
+`method` may be `auto`, `pkg-config` or `system`.
 
 <hr>
 <a name="footnote1">1</a>: They may appear to be case-insensitive, if the

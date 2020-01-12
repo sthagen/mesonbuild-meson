@@ -13,7 +13,7 @@
 # limitations under the License.
 
 import os.path
-import typing
+import typing as T
 
 from .. import coredata
 from ..mesonlib import MachineChoice, MesonException, mlog, version_compare
@@ -35,7 +35,7 @@ from .compilers import (
     Compiler,
 )
 
-if typing.TYPE_CHECKING:
+if T.TYPE_CHECKING:
     from ..envconfig import MachineInfo
 
 
@@ -48,10 +48,11 @@ class CCompiler(CLikeCompiler, Compiler):
         except KeyError:
             raise MesonException('Unknown function attribute "{}"'.format(name))
 
+    language = 'c'
+
     def __init__(self, exelist, version, for_machine: MachineChoice, is_cross: bool,
-                 info: 'MachineInfo', exe_wrapper: typing.Optional[str] = None, **kwargs):
+                 info: 'MachineInfo', exe_wrapper: T.Optional[str] = None, **kwargs):
         # If a child ObjC or CPP class has already set it, don't set it ourselves
-        self.language = 'c'
         Compiler.__init__(self, exelist, version, for_machine, info, **kwargs)
         CLikeCompiler.__init__(self, is_cross, exe_wrapper)
 
@@ -59,14 +60,14 @@ class CCompiler(CLikeCompiler, Compiler):
         return ['-nostdinc']
 
     def sanity_check(self, work_dir, environment):
-        code = 'int main() { int class=0; return class; }\n'
+        code = 'int main(void) { int class=0; return class; }\n'
         return self.sanity_check_impl(work_dir, environment, 'sanitycheckc.c', code)
 
     def has_header_symbol(self, hname, symbol, prefix, env, *, extra_args=None, dependencies=None):
         fargs = {'prefix': prefix, 'header': hname, 'symbol': symbol}
         t = '''{prefix}
         #include <{header}>
-        int main () {{
+        int main(void) {{
             /* If it's not defined as a macro, try to use as a symbol */
             #ifndef {symbol}
                 {symbol};
@@ -145,7 +146,7 @@ class EmscriptenCCompiler(LinkerEnvVarsMixin, EmscriptenMixin, BasicLinkerIsComp
 
 class ArmclangCCompiler(ArmclangCompiler, CCompiler):
     def __init__(self, exelist, version, for_machine: MachineChoice,
-                 info: 'MachineInfo', is_cross, exe_wrapper=None, **kwargs):
+                 is_cross, info: 'MachineInfo', exe_wrapper=None, **kwargs):
         CCompiler.__init__(self, exelist, version, for_machine, is_cross,
                            info, exe_wrapper, **kwargs)
         ArmclangCompiler.__init__(self)
@@ -326,8 +327,6 @@ class IntelClCCompiler(IntelVisualStudioLikeCompiler, VisualStudioLikeCCompilerM
 
     """Intel "ICL" compiler abstraction."""
 
-    __have_warned = False
-
     def __init__(self, exelist, version, for_machine: MachineChoice,
                  is_cross, info: 'MachineInfo', exe_wrap, target, **kwargs):
         CCompiler.__init__(self, exelist, version, for_machine, is_cross,
@@ -346,9 +345,7 @@ class IntelClCCompiler(IntelVisualStudioLikeCompiler, VisualStudioLikeCCompilerM
         args = []
         std = options['c_std']
         if std.value == 'c89':
-            if not self.__have_warned:
-                self.__have_warned = True
-                mlog.warning("ICL doesn't explicitly implement c89, setting the standard to 'none', which is close.")
+            mlog.warning("ICL doesn't explicitly implement c89, setting the standard to 'none', which is close.", once=True)
         elif std.value != 'none':
             args.append('/Qstd:' + std.value)
         return args

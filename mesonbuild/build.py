@@ -18,7 +18,7 @@ import itertools, pathlib
 import hashlib
 import pickle
 from functools import lru_cache
-import typing
+import typing as T
 
 from . import environment
 from . import dependencies
@@ -117,10 +117,11 @@ class Build:
         self.environment = environment
         self.projects = {}
         self.targets = OrderedDict()
-        self.global_args = PerMachine({}, {})         # type: PerMachine[typing.Dict[str, typing.List[str]]]
-        self.projects_args = PerMachine({}, {})       # type: PerMachine[typing.Dict[str, typing.List[str]]]
-        self.global_link_args = PerMachine({}, {})    # type: PerMachine[typing.Dict[str, typing.List[str]]]
-        self.projects_link_args = PerMachine({}, {})  # type: PerMachine[typing.Dict[str, typing.List[str]]]
+        self.run_target_names = set() # type: T.Set[T.Tuple[str, str]]
+        self.global_args = PerMachine({}, {})         # type: PerMachine[T.Dict[str, T.List[str]]]
+        self.projects_args = PerMachine({}, {})       # type: PerMachine[T.Dict[str, T.List[str]]]
+        self.global_link_args = PerMachine({}, {})    # type: PerMachine[T.Dict[str, T.List[str]]]
+        self.projects_link_args = PerMachine({}, {})  # type: PerMachine[T.Dict[str, T.List[str]]]
         self.tests = []
         self.benchmarks = []
         self.headers = []
@@ -136,7 +137,7 @@ class Build:
         self.dep_manifest_name = None
         self.dep_manifest = {}
         self.stdlibs = PerMachine({}, {})
-        self.test_setups = {}                         # type: typing.Dict[str, TestSetup]
+        self.test_setups = {}                         # type: T.Dict[str, TestSetup]
         self.test_setup_default_name = None
         self.find_overrides = {}
         self.searched_programs = set() # The list of all programs that have been searched for.
@@ -330,7 +331,7 @@ class EnvironmentVariables:
 
         return value
 
-    def get_env(self, full_env: typing.Dict[str, str]) -> typing.Dict[str, str]:
+    def get_env(self, full_env: T.Dict[str, str]) -> T.Dict[str, str]:
         env = full_env.copy()
         for method, name, values, kwargs in self.envvars:
             env[name] = method(full_env, name, values, kwargs)
@@ -353,6 +354,26 @@ a hard error in the future.''' % name)
         self.option_overrides = {}
         if not hasattr(self, 'typename'):
             raise RuntimeError('Target type is not set for target class "{}". This is a bug'.format(type(self).__name__))
+
+    def __lt__(self, other: T.Any) -> T.Union[bool, 'NotImplemented']:
+        if not hasattr(other, 'get_id') and not callable(other.get_id):
+            return NotImplemented
+        return self.get_id() < other.get_id()
+
+    def __le__(self, other: T.Any) -> T.Union[bool, 'NotImplemented']:
+        if not hasattr(other, 'get_id') and not callable(other.get_id):
+            return NotImplemented
+        return self.get_id() <= other.get_id()
+
+    def __gt__(self, other: T.Any) -> T.Union[bool, 'NotImplemented']:
+        if not hasattr(other, 'get_id') and not callable(other.get_id):
+            return NotImplemented
+        return self.get_id() > other.get_id()
+
+    def __ge__(self, other: T.Any) -> T.Union[bool, 'NotImplemented']:
+        if not hasattr(other, 'get_id') and not callable(other.get_id):
+            return NotImplemented
+        return self.get_id() >= other.get_id()
 
     def get_install_dir(self, environment):
         # Find the installation directory.
@@ -410,7 +431,7 @@ a hard error in the future.''' % name)
         return self.construct_id_from_path(
             self.subdir, self.name, self.type_suffix())
 
-    def process_kwargs(self, kwargs):
+    def process_kwargs_base(self, kwargs):
         if 'build_by_default' in kwargs:
             self.build_by_default = kwargs['build_by_default']
             if not isinstance(self.build_by_default, bool):
@@ -486,9 +507,6 @@ class BuildTarget(Target):
         self.validate_sources()
         self.validate_install(environment)
         self.check_module_linking()
-
-    def __lt__(self, other):
-        return self.get_id() < other.get_id()
 
     def __repr__(self):
         repr_str = "<{0} {1}: {2}>"
@@ -788,7 +806,7 @@ class BuildTarget(Target):
         return self.install_mode
 
     def process_kwargs(self, kwargs, environment):
-        super().process_kwargs(kwargs)
+        self.process_kwargs_base(kwargs)
         self.copy_kwargs(kwargs)
         kwargs.get('modules', [])
         self.need_install = kwargs.get('install', self.need_install)
@@ -1095,14 +1113,17 @@ You probably should put it in link_with instead.''')
                     raise InvalidArguments('Custom target {!r} is not linkable.'.format(t))
                 if not t.get_filename().endswith('.a'):
                     raise InvalidArguments('Can only link_whole custom targets that are .a archives.')
+                if isinstance(self, StaticLibrary):
+                    # FIXME: We could extract the .a archive to get object files
+                    raise InvalidArguments('Cannot link_whole a custom target into a static library')
             elif not isinstance(t, StaticLibrary):
                 raise InvalidArguments('{!r} is not a static library.'.format(t))
-            if isinstance(self, SharedLibrary) and not t.pic:
+            elif isinstance(self, SharedLibrary) and not t.pic:
                 msg = "Can't link non-PIC static library {!r} into shared library {!r}. ".format(t.name, self.name)
                 msg += "Use the 'pic' option to static_library to build with PIC."
                 raise InvalidArguments(msg)
             if self.for_machine is not t.for_machine:
-                msg = 'Tried to mix libraries for machines {1} and {2} in target {!r}'.format(self.name, self.for_machine, t.for_machine)
+                msg = 'Tried to mix libraries for machines {1} and {2} in target {0!r}'.format(self.name, self.for_machine, t.for_machine)
                 if self.environment.is_cross_build():
                     raise InvalidArguments(msg + ' This is not possible in a cross build.')
                 else:
@@ -1150,7 +1171,7 @@ You probably should put it in link_with instead.''')
                 raise MesonException('File %s does not exist.' % f)
         self.pch[language] = pchlist
 
-    def add_include_dirs(self, args, set_is_system: typing.Optional[str] = None):
+    def add_include_dirs(self, args, set_is_system: T.Optional[str] = None):
         ids = []
         for a in args:
             # FIXME same hack, forcibly unpack from holder.
@@ -1179,7 +1200,7 @@ You probably should put it in link_with instead.''')
     def get_aliases(self):
         return {}
 
-    def get_langs_used_by_deps(self) -> typing.List[str]:
+    def get_langs_used_by_deps(self) -> T.List[str]:
         '''
         Sometimes you want to link to a C++ library that exports C API, which
         means the linker must link in the C++ stdlib, and we must use a C++
@@ -2001,9 +2022,6 @@ class CustomTarget(Target):
     def get_default_install_dir(self, environment):
         return None
 
-    def __lt__(self, other):
-        return self.get_id() < other.get_id()
-
     def __repr__(self):
         repr_str = "<{0} {1}: {2}>"
         return repr_str.format(self.__class__.__name__, self.get_id(), self.command)
@@ -2064,7 +2082,7 @@ class CustomTarget(Target):
         return final_cmd
 
     def process_kwargs(self, kwargs, backend):
-        super().process_kwargs(kwargs)
+        self.process_kwargs_base(kwargs)
         self.sources = extract_as_list(kwargs, 'input', unholder=True)
         if 'output' not in kwargs:
             raise InvalidArguments('Missing keyword argument "output".')
@@ -2241,12 +2259,12 @@ class RunTarget(Target):
         self.args = args
         self.dependencies = dependencies
 
-    def __lt__(self, other):
-        return self.get_id() < other.get_id()
-
     def __repr__(self):
         repr_str = "<{0} {1}: {2}>"
         return repr_str.format(self.__class__.__name__, self.get_id(), self.command)
+
+    def process_kwargs(self, kwargs):
+        return self.process_kwargs_base(kwargs)
 
     def get_dependencies(self):
         return self.dependencies
@@ -2430,7 +2448,7 @@ class RunScript(dict):
         self['args'] = args
 
 class TestSetup:
-    def __init__(self, exe_wrapper: typing.Optional[typing.List[str]], gdb: bool,
+    def __init__(self, exe_wrapper: T.Optional[T.List[str]], gdb: bool,
                  timeout_multiplier: int, env: EnvironmentVariables):
         self.exe_wrapper = exe_wrapper
         self.gdb = gdb
@@ -2473,7 +2491,8 @@ def load(build_dir: str) -> Build:
         raise MesonException(
             "Build data file {!r} references functions or classes that don't "
             "exist. This probably means that it was generated with an old "
-            "version of meson. Try running meson {} --wipe".format(filename, build_dir))
+            "version of meson. Try running from the source directory "
+            "meson {} --wipe".format(filename, build_dir))
     if not isinstance(obj, Build):
         raise MesonException(load_fail_msg)
     return obj

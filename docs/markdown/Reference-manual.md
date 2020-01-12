@@ -6,7 +6,6 @@ The following functions are available in build files. Click on each to
 see the description and usage. The objects returned by them are [list
 afterwards](#returned-objects).
 
-
 ### add_global_arguments()
 
 ``` meson
@@ -144,6 +143,9 @@ build target (e.g. return value of [executable()](#executable), custom_target(),
 
 Abort with an error message if `condition` evaluates to `false`.
 
+*Since 0.53.0* `message` argument is optional and defaults to print the condition
+statement instead.
+
 ### benchmark()
 
 ``` meson
@@ -151,11 +153,12 @@ Abort with an error message if `condition` evaluates to `false`.
 ```
 
 Creates a benchmark item that will be run when the benchmark target is
-run. The behavior of this function is identical to `test` with the
-exception that there is no `is_parallel` keyword, because benchmarks
-are never run in parallel.
+run. The behavior of this function is identical to [`test()`](#test) except for:
 
-*Note:* Prior to 0.52.0 benchmark would warn that `depends` and `proiority`
+* benchmark() has no `is_parallel` keyword because benchmarks are not run in parallel
+* benchmark() does not automatically add the `MALLOC_PERTURB_` environment variable
+
+*Note:* Prior to 0.52.0 benchmark would warn that `depends` and `priority`
 were unsupported, this is incorrect
 
 ### both_libraries()
@@ -419,7 +422,7 @@ keyword arguments.
 
 Finds an external dependency (usually a library installed on your
 system) with the given name with `pkg-config` and [with
-CMake](Dependencies.md#CMake) if `pkg-config` fails. Additionally,
+CMake](Dependencies.md#cmake) if `pkg-config` fails. Additionally,
 frameworks (OSX only) and [library-specific fallback detection
 logic](Dependencies.md#dependencies-with-custom-lookup-functionality)
 are also supported. This function supports the following keyword
@@ -697,9 +700,12 @@ Keyword arguments are the following:
   [`dependency()`](#dependency) for argument format. The version of the program
   is determined by running `program_name --version` command. If stdout is empty
   it fallbacks to stderr. If the output contains more text than simply a version
-  number, only the first occurence of numbers separated by dots is kept.
+  number, only the first occurrence of numbers separated by dots is kept.
   If the output is more complicated than that, the version checking will have to
   be done manually using [`run_command()`](#run_command).
+
+- `dirs` *(since 0.53.0)* Extra list of absolute paths where to look for program
+  names.
 
 Meson will also autodetect scripts with a shebang line and run them
 with the executable/interpreter specified in it both on Windows
@@ -709,14 +715,16 @@ set). Hence, you *must not* manually add the interpreter while using
 this script as part of a list of commands.
 
 If you need to check for a program in a non-standard location, you can
-just pass an absolute path to `find_program`, e.g.  ``` setcap =
-find_program('setcap', '/usr/sbin/setcap', '/sbin/setcap', required :
-false) ```
+just pass an absolute path to `find_program`, e.g.
+
+```meson
+setcap = find_program('setcap', '/usr/sbin/setcap', '/sbin/setcap', required : false)
+```
 
 It is also possible to pass an array to `find_program` in case you
 need to construct the set of paths to search on the fly:
 
-```
+```meson
 setcap = find_program(['setcap', '/usr/sbin/setcap', '/sbin/setcap'], required : false)
 ```
 
@@ -1148,7 +1156,10 @@ You should use this instead of [`shared_library`](#shared_library),
 [`static_library`](#static_library) or
 [`both_libraries`](#both_libraries) most of the time. This allows you
 to toggle your entire project (including subprojects) from shared to
-static with only one option.
+static with only one option. This option applies to libraries being
+built internal to the entire project. For external dependencies, the
+default library type preferred is shared. This can be adapted on a per
+library basis using the [dependency()](#dependency)) `static` keyword.
 
 The keyword arguments for this are the same as for
 [`executable`](#executable) with the following additions:
@@ -1193,6 +1204,67 @@ This function prints its argument to stdout.
 This function prints its argument to stdout prefixed with WARNING:.
 
 *Added 0.44.0*
+
+### summary()
+
+``` meson
+    void summary(key, value)
+    void summary(dictionary)
+```
+
+This function is used to summarize build configuration at the end of the build
+process. This function provides a way for projects (and subprojects) to report
+this information in a clear way.
+
+The content is a serie of key/value pairs grouped into sections. If the section
+keyword argument is omitted, those key/value pairs are implicitly grouped into a section
+with no title. key/value pairs can optionally be grouped into a dictionary,
+but keep in mind that dictionaries does not guarantee ordering. `key` must be string,
+`value` can only be integer, boolean, string, or a list of those.
+
+`summary()` can be called multiple times as long as the same section/key
+pair doesn't appear twice. All sections will be collected and printed at
+the end of the configuration in the same order as they have been called.
+
+Keyword arguments:
+- `bool_yn` if set to true, all boolean values will be replaced by green YES
+  or red NO.
+- `section` title to group a set of key/value pairs.
+
+Example:
+```meson
+project('My Project', version : '1.0')
+summary({'bindir': get_option('bindir'),
+         'libdir': get_option('libdir'),
+         'datadir': get_option('datadir'),
+        }, section: 'Directories')
+summary({'Some boolean': false,
+         'Another boolean': true,
+         'Some string': 'Hello World',
+         'A list': ['string', 1, true],
+        }, section: 'Configuration')
+```
+
+Output:
+```
+My Project 1.0
+
+  Directories
+             prefix: /opt/gnome
+             bindir: bin
+             libdir: lib/x86_64-linux-gnu
+            datadir: share
+
+  Configuration
+       Some boolean: False
+    Another boolean: True
+        Some string: Hello World
+             A list: string
+                     1
+                     True
+```
+
+*Added 0.53.0*
 
 ### project()
 
@@ -1504,7 +1576,25 @@ object](#build-target-object) returned by
 object](#external-program-object) returned by
 [`find_program()`](#find_program).
 
-Keyword arguments are the following:
+By default, environment variable
+[`MALLOC_PERTURB_`](http://man7.org/linux/man-pages/man3/mallopt.3.html)
+is automatically set by `meson test` to a random value between 1..255.
+This can help find memory leaks on configurations using glibc,
+including with non-GCC compilers. However, this can have a performance impact,
+and may fail a test due to external libraries whose internals are out of the
+user's control. To check if this feature is causing an expected runtime crash,
+disable the feature by temporarily setting environment variable
+`MALLOC_PERTURB_=0`. While it's preferable to only temporarily disable this
+check, if a project requires permanent disabling of this check
+in meson.build do like:
+
+```meson
+nomalloc = environment({'MALLOC_PERTURB_': '0'})
+
+test(..., env: nomalloc, ...)
+```
+
+#### test() Keyword arguments
 
 - `args` arguments to pass to the executable
 
@@ -1957,6 +2047,9 @@ the following methods:
   such as clang or icc, especially when they use different syntax on different
   operating systems.
 
+- `get_linker_id()` *(added 0.53.0)* returns a string identifying the linker.
+   For example, `ld.bfd`, `link`, [and more](Reference-tables.md#linker-ids).
+
 - `get_supported_arguments(list_of_string)` *(added 0.43.0)* returns
   an array containing only the arguments supported by the compiler,
   as if `has_argument` were called on them individually.
@@ -2272,7 +2365,7 @@ an external dependency with the following methods:
 
  - `get_variable(cmake : str, pkgconfig : str, configtool : str,
    default_value : str, pkgconfig_define : [str, str])` *(Added in
-   0.51.0)* A generic variable getter method, which repalces the
+   0.51.0)* A generic variable getter method, which replaces the
    get_*type*_variable methods. This allows one to get the variable
    from a dependency without knowing specifically how that dependency
    was found. If default_value is set and the value cannot be gotten

@@ -13,12 +13,12 @@
 # limitations under the License.
 
 import subprocess, os.path
-import typing
+import typing as T
 
 from ..mesonlib import EnvironmentException, MachineChoice, Popen_safe
 from .compilers import Compiler, rust_buildtype_args, clike_debug_args
 
-if typing.TYPE_CHECKING:
+if T.TYPE_CHECKING:
     from ..envconfig import MachineInfo
     from ..environment import Environment  # noqa: F401
 
@@ -32,11 +32,11 @@ rust_optimization_args = {'0': [],
 
 class RustCompiler(Compiler):
 
-    LINKER_PREFIX = '-Wl,'
+    # rustc doesn't invoke the compiler itself, it doesn't need a LINKER_PREFIX
+    language = 'rust'
 
     def __init__(self, exelist, version, for_machine: MachineChoice,
                  is_cross, info: 'MachineInfo', exe_wrapper=None, **kwargs):
-        self.language = 'rust'
         super().__init__(exelist, version, for_machine, info, **kwargs)
         self.exe_wrapper = exe_wrapper
         self.id = 'rustc'
@@ -109,3 +109,7 @@ class RustCompiler(Compiler):
 
     def get_std_exe_link_args(self):
         return []
+
+    # Rust does not have a use_linker_args because it dispatches to a gcc-like
+    # C compiler for dynamic linking, as such we invoke the C compiler's
+    # use_linker_args method instead.

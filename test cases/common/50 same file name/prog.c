@@ -1,6 +1,6 @@
-int func1();
-int func2();
+int func1(void);
+int func2(void);
 
-int main(int argc, char **argv) {
+int main(void) {
     return func1() - func2();
 }

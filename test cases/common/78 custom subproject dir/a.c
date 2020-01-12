@@ -1,8 +1,8 @@
 #include<assert.h>
-char func_b();
-char func_c();
+char func_b(void);
+char func_c(void);
 
-int main(int argc, char **argv) {
+int main(void) {
     if(func_b() != 'b') {
         return 1;
     }

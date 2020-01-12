@@ -26,7 +26,8 @@ from ..interpreterbase import permittedKwargs, FeatureNew, FeatureNewKwargs
 already_warned_objs = set()
 
 class DependenciesHelper:
-    def __init__(self, name):
+    def __init__(self, state, name):
+        self.state = state
         self.name = name
         self.pub_libs = []
         self.pub_reqs = []
@@ -73,6 +74,8 @@ class DependenciesHelper:
         '''Returns string names of requirements'''
         processed_reqs = []
         for obj in mesonlib.listify(reqs, unholder=True):
+            if not isinstance(obj, str):
+                FeatureNew('pkgconfig.generate requirement from non-string object', '0.46.0').use(self.state.subproject)
             if hasattr(obj, 'generated_pc'):
                 self._check_generated_pc_deprecation(obj)
                 processed_reqs.append(obj.generated_pc)
@@ -231,7 +234,7 @@ class PkgConfigModule(ExtensionModule):
             return l.name[3:]
         # If the library is imported via an import library which is always
         # named after the target name, '-lfoo' is correct.
-        if l.import_filename:
+        if isinstance(l, build.SharedLibrary) and l.import_filename:
             return l.name
         # In other cases, we can't guarantee that the compiler will be able to
         # find the library via '-lfoo', so tell the user that.
@@ -395,7 +398,7 @@ class PkgConfigModule(ExtensionModule):
         if mainlib:
             libraries = [mainlib] + libraries
 
-        deps = DependenciesHelper(filebase)
+        deps = DependenciesHelper(state, filebase)
         deps.add_pub_libs(libraries)
         deps.add_priv_libs(kwargs.get('libraries_private', []))
         deps.add_pub_reqs(kwargs.get('requires', []))
@@ -437,7 +440,10 @@ class PkgConfigModule(ExtensionModule):
         pcfile = filebase + '.pc'
         pkgroot = kwargs.get('install_dir', default_install_dir)
         if pkgroot is None:
-            pkgroot = os.path.join(state.environment.coredata.get_builtin_option('libdir'), 'pkgconfig')
+            if mesonlib.is_freebsd():
+                pkgroot = os.path.join(state.environment.coredata.get_builtin_option('prefix'), 'libdata', 'pkgconfig')
+            else:
+                pkgroot = os.path.join(state.environment.coredata.get_builtin_option('libdir'), 'pkgconfig')
         if not isinstance(pkgroot, str):
             raise mesonlib.MesonException('Install_dir must be a string.')
         self.generate_pkgconfig_file(state, deps, subdirs, name, description, url,

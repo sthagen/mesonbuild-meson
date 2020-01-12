@@ -1,5 +1,5 @@
-int cppfunc();
+int cppfunc(void);
 
-int main(int argc, char **argv) {
+int main(void) {
     return cppfunc() != 42;
 }

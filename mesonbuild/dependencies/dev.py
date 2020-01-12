@@ -25,15 +25,15 @@ from ..mesonlib import version_compare, stringlistify, extract_as_list, MachineC
 from ..environment import get_llvm_tool_names
 from .base import (
     DependencyException, DependencyMethods, ExternalDependency, PkgConfigDependency,
-    strip_system_libdirs, ConfigToolDependency, CMakeDependency, HasNativeKwarg
+    strip_system_libdirs, ConfigToolDependency, CMakeDependency
 )
 from .misc import ThreadDependency
 
-from typing import List, Tuple
+import typing as T
 
 
 def get_shared_library_suffix(environment, for_machine: MachineChoice):
-    """This is only gauranteed to work for languages that compile to machine
+    """This is only guaranteed to work for languages that compile to machine
     code, not for languages like C# that use a bytecode and always end in .dll
     """
     m = environment.machines[for_machine]
@@ -205,17 +205,13 @@ class LLVMDependencyConfigTool(ConfigToolDependency):
     __cpp_blacklist = {'-DNDEBUG'}
 
     def __init__(self, environment, kwargs):
-        # Already called by `super().__init__`, but need `self.for_machine`
-        # before `super().__init__` is called.
-        HasNativeKwarg.__init__(self, kwargs)
-
         self.tools = get_llvm_tool_names('llvm-config')
 
         # Fedora starting with Fedora 30 adds a suffix of the number
         # of bits in the isa that llvm targets, for example, on x86_64
         # and aarch64 the name will be llvm-config-64, on x86 and arm
         # it will be llvm-config-32.
-        if environment.machines[self.for_machine].is_64_bit:
+        if environment.machines[self.get_for_machine_from_kwargs(kwargs)].is_64_bit:
             self.tools.append('llvm-config-64')
         else:
             self.tools.append('llvm-config-32')
@@ -292,7 +288,7 @@ class LLVMDependencyConfigTool(ConfigToolDependency):
         if not self.static and mode == 'static':
             # If llvm is configured with LLVM_BUILD_LLVM_DYLIB but not with
             # LLVM_LINK_LLVM_DYLIB and not LLVM_BUILD_SHARED_LIBS (which
-            # upstreams doesn't recomend using), then llvm-config will lie to
+            # upstream doesn't recommend using), then llvm-config will lie to
             # you about how to do shared-linking. It wants to link to a a bunch
             # of individual shared libs (which don't exist because llvm wasn't
             # built with LLVM_BUILD_SHARED_LIBS.
@@ -305,7 +301,7 @@ class LLVMDependencyConfigTool(ConfigToolDependency):
             except DependencyException:
                 lib_ext = get_shared_library_suffix(environment, self.for_machine)
                 libdir = self.get_config_value(['--libdir'], 'link_args')[0]
-                # Sort for reproducability
+                # Sort for reproducibility
                 matches = sorted(glob.iglob(os.path.join(libdir, 'libLLVM*{}'.format(lib_ext))))
                 if not matches:
                     if self.required:
@@ -411,10 +407,10 @@ class LLVMDependencyCMake(CMakeDependency):
         # Use a custom CMakeLists.txt for LLVM
         return 'CMakeListsLLVM.txt'
 
-    def _extra_cmake_opts(self) -> List[str]:
+    def _extra_cmake_opts(self) -> T.List[str]:
         return ['-DLLVM_MESON_MODULES={}'.format(';'.join(self.llvm_modules + self.llvm_opt_modules))]
 
-    def _map_module_list(self, modules: List[Tuple[str, bool]]) -> List[Tuple[str, bool]]:
+    def _map_module_list(self, modules: T.List[T.Tuple[str, bool]]) -> T.List[T.Tuple[str, bool]]:
         res = []
         for mod, required in modules:
             cm_targets = self.traceparser.get_cmake_var('MESON_LLVM_TARGETS_{}'.format(mod))

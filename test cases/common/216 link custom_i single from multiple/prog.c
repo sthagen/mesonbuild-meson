@@ -1,5 +1,5 @@
-int flob();
+int flob(void);
 
-int main(int argc, char **argv) {
+int main(void) {
     return (flob() == 1 ? 0 : 1);
 }

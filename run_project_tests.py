@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-# Copyright 2012-2016 The Meson development team
+# Copyright 2012-2019 The Meson development team
 
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,13 +14,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import typing
+import typing as T
 import itertools
 import os
 import subprocess
 import shutil
 import sys
 import signal
+import shlex
 from io import StringIO
 from ast import literal_eval
 from enum import Enum
@@ -46,6 +47,12 @@ from run_tests import get_backend_commands, get_backend_args_for_dir, Backend
 from run_tests import ensure_backend_detects_changes
 from run_tests import guess_backend
 
+ALL_TESTS = ['cmake', 'common', 'warning-meson', 'failing-meson', 'failing-build', 'failing-test',
+             'kconfig', 'platform-osx', 'platform-windows', 'platform-linux',
+             'java', 'C#', 'vala',  'rust', 'd', 'objective c', 'objective c++',
+             'fortran', 'swift', 'cuda', 'python3', 'python', 'fpga', 'frameworks', 'nasm', 'wasm'
+             ]
+
 
 class BuildStep(Enum):
     configure = 1
@@ -57,12 +64,13 @@ class BuildStep(Enum):
 
 
 class TestResult:
-    def __init__(self, msg, step, stdo, stde, mlog, conftime=0, buildtime=0, testtime=0):
+    def __init__(self, msg, step, stdo, stde, mlog, cicmds, conftime=0, buildtime=0, testtime=0):
         self.msg = msg
         self.step = step
         self.stdo = stdo
         self.stde = stde
         self.mlog = mlog
+        self.cicmds = cicmds
         self.conftime = conftime
         self.buildtime = buildtime
         self.testtime = testtime
@@ -109,7 +117,7 @@ def setup_commands(optbackend):
     compile_commands, clean_commands, test_commands, install_commands, \
         uninstall_commands = get_backend_commands(backend, do_debug)
 
-def get_relative_files_list_from_dir(fromdir: Path) -> typing.List[Path]:
+def get_relative_files_list_from_dir(fromdir: Path) -> T.List[Path]:
     return [file.relative_to(fromdir) for file in fromdir.rglob('*') if file.is_file()]
 
 def platform_fix_name(fname: str, compiler, env) -> str:
@@ -199,7 +207,7 @@ def validate_install(srcdir: str, installdir: Path, compiler, env) -> str:
     installdir = Path(installdir)
     # If this exists, the test does not install any other files
     noinst_file = Path('usr/no-installed-files')
-    expected = {}  # type: typing.Dict[Path, bool]
+    expected = {}  # type: T.Dict[Path, bool]
     ret_msg = ''
     # Generate list of expected files
     if (installdir / noinst_file).is_file():
@@ -269,6 +277,32 @@ def red(text):
 
 def yellow(text):
     return mlog.yellow(text).get_text(mlog.colorize_console)
+
+
+def _run_ci_include(args: T.List[str]) -> str:
+    if not args:
+        return 'At least one parameter required'
+    try:
+        file_path = Path(args[0])
+        data = file_path.open(errors='ignore', encoding='utf-8').read()
+        return 'Included file {}:\n{}\n'.format(args[0], data)
+    except Exception:
+        return 'Failed to open {} ({})'.format(args[0])
+
+ci_commands = {
+    'ci_include': _run_ci_include
+}
+
+def run_ci_commands(raw_log: str) -> T.List[str]:
+    res = []
+    for l in raw_log.splitlines():
+        if not l.startswith('!meson_ci!/'):
+            continue
+        cmd = shlex.split(l[11:])
+        if not cmd or cmd[0] not in ci_commands:
+            continue
+        res += ['CI COMMAND {}:\n{}\n'.format(cmd[0], ci_commands[cmd[0]](cmd[1:]))]
+    return res
 
 
 def run_test_inprocess(testdir):
@@ -372,16 +406,17 @@ def _run_test(testdir, test_build_dir, install_dir, extra_args, compiler, backen
         mesonlog = logfile.open(errors='ignore', encoding='utf-8').read()
     except Exception:
         mesonlog = no_meson_log_msg
+    cicmds = run_ci_commands(mesonlog)
     gen_time = time.time() - gen_start
     if should_fail == 'meson':
         if returncode == 1:
-            return TestResult('', BuildStep.configure, stdo, stde, mesonlog, gen_time)
+            return TestResult('', BuildStep.configure, stdo, stde, mesonlog, cicmds, gen_time)
         elif returncode != 0:
-            return TestResult('Test exited with unexpected status {}'.format(returncode), BuildStep.configure, stdo, stde, mesonlog, gen_time)
+            return TestResult('Test exited with unexpected status {}'.format(returncode), BuildStep.configure, stdo, stde, mesonlog, cicmds, gen_time)
         else:
-            return TestResult('Test that should have failed succeeded', BuildStep.configure, stdo, stde, mesonlog, gen_time)
+            return TestResult('Test that should have failed succeeded', BuildStep.configure, stdo, stde, mesonlog, cicmds, gen_time)
     if returncode != 0:
-        return TestResult('Generating the build system failed.', BuildStep.configure, stdo, stde, mesonlog, gen_time)
+        return TestResult('Generating the build system failed.', BuildStep.configure, stdo, stde, mesonlog, cicmds, gen_time)
     builddata = build.load(test_build_dir)
     # Touch the meson.build file to force a regenerate so we can test that
     # regeneration works before a build is run.
@@ -396,10 +431,10 @@ def _run_test(testdir, test_build_dir, install_dir, extra_args, compiler, backen
     stde += e
     if should_fail == 'build':
         if pc.returncode != 0:
-            return TestResult('', BuildStep.build, stdo, stde, mesonlog, gen_time)
-        return TestResult('Test that should have failed to build succeeded', BuildStep.build, stdo, stde, mesonlog, gen_time)
+            return TestResult('', BuildStep.build, stdo, stde, mesonlog, cicmds, gen_time)
+        return TestResult('Test that should have failed to build succeeded', BuildStep.build, stdo, stde, mesonlog, cicmds, gen_time)
     if pc.returncode != 0:
-        return TestResult('Compiling source code failed.', BuildStep.build, stdo, stde, mesonlog, gen_time, build_time)
+        return TestResult('Compiling source code failed.', BuildStep.build, stdo, stde, mesonlog, cicmds, gen_time, build_time)
     # Touch the meson.build file to force a regenerate so we can test that
     # regeneration works after a build is complete.
     ensure_backend_detects_changes(backend)
@@ -413,10 +448,10 @@ def _run_test(testdir, test_build_dir, install_dir, extra_args, compiler, backen
     mesonlog += test_log
     if should_fail == 'test':
         if returncode != 0:
-            return TestResult('', BuildStep.test, stdo, stde, mesonlog, gen_time)
-        return TestResult('Test that should have failed to run unit tests succeeded', BuildStep.test, stdo, stde, mesonlog, gen_time)
+            return TestResult('', BuildStep.test, stdo, stde, mesonlog, cicmds, gen_time)
+        return TestResult('Test that should have failed to run unit tests succeeded', BuildStep.test, stdo, stde, mesonlog, cicmds, gen_time)
     if returncode != 0:
-        return TestResult('Running unit tests failed.', BuildStep.test, stdo, stde, mesonlog, gen_time, build_time, test_time)
+        return TestResult('Running unit tests failed.', BuildStep.test, stdo, stde, mesonlog, cicmds, gen_time, build_time, test_time)
     # Do installation, if the backend supports it
     if install_commands:
         env = os.environ.copy()
@@ -426,20 +461,20 @@ def _run_test(testdir, test_build_dir, install_dir, extra_args, compiler, backen
         stdo += o
         stde += e
         if pi.returncode != 0:
-            return TestResult('Running install failed.', BuildStep.install, stdo, stde, mesonlog, gen_time, build_time, test_time)
+            return TestResult('Running install failed.', BuildStep.install, stdo, stde, mesonlog, cicmds, gen_time, build_time, test_time)
     # Clean with subprocess
     env = os.environ.copy()
     pi, o, e = Popen_safe(clean_commands + dir_args, cwd=test_build_dir, env=env)
     stdo += o
     stde += e
     if pi.returncode != 0:
-        return TestResult('Running clean failed.', BuildStep.clean, stdo, stde, mesonlog, gen_time, build_time, test_time)
+        return TestResult('Running clean failed.', BuildStep.clean, stdo, stde, mesonlog, cicmds, gen_time, build_time, test_time)
     if not install_commands:
-        return TestResult('', BuildStep.install, '', '', mesonlog, gen_time, build_time, test_time)
+        return TestResult('', BuildStep.install, '', '', mesonlog, cicmds, gen_time, build_time, test_time)
     return TestResult(validate_install(testdir, install_dir, compiler, builddata.environment),
-                      BuildStep.validate, stdo, stde, mesonlog, gen_time, build_time, test_time)
+                      BuildStep.validate, stdo, stde, mesonlog, cicmds, gen_time, build_time, test_time)
 
-def gather_tests(testdir: Path) -> typing.List[Path]:
+def gather_tests(testdir: Path) -> T.List[Path]:
     test_names = [t.name for t in testdir.glob('*') if t.is_dir()]
     test_names = [t for t in test_names if not t.startswith('.')] # Filter non-tests files (dot files, etc)
     test_nums = [(int(t.split()[0]), t) for t in test_names]
@@ -515,7 +550,7 @@ def skippable(suite, test):
     if test.endswith('10 gtk-doc'):
         return True
 
-    # NetCDF is not in the CI image
+    # NetCDF is not in the CI Docker image
     if test.endswith('netcdf'):
         return True
 
@@ -546,7 +581,7 @@ def skippable(suite, test):
     # Other framework tests are allowed to be skipped on other platforms
     return True
 
-def skip_csharp(backend):
+def skip_csharp(backend) -> bool:
     if backend is not Backend.ninja:
         return True
     if not shutil.which('resgen'):
@@ -586,17 +621,16 @@ def has_broken_rustc() -> bool:
     mesonlib.windows_proof_rmtree(dirname)
     return pc.returncode != 0
 
-def should_skip_rust() -> bool:
+def should_skip_rust(backend: Backend) -> bool:
     if not shutil.which('rustc'):
         return True
     if backend is not Backend.ninja:
         return True
-    if mesonlib.is_windows():
-        if has_broken_rustc():
-            return True
+    if mesonlib.is_windows() and has_broken_rustc():
+        return True
     return False
 
-def detect_tests_to_run(only: typing.List[str]) -> typing.List[typing.Tuple[str, typing.List[Path], bool]]:
+def detect_tests_to_run(only: T.List[str]) -> T.List[T.Tuple[str, T.List[Path], bool]]:
     """
     Parameters
     ----------
@@ -609,8 +643,10 @@ def detect_tests_to_run(only: typing.List[str]) -> typing.List[typing.Tuple[str,
         tests to run
     """
 
-    skip_fortran = not(shutil.which('gfortran') or shutil.which('flang') or
-                       shutil.which('pgfortran') or shutil.which('ifort'))
+    skip_fortran = not(shutil.which('gfortran') or
+                       shutil.which('flang') or
+                       shutil.which('pgfortran') or
+                       shutil.which('ifort'))
 
     # Name, subdirectory, skip condition.
     all_tests = [
@@ -629,12 +665,13 @@ def detect_tests_to_run(only: typing.List[str]) -> typing.List[typing.Tuple[str,
         ('java', 'java', backend is not Backend.ninja or mesonlib.is_osx() or not have_java()),
         ('C#', 'csharp', skip_csharp(backend)),
         ('vala', 'vala', backend is not Backend.ninja or not shutil.which(os.environ.get('VALAC', 'valac'))),
-        ('rust', 'rust', should_skip_rust()),
+        ('rust', 'rust', should_skip_rust(backend)),
         ('d', 'd', backend is not Backend.ninja or not have_d_compiler()),
         ('objective c', 'objc', backend not in (Backend.ninja, Backend.xcode) or not have_objc_compiler()),
         ('objective c++', 'objcpp', backend not in (Backend.ninja, Backend.xcode) or not have_objcpp_compiler()),
         ('fortran', 'fortran', skip_fortran or backend != Backend.ninja),
         ('swift', 'swift', backend not in (Backend.ninja, Backend.xcode) or not shutil.which('swiftc')),
+        # CUDA tests on Windows: use Ninja backend:  python run_project_tests.py --only cuda --backend ninja
         ('cuda', 'cuda', backend not in (Backend.ninja, Backend.xcode) or not shutil.which('nvcc')),
         ('python3', 'python3', backend is not Backend.ninja),
         ('python', 'python', backend is not Backend.ninja),
@@ -644,21 +681,26 @@ def detect_tests_to_run(only: typing.List[str]) -> typing.List[typing.Tuple[str,
         ('wasm', 'wasm', shutil.which('emcc') is None or backend is not Backend.ninja),
     ]
 
+    names = [t[0] for t in all_tests]
+    assert names == ALL_TESTS, 'argparse("--only", choices=ALL_TESTS) need to be updated to match all_tests names'
     if only:
-        names = [t[0] for t in all_tests]
         ind = [names.index(o) for o in only]
         all_tests = [all_tests[i] for i in ind]
     gathered_tests = [(name, gather_tests(Path('test cases', subdir)), skip) for name, subdir, skip in all_tests]
     return gathered_tests
 
-def run_tests(all_tests, log_name_base, failfast: bool, extra_args):
+def run_tests(all_tests: T.List[T.Tuple[str, T.List[Path], bool]],
+              log_name_base: str, failfast: bool,
+              extra_args: T.List[str]) -> T.Tuple[int, int, int]:
     global logfile
     txtname = log_name_base + '.txt'
     with open(txtname, 'w', encoding='utf-8', errors='ignore') as lf:
         logfile = lf
         return _run_tests(all_tests, log_name_base, failfast, extra_args)
 
-def _run_tests(all_tests, log_name_base, failfast: bool, extra_args):
+def _run_tests(all_tests: T.List[T.Tuple[str, T.List[Path], bool]],
+               log_name_base: str, failfast: bool,
+               extra_args: T.List[str]) -> T.Tuple[int, int, int]:
     global stop, executor, futures, system_compiler
     xmlname = log_name_base + '.xml'
     junit_root = ET.Element('testsuites')
@@ -707,6 +749,7 @@ def _run_tests(all_tests, log_name_base, failfast: bool, extra_args):
             if name.startswith('warning'):
                 suite_args = ['--fatal-meson-warnings']
                 should_fail = name.split('warning-')[1]
+
             result = executor.submit(run_test, skipped, t.as_posix(), extra_args + suite_args,
                                      system_compiler, backend, backend_flags, commands, should_fail)
             futures.append((testname, t, result))
@@ -741,6 +784,8 @@ def _run_tests(all_tests, log_name_base, failfast: bool, extra_args):
                         failing_logs.append(result.stdo)
                     else:
                         failing_logs.append(result.stdo)
+                    for cmd_res in result.cicmds:
+                        failing_logs.append(cmd_res)
                     failing_logs.append(result.stde)
                     if failfast:
                         print("Cancelling the rest of the tests")
@@ -867,21 +912,53 @@ def detect_system_compiler():
                     raise RuntimeError("Could not find C compiler.")
         print()
 
+def print_tool_versions():
+    tools = [
+        {
+            'tool': 'cmake',
+            'args': ['--version'],
+            'regex': re.compile(r'^cmake version ([0-9]+(\.[0-9]+)*)$'),
+            'match_group': 1,
+        },
+    ]
+
+    def get_version(t: dict) -> str:
+        exe = shutil.which(t['tool'])
+        if not exe:
+            return 'not found'
+
+        args = [t['tool']] + t['args']
+        pc, o, e = Popen_safe(args)
+        if pc.returncode != 0:
+            return '{} (invalid {} executable)'.format(exe, t['tool'])
+        for i in o.split('\n'):
+            i = i.strip('\n\r\t ')
+            m = t['regex'].match(i)
+            if m is not None:
+                return '{} ({})'.format(exe, m.group(t['match_group']))
+
+        return '{} (unknown)'.format(exe)
+
+    max_width = max([len(x['tool']) for x in tools] + [7])
+    for tool in tools:
+        print('{0:<{2}}: {1}'.format(tool['tool'], get_version(tool), max_width))
+    print()
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Run the test suite of Meson.")
     parser.add_argument('extra_args', nargs='*',
                         help='arguments that are passed directly to Meson (remember to have -- before these).')
-    parser.add_argument('--backend', default=None, dest='backend',
-                        choices=backendlist)
+    parser.add_argument('--backend', dest='backend', choices=backendlist)
     parser.add_argument('--failfast', action='store_true',
                         help='Stop running if test case fails')
     parser.add_argument('--no-unittests', action='store_true',
                         help='Not used, only here to simplify run_tests.py')
-    parser.add_argument('--only', help='name of test(s) to run', nargs='+')
+    parser.add_argument('--only', help='name of test(s) to run', nargs='+', choices=ALL_TESTS)
     options = parser.parse_args()
     setup_commands(options.backend)
 
     detect_system_compiler()
+    print_tool_versions()
     script_dir = os.path.split(__file__)[0]
     if script_dir != '':
         os.chdir(script_dir)

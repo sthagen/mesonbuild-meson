@@ -15,16 +15,21 @@
 # This class contains the basic functionality needed to run any interpreter
 # or an interpreter-based tool.
 
+import subprocess
+from pathlib import Path
+import typing as T
+import re
+import os
+import shutil
+import ctypes
+
 from .. import mlog, mesonlib
 from ..mesonlib import PerMachine, Popen_safe, version_compare, MachineChoice
 from ..environment import Environment
 
-from typing import List, Tuple, Optional, TYPE_CHECKING
-
-if TYPE_CHECKING:
+if T.TYPE_CHECKING:
     from ..dependencies.base import ExternalProgram
 
-import re, os, shutil, ctypes
 
 class CMakeExecutor:
     # The class's copy of the CMake path. Avoids having to search for it
@@ -50,7 +55,7 @@ class CMakeExecutor:
             self.cmakebin = None
             return
 
-    def find_cmake_binary(self, environment: Environment, silent: bool = False) -> Tuple['ExternalProgram', str]:
+    def find_cmake_binary(self, environment: Environment, silent: bool = False) -> T.Tuple['ExternalProgram', str]:
         from ..dependencies.base import ExternalProgram
 
         # Create an iterator of options
@@ -102,7 +107,7 @@ class CMakeExecutor:
 
         return CMakeExecutor.class_cmakebin[self.for_machine], CMakeExecutor.class_cmakevers[self.for_machine]
 
-    def check_cmake(self, cmakebin: 'ExternalProgram') -> Optional[str]:
+    def check_cmake(self, cmakebin: 'ExternalProgram') -> T.Optional[str]:
         if not cmakebin.found():
             mlog.log('Did not find CMake {!r}'.format(cmakebin.name))
             return None
@@ -125,21 +130,25 @@ class CMakeExecutor:
         cmvers = re.sub(r'\s*cmake version\s*', '', out.split('\n')[0]).strip()
         return cmvers
 
-    def _cache_key(self, args: List[str], build_dir: str, env):
+    def _cache_key(self, args: T.List[str], build_dir: str, env):
         fenv = frozenset(env.items()) if env is not None else None
         targs = tuple(args)
         return (self.cmakebin, targs, build_dir, fenv)
 
-    def _call_real(self, args: List[str], build_dir: str, env) -> Tuple[int, str, str]:
+    def _call_real(self, args: T.List[str], build_dir: str, env) -> T.Tuple[int, str, str]:
         os.makedirs(build_dir, exist_ok=True)
         cmd = self.cmakebin.get_command() + args
-        p, out, err = Popen_safe(cmd, env=env, cwd=build_dir)
-        rc = p.returncode
+        ret = subprocess.run(cmd, env=env, cwd=build_dir, close_fds=False,
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                             universal_newlines=False)
+        rc = ret.returncode
+        out = ret.stdout.decode(errors='ignore')
+        err = ret.stderr.decode(errors='ignore')
         call = ' '.join(cmd)
         mlog.debug("Called `{}` in {} -> {}".format(call, build_dir, rc))
         return rc, out, err
 
-    def call(self, args: List[str], build_dir: str, env=None, disable_cache: bool = False):
+    def call(self, args: T.List[str], build_dir: str, env=None, disable_cache: bool = False):
         if env is None:
             env = os.environ
 
@@ -153,7 +162,7 @@ class CMakeExecutor:
             cache[key] = self._call_real(args, build_dir, env)
         return cache[key]
 
-    def call_with_fake_build(self, args: List[str], build_dir: str, env=None):
+    def call_with_fake_build(self, args: T.List[str], build_dir: str, env=None):
         # First check the cache
         cache = CMakeExecutor.class_cmake_cache
         key = self._cache_key(args, build_dir, env)
@@ -167,7 +176,7 @@ class CMakeExecutor:
         fallback = os.path.realpath(__file__)  # A file used as a fallback wehen everything else fails
         compilers = self.environment.coredata.compilers[MachineChoice.BUILD]
 
-        def make_abs(exe: str, lang: str):
+        def make_abs(exe: str, lang: str) -> str:
             if os.path.isabs(exe):
                 return exe
 
@@ -177,7 +186,7 @@ class CMakeExecutor:
                 p = fallback
             return p
 
-        def choose_compiler(lang: str):
+        def choose_compiler(lang: str) -> T.Tuple[str, str]:
             exe_list = []
             if lang in compilers:
                 exe_list = compilers[lang].get_exelist()
@@ -196,27 +205,32 @@ class CMakeExecutor:
 
         c_comp, c_launcher = choose_compiler('c')
         cxx_comp, cxx_launcher = choose_compiler('cpp')
+        try:
+            fortran_comp, fortran_launcher = choose_compiler('fortran')
+        except Exception:
+            fortran_comp = fortran_launcher = ''
 
         # on Windows, choose_compiler returns path with \ as separator - replace by / before writing to CMAKE file
         c_comp = c_comp.replace('\\', '/')
         c_launcher = c_launcher.replace('\\', '/')
         cxx_comp = cxx_comp.replace('\\', '/')
         cxx_launcher = cxx_launcher.replace('\\', '/')
+        fortran_comp = fortran_comp.replace('\\', '/')
+        fortran_launcher = fortran_launcher.replace('\\', '/')
 
         # Reset the CMake cache
-        with open('{}/CMakeCache.txt'.format(build_dir), 'w') as fp:
-            fp.write('CMAKE_PLATFORM_INFO_INITIALIZED:INTERNAL=1\n')
+        (Path(build_dir) / 'CMakeCache.txt').write_text('CMAKE_PLATFORM_INFO_INITIALIZED:INTERNAL=1\n')
 
         # Fake the compiler files
-        comp_dir = '{}/CMakeFiles/{}'.format(build_dir, self.cmakevers)
-        os.makedirs(comp_dir, exist_ok=True)
+        comp_dir = Path(build_dir) / 'CMakeFiles' / self.cmakevers
+        comp_dir.mkdir(parents=True, exist_ok=True)
 
-        c_comp_file = '{}/CMakeCCompiler.cmake'.format(comp_dir)
-        cxx_comp_file = '{}/CMakeCXXCompiler.cmake'.format(comp_dir)
+        c_comp_file = comp_dir / 'CMakeCCompiler.cmake'
+        cxx_comp_file = comp_dir / 'CMakeCXXCompiler.cmake'
+        fortran_comp_file = comp_dir / 'CMakeFortranCompiler.cmake'
 
-        if not os.path.exists(c_comp_file):
-            with open(c_comp_file, 'w') as fp:
-                fp.write('''# Fake CMake file to skip the boring and slow stuff
+        if not c_comp_file.is_file():
+            c_comp_file.write_text('''# Fake CMake file to skip the boring and slow stuff
 set(CMAKE_C_COMPILER "{}") # Should be a valid compiler for try_compile, etc.
 set(CMAKE_C_COMPILER_LAUNCHER "{}") # The compiler launcher (if presentt)
 set(CMAKE_C_COMPILER_ID "GNU") # Pretend we have found GCC
@@ -229,9 +243,8 @@ set(CMAKE_C_IGNORE_EXTENSIONS h;H;o;O;obj;OBJ;def;DEF;rc;RC)
 set(CMAKE_SIZEOF_VOID_P "{}")
 '''.format(c_comp, c_launcher, ctypes.sizeof(ctypes.c_voidp)))
 
-        if not os.path.exists(cxx_comp_file):
-            with open(cxx_comp_file, 'w') as fp:
-                fp.write('''# Fake CMake file to skip the boring and slow stuff
+        if not cxx_comp_file.is_file():
+            cxx_comp_file.write_text('''# Fake CMake file to skip the boring and slow stuff
 set(CMAKE_CXX_COMPILER "{}") # Should be a valid compiler for try_compile, etc.
 set(CMAKE_CXX_COMPILER_LAUNCHER "{}") # The compiler launcher (if presentt)
 set(CMAKE_CXX_COMPILER_ID "GNU") # Pretend we have found GCC
@@ -243,6 +256,20 @@ set(CMAKE_CXX_IGNORE_EXTENSIONS inl;h;hpp;HPP;H;o;O;obj;OBJ;def;DEF;rc;RC)
 set(CMAKE_CXX_SOURCE_FILE_EXTENSIONS C;M;c++;cc;cpp;cxx;mm;CPP)
 set(CMAKE_SIZEOF_VOID_P "{}")
 '''.format(cxx_comp, cxx_launcher, ctypes.sizeof(ctypes.c_voidp)))
+
+        if fortran_comp and not fortran_comp_file.is_file():
+            fortran_comp_file.write_text('''# Fake CMake file to skip the boring and slow stuff
+set(CMAKE_Fortran_COMPILER "{}") # Should be a valid compiler for try_compile, etc.
+set(CMAKE_Fortran_COMPILER_LAUNCHER "{}") # The compiler launcher (if presentt)
+set(CMAKE_Fortran_COMPILER_ID "GNU") # Pretend we have found GCC
+set(CMAKE_COMPILER_IS_GNUG77 1)
+set(CMAKE_Fortran_COMPILER_LOADED 1)
+set(CMAKE_Fortran_COMPILER_WORKS TRUE)
+set(CMAKE_Fortran_ABI_COMPILED TRUE)
+set(CMAKE_Fortran_IGNORE_EXTENSIONS h;H;o;O;obj;OBJ;def;DEF;rc;RC)
+set(CMAKE_Fortran_SOURCE_FILE_EXTENSIONS f;F;fpp;FPP;f77;F77;f90;F90;for;For;FOR;f95;F95)
+set(CMAKE_SIZEOF_VOID_P "{}")
+'''.format(fortran_comp, fortran_launcher, ctypes.sizeof(ctypes.c_voidp)))
 
         return self.call(args, build_dir, env)
 

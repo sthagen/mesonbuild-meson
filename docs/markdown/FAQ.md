@@ -187,7 +187,7 @@ file instead of being buried inside your build definitions. An example
 can be found
 [here](https://github.com/jpakkane/meson/tree/master/test%20cases/linuxlike/3%20linker%20script).
 
-## My project works fine on Linux and MinGW but fails with MSVC due to a missing .lib file
+## My project works fine on Linux and MinGW but fails to link with MSVC due to a missing .lib file (fatal error LNK1181). Why?
 
 With GCC, all symbols on shared libraries are exported automatically
 unless you specify otherwise. With MSVC no symbols are exported by
@@ -324,7 +324,7 @@ that Windows developers should be able to contribute using nothing but
 Visual Studio.
 
 At the time of writing (April 2018) there are only three languages
-that could fullfill these requirements:
+that could fulfill these requirements:
 
  - C
  - C++
@@ -489,3 +489,14 @@ libbar = library('bar', sources: libbar_sources, dependencies: libfoo_dep)
 
 A good example of a generator that outputs both sources and headers is
 [`gnome.mkenums()`](https://mesonbuild.com/Gnome-module.html#gnomemkenums).
+
+## How do I disable exceptions and RTTI in my C++ project?
+
+With the `cpp_eh` and `cpp_rtti` options. A typical invocation would
+look like this:
+
+```
+meson -Dcpp_eh=none -Dcpp_rtti=false <other options>
+```
+
+The RTTI option is only available since Meson version 0.53.0.

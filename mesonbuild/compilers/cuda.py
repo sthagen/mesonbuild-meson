@@ -13,16 +13,16 @@
 # limitations under the License.
 
 import os.path
-import typing
+import typing as T
 from functools import partial
 
 from .. import coredata
 from .. import mlog
-from ..mesonlib import EnvironmentException, MachineChoice, Popen_safe, OptionOverrideProxy, is_windows
+from ..mesonlib import EnvironmentException, MachineChoice, Popen_safe, OptionOverrideProxy, is_windows, LibType
 from .compilers import (Compiler, cuda_buildtype_args, cuda_optimization_args,
                         cuda_debug_args)
 
-if typing.TYPE_CHECKING:
+if T.TYPE_CHECKING:
     from ..environment import Environment  # noqa: F401
     from ..envconfig import MachineInfo
 
@@ -30,13 +30,12 @@ if typing.TYPE_CHECKING:
 class CudaCompiler(Compiler):
 
     LINKER_PREFIX = '-Xlinker='
+    language = 'cuda'
 
     _universal_flags = {'compiler': ['-I', '-D', '-U', '-E'], 'linker': ['-l', '-L']}
 
     def __init__(self, exelist, version, for_machine: MachineChoice,
                  is_cross, exe_wrapper, host_compiler, info: 'MachineInfo', **kwargs):
-        if not hasattr(self, 'language'):
-            self.language = 'cuda'
         super().__init__(exelist, version, for_machine, info, **kwargs)
         self.is_cross = is_cross
         self.exe_wrapper = exe_wrapper
@@ -61,9 +60,6 @@ class CudaCompiler(Compiler):
 
     def get_always_args(self):
         return []
-
-    def get_display_language(self):
-        return 'Cuda'
 
     def get_no_stdinc_args(self):
         return []
@@ -157,7 +153,7 @@ class CudaCompiler(Compiler):
             raise EnvironmentException('Executables created by {0} compiler {1} are not runnable.'.format(self.language, self.name_string()))
 
         # Interpret the result of the sanity test.
-        # As mentionned above, it is not only a sanity test but also a GPU
+        # As mentioned above, it is not only a sanity test but also a GPU
         # architecture detection test.
         if stde == '':
             self.detected_cc = stdo
@@ -174,7 +170,7 @@ class CudaCompiler(Compiler):
         t = '''{prefix}
         #include <{header}>
         using {symbol};
-        int main () {{ return 0; }}'''
+        int main(void) {{ return 0; }}'''
         return self.compiles(t.format(**fargs), env, extra_args, dependencies)
 
     def get_options(self):
@@ -191,7 +187,7 @@ class CudaCompiler(Compiler):
     def get_option_compile_args(self, options):
         args = []
         # On Windows, the version of the C++ standard used by nvcc is dictated by
-        # the combination of CUDA version and MSVC verion; the --std= is thus ignored
+        # the combination of CUDA version and MSVC version; the --std= is thus ignored
         # and attempting to use it will result in a warning: https://stackoverflow.com/a/51272091/741027
         if not is_windows():
             std = options['cuda_std']
@@ -201,9 +197,9 @@ class CudaCompiler(Compiler):
         return args + self._to_host_flags(self.host_compiler.get_option_compile_args(self._to_host_compiler_options(options)))
 
     @classmethod
-    def _cook_link_args(cls, args: typing.List[str]) -> typing.List[str]:
+    def _cook_link_args(cls, args: T.List[str]) -> T.List[str]:
         # Prepare link args for nvcc
-        cooked = []  # type: typing.List[str]
+        cooked = []  # type: T.List[str]
         for arg in args:
             if arg.startswith('-Wl,'): # strip GNU-style -Wl prefix
                 arg = arg.replace('-Wl,', '', 1)
@@ -267,7 +263,7 @@ class CudaCompiler(Compiler):
     def get_depfile_suffix(self):
         return 'd'
 
-    def get_linker_debug_crt_args(self) -> typing.List[str]:
+    def get_linker_debug_crt_args(self) -> T.List[str]:
         return self._cook_link_args(self.host_compiler.get_linker_debug_crt_args())
 
     def get_buildtype_linker_args(self, buildtype):
@@ -275,7 +271,7 @@ class CudaCompiler(Compiler):
 
     def build_rpath_args(self, env: 'Environment', build_dir: str, from_dir: str,
                          rpath_paths: str, build_rpath: str,
-                         install_rpath: str) -> typing.List[str]:
+                         install_rpath: str) -> T.List[str]:
         return self._cook_link_args(self.host_compiler.build_rpath_args(
             env, build_dir, from_dir, rpath_paths, build_rpath, install_rpath))
 
@@ -288,11 +284,14 @@ class CudaCompiler(Compiler):
     def compute_parameters_with_absolute_paths(self, parameter_list, build_dir):
         return []
 
-    def get_output_args(self, target: str) -> typing.List[str]:
+    def get_output_args(self, target: str) -> T.List[str]:
         return ['-o', target]
 
-    def get_std_exe_link_args(self) -> typing.List[str]:
+    def get_std_exe_link_args(self) -> T.List[str]:
         return self._cook_link_args(self.host_compiler.get_std_exe_link_args())
+
+    def find_library(self, libname, env, extra_dirs, libtype: LibType = LibType.PREFER_SHARED):
+        return ['-l' + libname] # FIXME
 
     def get_crt_compile_args(self, crt_val, buildtype):
         return self._to_host_flags(self.host_compiler.get_crt_compile_args(crt_val, buildtype))

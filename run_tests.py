@@ -26,7 +26,8 @@ from io import StringIO
 from enum import Enum
 from glob import glob
 from pathlib import Path
-import mesonbuild
+from mesonbuild import compilers
+from mesonbuild import dependencies
 from mesonbuild import mesonlib
 from mesonbuild import mesonmain
 from mesonbuild import mtest
@@ -95,7 +96,6 @@ class FakeCompilerOptions:
         self.value = []
 
 def get_fake_options(prefix=''):
-    import argparse
     opts = argparse.Namespace()
     opts.native_file = []
     opts.cross_file = None
@@ -116,7 +116,6 @@ def get_fake_env(sdir='', bdir=None, prefix='', opts=None):
 Backend = Enum('Backend', 'ninja vs xcode')
 
 if 'MESON_EXE' in os.environ:
-    import shlex
     meson_exe = mesonlib.split_args(os.environ['MESON_EXE'])
 else:
     meson_exe = None
@@ -136,7 +135,7 @@ def get_meson_script():
     running in-process (which is the default).
     '''
     # Is there a meson.py next to the mesonbuild currently in use?
-    mesonbuild_dir = Path(mesonbuild.__file__).resolve().parent.parent
+    mesonbuild_dir = Path(mesonmain.__file__).resolve().parent.parent
     meson_script = mesonbuild_dir / 'meson.py'
     if meson_script.is_file():
         return str(meson_script)
@@ -212,7 +211,7 @@ def get_backend_commands(backend, debug=False):
                 if v == '1.9':
                     NINJA_1_9_OR_NEWER = True
                 else:
-                    print('Found ninja <1.9, tests will run slower')
+                    mlog.warning('Found ninja <1.9, tests will run slower', once=True)
                     if 'CI' in os.environ:
                         raise RuntimeError('Require ninja >= 1.9 when running on Meson CI')
                 break
@@ -239,12 +238,12 @@ def ensure_backend_detects_changes(backend):
     # XXX: Upgrade Travis image to Apple FS when that becomes available
     # TODO: Detect HFS+ vs APFS
     if mesonlib.is_osx():
-        print('Running on HFS+, enabling timestamp resolution workaround')
+        mlog.warning('Running on HFS+, enabling timestamp resolution workaround', once=True)
         need_workaround = True
     # We're using ninja >= 1.9 which has QuLogic's patch for sub-1s resolution
     # timestamps
     if not NINJA_1_9_OR_NEWER:
-        print('Don\'t have ninja >= 1.9, enabling timestamp resolution workaround')
+        mlog.warning('Don\'t have ninja >= 1.9, enabling timestamp resolution workaround', once=True)
         need_workaround = True
     # Increase the difference between build.ninja's timestamp and the timestamp
     # of whatever you changed: https://github.com/ninja-build/ninja/issues/371
@@ -264,12 +263,12 @@ def run_mtest_inprocess(commandlist):
     return returncode, mystdout.getvalue(), mystderr.getvalue()
 
 def clear_meson_configure_class_caches():
-    mesonbuild.compilers.CCompiler.library_dirs_cache = {}
-    mesonbuild.compilers.CCompiler.program_dirs_cache = {}
-    mesonbuild.compilers.CCompiler.find_library_cache = {}
-    mesonbuild.compilers.CCompiler.find_framework_cache = {}
-    mesonbuild.dependencies.PkgConfigDependency.pkgbin_cache = {}
-    mesonbuild.dependencies.PkgConfigDependency.class_pkgbin = mesonlib.PerMachine(None, None)
+    compilers.CCompiler.library_dirs_cache = {}
+    compilers.CCompiler.program_dirs_cache = {}
+    compilers.CCompiler.find_library_cache = {}
+    compilers.CCompiler.find_framework_cache = {}
+    dependencies.PkgConfigDependency.pkgbin_cache = {}
+    dependencies.PkgConfigDependency.class_pkgbin = mesonlib.PerMachine(None, None)
 
 def run_configure_inprocess(commandlist, env=None):
     old_stdout = sys.stdout

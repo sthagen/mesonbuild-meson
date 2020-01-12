@@ -19,7 +19,7 @@ from .common import CMakeException
 from .generator import parse_generator_expressions
 from .. import mlog
 
-from typing import List, Tuple, Optional
+import typing as T
 import re
 import os
 
@@ -35,26 +35,29 @@ class CMakeTraceLine:
         return s.format(self.file, self.line, self.func, self.args)
 
 class CMakeTarget:
-    def __init__(self, name, target_type, properties=None):
+    def __init__(self, name, target_type, properties=None, imported: bool = False, tline: T.Optional[CMakeTraceLine] = None):
         if properties is None:
             properties = {}
         self.name = name
         self.type = target_type
         self.properties = properties
+        self.imported = imported
+        self.tline = tline
+        self.depends = []
 
     def __repr__(self):
-        s = 'CMake TARGET:\n  -- name:      {}\n  -- type:      {}\n  -- properties: {{\n{}     }}'
+        s = 'CMake TARGET:\n  -- name:      {}\n  -- type:      {}\n  -- imported:  {}\n  -- properties: {{\n{}     }}\n  -- tline: {}'
         propSTR = ''
         for i in self.properties:
             propSTR += "      '{}': {}\n".format(i, self.properties[i])
-        return s.format(self.name, self.type, propSTR)
+        return s.format(self.name, self.type, self.imported, propSTR, self.tline)
 
-class CMakeGeneratorTarget:
-    def __init__(self):
-        self.outputs = []        # type: List[str]
-        self.command = []        # type: List[List[str]]
-        self.working_dir = None  # type: Optional[str]
-        self.depends = []        # type: List[str]
+class CMakeGeneratorTarget(CMakeTarget):
+    def __init__(self, name):
+        super().__init__(name, 'CUSTOM', {})
+        self.outputs = []        # type: T.List[str]
+        self.command = []        # type: T.List[T.List[str]]
+        self.working_dir = None  # type: T.Optional[str]
 
 class CMakeTraceParser:
     def __init__(self, permissive: bool = False):
@@ -64,8 +67,8 @@ class CMakeTraceParser:
         # Dict of CMakeTarget
         self.targets = {}
 
-        # List of targes that were added with add_custom_command to generate files
-        self.custom_targets = []  # type: List[CMakeGeneratorTarget]
+        # T.List of targes that were added with add_custom_command to generate files
+        self.custom_targets = []  # type: T.List[CMakeGeneratorTarget]
 
         self.permissive = permissive  # type: bool
 
@@ -86,7 +89,9 @@ class CMakeTraceParser:
             'target_compile_definitions': self._cmake_target_compile_definitions,
             'target_compile_options': self._cmake_target_compile_options,
             'target_include_directories': self._cmake_target_include_directories,
+            'target_link_libraries': self._cmake_target_link_libraries,
             'target_link_options': self._cmake_target_link_options,
+            'add_dependencies': self._cmake_add_dependencies,
         }
 
         # Primary pass -- parse everything
@@ -96,7 +101,7 @@ class CMakeTraceParser:
             if(fn):
                 fn(l)
 
-    def get_first_cmake_var_of(self, var_list: List[str]) -> List[str]:
+    def get_first_cmake_var_of(self, var_list: T.List[str]) -> T.List[str]:
         # Return the first found CMake variable in list var_list
         for i in var_list:
             if i in self.vars:
@@ -104,7 +109,7 @@ class CMakeTraceParser:
 
         return []
 
-    def get_cmake_var(self, var: str) -> List[str]:
+    def get_cmake_var(self, var: str) -> T.List[str]:
         # Return the value of the CMake variable var or an empty list if var does not exist
         if var in self.vars:
             return self.vars[var]
@@ -210,7 +215,7 @@ class CMakeTraceParser:
             if len(args) < 1:
                 return self._gen_exception('add_library', 'interface library name not specified', tline)
 
-            self.targets[args[0]] = CMakeTarget(args[0], 'INTERFACE', {})
+            self.targets[args[0]] = CMakeTarget(args[0], 'INTERFACE', {}, tline=tline, imported='IMPORTED' in args)
         elif 'IMPORTED' in args:
             args.remove('IMPORTED')
 
@@ -218,7 +223,7 @@ class CMakeTraceParser:
             if len(args) < 2:
                 return self._gen_exception('add_library', 'requires at least 2 arguments', tline)
 
-            self.targets[args[0]] = CMakeTarget(args[0], args[1], {})
+            self.targets[args[0]] = CMakeTarget(args[0], args[1], {}, tline=tline, imported=True)
         elif 'ALIAS' in args:
             args.remove('ALIAS')
 
@@ -227,13 +232,13 @@ class CMakeTraceParser:
                 return self._gen_exception('add_library', 'requires at least 2 arguments', tline)
 
             # Simulate the ALIAS with INTERFACE_LINK_LIBRARIES
-            self.targets[args[0]] = CMakeTarget(args[0], 'ALIAS', {'INTERFACE_LINK_LIBRARIES': [args[1]]})
+            self.targets[args[0]] = CMakeTarget(args[0], 'ALIAS', {'INTERFACE_LINK_LIBRARIES': [args[1]]}, tline=tline)
         elif 'OBJECT' in args:
             return self._gen_exception('add_library', 'OBJECT libraries are not supported', tline)
         else:
-            self.targets[args[0]] = CMakeTarget(args[0], 'NORMAL', {})
+            self.targets[args[0]] = CMakeTarget(args[0], 'NORMAL', {}, tline=tline)
 
-    def _cmake_add_custom_command(self, tline: CMakeTraceLine):
+    def _cmake_add_custom_command(self, tline: CMakeTraceLine, name=None):
         # DOC: https://cmake.org/cmake/help/latest/command/add_custom_command.html
         args = list(tline.args) # Make a working copy
 
@@ -248,7 +253,7 @@ class CMakeTraceParser:
                       'IMPLICIT_DEPENDS', 'WORKING_DIRECTORY', 'COMMENT', 'DEPFILE',
                       'JOB_POOL', 'VERBATIM', 'APPEND', 'USES_TERMINAL', 'COMMAND_EXPAND_LISTS']
 
-        target = CMakeGeneratorTarget()
+        target = CMakeGeneratorTarget(name)
 
         def handle_output(key: str, target: CMakeGeneratorTarget) -> None:
             target.outputs += [key]
@@ -293,6 +298,8 @@ class CMakeTraceParser:
         target.command = [self._guess_files(x) for x in target.command]
 
         self.custom_targets += [target]
+        if name:
+            self.targets[name] = target
 
     def _cmake_add_custom_target(self, tline: CMakeTraceLine):
         # DOC: https://cmake.org/cmake/help/latest/command/add_custom_target.html
@@ -300,7 +307,8 @@ class CMakeTraceParser:
         if len(tline.args) < 1:
             return self._gen_exception('add_custom_target', 'requires at least one argument', tline)
 
-        self.targets[tline.args[0]] = CMakeTarget(tline.args[0], 'CUSTOM', {})
+        # It's pretty much the same as a custom command
+        self._cmake_add_custom_command(tline, tline.args[0])
 
     def _cmake_set_property(self, tline: CMakeTraceLine) -> None:
         # DOC: https://cmake.org/cmake/help/latest/command/set_property.html
@@ -374,7 +382,7 @@ class CMakeTraceParser:
         # option 1 first and fall back to 2, as 1 requires less code and less
         # synchroniztion for cmake changes.
 
-        arglist = []  # type: List[Tuple[str, List[str]]]
+        arglist = []  # type: T.List[T.Tuple[str, T.List[str]]]
         name = args.pop(0)
         values = []
         prop_regex = re.compile(r'^[A-Z_]+$')
@@ -396,6 +404,19 @@ class CMakeTraceParser:
 
                 self.targets[i].properties[name] = value
 
+    def _cmake_add_dependencies(self, tline: CMakeTraceLine) -> None:
+        # DOC: https://cmake.org/cmake/help/latest/command/add_dependencies.html
+        args = list(tline.args)
+
+        if len(args) < 2:
+            return self._gen_exception('add_dependencies', 'takes at least 2 arguments', tline)
+
+        target = self.targets.get(args[0])
+        if not target:
+            return self._gen_exception('add_dependencies', 'target not found', tline)
+
+        target.depends += args[1:]
+
     def _cmake_target_compile_definitions(self, tline: CMakeTraceLine) -> None:
         # DOC: https://cmake.org/cmake/help/latest/command/target_compile_definitions.html
         self._parse_common_target_options('target_compile_definitions', 'COMPILE_DEFINITIONS', 'INTERFACE_COMPILE_DEFINITIONS', tline)
@@ -412,7 +433,11 @@ class CMakeTraceParser:
         # DOC: https://cmake.org/cmake/help/latest/command/target_link_options.html
         self._parse_common_target_options('target_link_options', 'LINK_OPTIONS', 'INTERFACE_LINK_OPTIONS', tline)
 
-    def _parse_common_target_options(self, func: str, private_prop: str, interface_prop: str, tline: CMakeTraceLine, ignore: Optional[List[str]] = None, paths: bool = False):
+    def _cmake_target_link_libraries(self, tline: CMakeTraceLine) -> None:
+        # DOC: https://cmake.org/cmake/help/latest/command/target_link_libraries.html
+        self._parse_common_target_options('target_link_options', 'LINK_LIBRARIES', 'INTERFACE_LINK_LIBRARIES', tline)
+
+    def _parse_common_target_options(self, func: str, private_prop: str, interface_prop: str, tline: CMakeTraceLine, ignore: T.Optional[T.List[str]] = None, paths: bool = False):
         if ignore is None:
             ignore = ['BEFORE']
 
@@ -433,14 +458,14 @@ class CMakeTraceParser:
             if i in ignore:
                 continue
 
-            if i in ['INTERFACE', 'PUBLIC', 'PRIVATE']:
+            if i in ['INTERFACE', 'LINK_INTERFACE_LIBRARIES', 'PUBLIC', 'PRIVATE', 'LINK_PUBLIC', 'LINK_PRIVATE']:
                 mode = i
                 continue
 
-            if mode in ['INTERFACE', 'PUBLIC']:
+            if mode in ['INTERFACE', 'LINK_INTERFACE_LIBRARIES', 'PUBLIC', 'LINK_PUBLIC']:
                 interface += [i]
 
-            if mode in ['PUBLIC', 'PRIVATE']:
+            if mode in ['PUBLIC', 'PRIVATE', 'LINK_PRIVATE']:
                 private += [i]
 
         if paths:
@@ -484,24 +509,24 @@ class CMakeTraceParser:
 
             yield CMakeTraceLine(file, line, func, args)
 
-    def _guess_files(self, broken_list: List[str]) -> List[str]:
+    def _guess_files(self, broken_list: T.List[str]) -> T.List[str]:
         #Try joining file paths that contain spaces
 
         reg_start = re.compile(r'^([A-Za-z]:)?/.*/[^./]+$')
         reg_end = re.compile(r'^.*\.[a-zA-Z]+$')
 
-        fixed_list = []  # type: List[str]
-        curr_str = None  # type: Optional[str]
+        fixed_list = []  # type: T.List[str]
+        curr_str = None  # type: T.Optional[str]
 
         for i in broken_list:
             if curr_str is None:
                 curr_str = i
             elif os.path.isfile(curr_str):
-                # Abort concatination if curr_str is an existing file
+                # Abort concatenation if curr_str is an existing file
                 fixed_list += [curr_str]
                 curr_str = i
             elif not reg_start.match(curr_str):
-                # Abort concatination if curr_str no longer matches the regex
+                # Abort concatenation if curr_str no longer matches the regex
                 fixed_list += [curr_str]
                 curr_str = i
             elif reg_end.match(i) or os.path.exists('{} {}'.format(curr_str, i)):

@@ -1,9 +1,9 @@
-int func();
+int func(void);
 
-static int duplicate_func() {
+static int duplicate_func(void) {
     return -4;
 }
 
-int main(int argc, char **argv) {
+int main(void) {
     return duplicate_func() + func();
 }

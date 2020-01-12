@@ -13,12 +13,17 @@
 # limitations under the License.
 
 from .boost import BoostDependency
+from .cuda import CudaDependency
+from .hdf5 import HDF5Dependency
 from .base import (  # noqa: F401
     Dependency, DependencyException, DependencyMethods, ExternalProgram, EmptyExternalProgram, NonExistingExternalProgram,
     ExternalDependency, NotFoundDependency, ExternalLibrary, ExtraFrameworkDependency, InternalDependency,
     PkgConfigDependency, CMakeDependency, find_external_dependency, get_dep_identifier, packages, _packages_accept_language)
 from .dev import GMockDependency, GTestDependency, LLVMDependency, ValgrindDependency
-from .misc import (BlocksDependency, CoarrayDependency, HDF5Dependency, MPIDependency, NetCDFDependency, OpenMPDependency, Python3Dependency, ThreadDependency, PcapDependency, CupsDependency, LibWmfDependency, LibGCryptDependency, GpgmeDependency, ShadercDependency)
+from .coarrays import CoarrayDependency
+from .mpi import MPIDependency
+from .scalapack import ScalapackDependency
+from .misc import (BlocksDependency, NetCDFDependency, OpenMPDependency, Python3Dependency, ThreadDependency, PcapDependency, CupsDependency, LibWmfDependency, LibGCryptDependency, GpgmeDependency, ShadercDependency)
 from .platform import AppleFrameworks
 from .ui import GLDependency, GnuStepDependency, Qt4Dependency, Qt5Dependency, SDL2Dependency, WxDependency, VulkanDependency
 
@@ -30,12 +35,17 @@ packages.update({
     'llvm': LLVMDependency,
     'valgrind': ValgrindDependency,
 
+    'boost': BoostDependency,
+    'cuda': CudaDependency,
+
+    # per-file
+    'coarray': CoarrayDependency,
+    'hdf5': HDF5Dependency,
+    'mpi': MPIDependency,
+    'scalapack': ScalapackDependency,
+
     # From misc:
     'blocks': BlocksDependency,
-    'boost': BoostDependency,
-    'coarray': CoarrayDependency,
-    'mpi': MPIDependency,
-    'hdf5': HDF5Dependency,
     'netcdf': NetCDFDependency,
     'openmp': OpenMPDependency,
     'python3': Python3Dependency,

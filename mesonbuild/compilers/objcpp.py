@@ -13,7 +13,7 @@
 # limitations under the License.
 
 import os.path, subprocess
-import typing
+import typing as T
 
 from ..mesonlib import EnvironmentException, MachineChoice
 
@@ -22,18 +22,21 @@ from .compilers import Compiler
 from .mixins.gnu import GnuCompiler
 from .mixins.clang import ClangCompiler
 
-if typing.TYPE_CHECKING:
+if T.TYPE_CHECKING:
     from ..envconfig import MachineInfo
 
 class ObjCPPCompiler(CLikeCompiler, Compiler):
+
+    language = 'objcpp'
+
     def __init__(self, exelist, version, for_machine: MachineChoice,
                  is_cross: bool, info: 'MachineInfo',
-                 exe_wrap: typing.Optional[str], **kwargs):
-        self.language = 'objcpp'
+                 exe_wrap: T.Optional[str], **kwargs):
         Compiler.__init__(self, exelist, version, for_machine, info, **kwargs)
         CLikeCompiler.__init__(self, is_cross, exe_wrap)
 
-    def get_display_language(self):
+    @staticmethod
+    def get_display_language():
         return 'Objective-C++'
 
     def sanity_check(self, work_dir, environment):
@@ -48,7 +51,7 @@ class ObjCPPCompiler(CLikeCompiler, Compiler):
         with open(source_name, 'w') as ofile:
             ofile.write('#import<stdio.h>\n'
                         'class MyClass;'
-                        'int main() { return 0; }\n')
+                        'int main(void) { return 0; }\n')
         pc = subprocess.Popen(self.exelist + extra_flags + [source_name, '-o', binary_name])
         pc.wait()
         if pc.returncode != 0:

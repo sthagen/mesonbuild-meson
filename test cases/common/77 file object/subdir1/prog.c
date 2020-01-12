@@ -1,8 +1,8 @@
 #include<stdio.h>
 
-int func();
+int func(void);
 
-int main(int argc, char **argv) {
+int main(void) {
     if(func() == 1) {
         printf("Iz success.\n");
     } else {

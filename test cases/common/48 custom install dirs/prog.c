@@ -1,3 +1,3 @@
-int main(int argc, char **arv) {
+int main(void) {
     return 0;
 }

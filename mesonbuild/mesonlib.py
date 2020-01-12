@@ -21,13 +21,14 @@ import platform, subprocess, operator, os, shlex, shutil, re
 import collections
 from enum import Enum
 from functools import lru_cache, update_wrapper
-import typing
+from itertools import tee, filterfalse
+import typing as T
 import uuid
 
 from mesonbuild import mlog
 
-_T = typing.TypeVar('_T')
-_U = typing.TypeVar('_U')
+_T = T.TypeVar('_T')
+_U = T.TypeVar('_U')
 
 have_fcntl = False
 have_msvcrt = False
@@ -259,7 +260,7 @@ class File:
     def endswith(self, ending: str) -> bool:
         return self.fname.endswith(ending)
 
-    def split(self, s: str) -> typing.List[str]:
+    def split(self, s: str) -> T.List[str]:
         return self.fname.split(s)
 
     def __eq__(self, other) -> bool:
@@ -330,7 +331,7 @@ class MachineChoice(OrderedEnum):
         return PerMachine('build.', '')[self]
 
 
-class PerMachine(typing.Generic[_T]):
+class PerMachine(T.Generic[_T]):
     def __init__(self, build: _T, host: _T):
         self.build = build
         self.host = host
@@ -344,14 +345,14 @@ class PerMachine(typing.Generic[_T]):
     def __setitem__(self, machine: MachineChoice, val: _T) -> None:
         setattr(self, machine.get_lower_case_name(), val)
 
-    def miss_defaulting(self) -> "PerMachineDefaultable[typing.Optional[_T]]":
+    def miss_defaulting(self) -> "PerMachineDefaultable[T.Optional[_T]]":
         """Unset definition duplicated from their previous to None
 
         This is the inverse of ''default_missing''. By removing defaulted
         machines, we can elaborate the original and then redefault them and thus
         avoid repeating the elaboration explicitly.
         """
-        unfreeze = PerMachineDefaultable() # type: PerMachineDefaultable[typing.Optional[_T]]
+        unfreeze = PerMachineDefaultable() # type: PerMachineDefaultable[T.Optional[_T]]
         unfreeze.build = self.build
         unfreeze.host = self.host
         if unfreeze.host == unfreeze.build:
@@ -370,14 +371,14 @@ class PerThreeMachine(PerMachine[_T]):
         super().__init__(build, host)
         self.target = target
 
-    def miss_defaulting(self) -> "PerThreeMachineDefaultable[typing.Optional[_T]]":
+    def miss_defaulting(self) -> "PerThreeMachineDefaultable[T.Optional[_T]]":
         """Unset definition duplicated from their previous to None
 
         This is the inverse of ''default_missing''. By removing defaulted
         machines, we can elaborate the original and then redefault them and thus
         avoid repeating the elaboration explicitly.
         """
-        unfreeze = PerThreeMachineDefaultable() # type: PerThreeMachineDefaultable[typing.Optional[_T]]
+        unfreeze = PerThreeMachineDefaultable() # type: PerThreeMachineDefaultable[T.Optional[_T]]
         unfreeze.build = self.build
         unfreeze.host = self.host
         unfreeze.target = self.target
@@ -390,14 +391,14 @@ class PerThreeMachine(PerMachine[_T]):
     def matches_build_machine(self, machine: MachineChoice) -> bool:
         return self.build == self[machine]
 
-class PerMachineDefaultable(PerMachine[typing.Optional[_T]]):
+class PerMachineDefaultable(PerMachine[T.Optional[_T]]):
     """Extends `PerMachine` with the ability to default from `None`s.
     """
     def __init__(self) -> None:
         super().__init__(None, None)
 
-    def default_missing(self) -> "PerMachine[typing.Optional[_T]]":
-        """Default host to buid
+    def default_missing(self) -> "PerMachine[T.Optional[_T]]":
+        """Default host to build
 
         This allows just specifying nothing in the native case, and just host in the
         cross non-compiler case.
@@ -408,14 +409,14 @@ class PerMachineDefaultable(PerMachine[typing.Optional[_T]]):
         return freeze
 
 
-class PerThreeMachineDefaultable(PerMachineDefaultable, PerThreeMachine[typing.Optional[_T]]):
+class PerThreeMachineDefaultable(PerMachineDefaultable, PerThreeMachine[T.Optional[_T]]):
     """Extends `PerThreeMachine` with the ability to default from `None`s.
     """
     def __init__(self) -> None:
         PerThreeMachine.__init__(self, None, None, None)
 
-    def default_missing(self) -> "PerThreeMachine[typing.Optional[_T]]":
-        """Default host to buid and target to host.
+    def default_missing(self) -> "PerThreeMachine[T.Optional[_T]]":
+        """Default host to build and target to host.
 
         This allows just specifying nothing in the native case, just host in the
         cross non-compiler case, and just target in the native-built
@@ -466,7 +467,7 @@ def is_netbsd() -> bool:
 def is_freebsd() -> bool:
     return platform.system().lower() == 'freebsd'
 
-def exe_exists(arglist: typing.List[str]) -> bool:
+def exe_exists(arglist: T.List[str]) -> bool:
     try:
         if subprocess.run(arglist, timeout=10).returncode == 0:
             return True
@@ -577,7 +578,7 @@ class Version:
         # otherwise, the version with a suffix remaining is greater
         return comparator(len(self._v), len(other._v))
 
-def _version_extract_cmpop(vstr2: str) -> typing.Tuple[typing.Callable[[typing.Any, typing.Any], bool], str]:
+def _version_extract_cmpop(vstr2: str) -> T.Tuple[T.Callable[[T.Any, T.Any], bool], str]:
     if vstr2.startswith('>='):
         cmpop = operator.ge
         vstr2 = vstr2[2:]
@@ -685,11 +686,11 @@ def default_libexecdir():
 def default_prefix():
     return 'c:/' if is_windows() else '/usr/local'
 
-def get_library_dirs() -> typing.List[str]:
+def get_library_dirs() -> T.List[str]:
     if is_windows():
-        return ['C:/mingw/lib'] # TODO: get programatically
+        return ['C:/mingw/lib'] # TODO: get programmatically
     if is_osx():
-        return ['/usr/lib'] # TODO: get programatically
+        return ['/usr/lib'] # TODO: get programmatically
     # The following is probably Debian/Ubuntu specific.
     # /usr/local/lib is first because it contains stuff
     # installed by the sysadmin and is probably more up-to-date
@@ -769,7 +770,7 @@ if is_windows():
         result += (num_backslashes * 2) * '\\' + '"'
         return result
 
-    def split_args(cmd):
+    def split_args(cmd: T.Sequence[str]) -> T.List[str]:
         result = []
         arg = ''
         num_backslashes = 0
@@ -975,7 +976,9 @@ def replace_if_different(dst, dst_tmp):
     else:
         os.unlink(dst_tmp)
 
-def listify(item, flatten=True, unholder=False):
+def listify(item: T.Any,
+            flatten: bool = True,
+            unholder: bool = False) -> T.List[T.Any]:
     '''
     Returns a list with all args embedded in a list if they are not a list.
     This function preserves order.
@@ -1015,14 +1018,14 @@ def extract_as_list(dict_object, *keys, pop=False, **kwargs):
         result.append(listify(fetch(key, []), **kwargs))
     return result
 
-def typeslistify(item: 'typing.Union[_T, typing.List[_T]]',
-                 types: 'typing.Union[typing.Type[_T], typing.Tuple[typing.Type[_T]]]') -> typing.List[_T]:
+def typeslistify(item: 'T.Union[_T, T.List[_T]]',
+                 types: 'T.Union[T.Type[_T], T.Tuple[T.Type[_T]]]') -> T.List[_T]:
     '''
     Ensure that type(@item) is one of @types or a
     list of items all of which are of type @types
     '''
     if isinstance(item, types):
-        item = typing.cast(typing.List[_T], [item])
+        item = T.cast(T.List[_T], [item])
     if not isinstance(item, list):
         raise MesonException('Item must be a list or one of {!r}'.format(types))
     for i in item:
@@ -1030,7 +1033,7 @@ def typeslistify(item: 'typing.Union[_T, typing.List[_T]]',
             raise MesonException('List item must be one of {!r}'.format(types))
     return item
 
-def stringlistify(item: typing.Union[str, typing.List[str]]) -> typing.List[str]:
+def stringlistify(item: T.Union[str, T.List[str]]) -> T.List[str]:
     return typeslistify(item, str)
 
 def expand_arguments(args):
@@ -1051,10 +1054,16 @@ def expand_arguments(args):
             return None
     return expended_args
 
-def Popen_safe(args: typing.List[str], write: typing.Optional[str] = None,
-               stdout: typing.Union[typing.BinaryIO, int] = subprocess.PIPE,
-               stderr: typing.Union[typing.BinaryIO, int] = subprocess.PIPE,
-               **kwargs: typing.Any) -> typing.Tuple[subprocess.Popen, str, str]:
+def partition(pred, iterable):
+    'Use a predicate to partition entries into false entries and true entries'
+    # partition(is_odd, range(10)) --> 0 2 4 6 8   and  1 3 5 7 9
+    t1, t2 = tee(iterable)
+    return filterfalse(pred, t1), filter(pred, t2)
+
+def Popen_safe(args: T.List[str], write: T.Optional[str] = None,
+               stdout: T.Union[T.BinaryIO, int] = subprocess.PIPE,
+               stderr: T.Union[T.BinaryIO, int] = subprocess.PIPE,
+               **kwargs: T.Any) -> T.Tuple[subprocess.Popen, str, str]:
     import locale
     encoding = locale.getpreferredencoding()
     if sys.version_info < (3, 6) or not sys.stdout.encoding or encoding.upper() != 'UTF-8':
@@ -1064,13 +1073,13 @@ def Popen_safe(args: typing.List[str], write: typing.Optional[str] = None,
     o, e = p.communicate(write)
     return p, o, e
 
-def Popen_safe_legacy(args: typing.List[str], write: typing.Optional[str] = None,
-                      stdout: typing.Union[typing.BinaryIO, int] = subprocess.PIPE,
-                      stderr: typing.Union[typing.BinaryIO, int] = subprocess.PIPE,
-                      **kwargs: typing.Any) -> typing.Tuple[subprocess.Popen, str, str]:
+def Popen_safe_legacy(args: T.List[str], write: T.Optional[str] = None,
+                      stdout: T.Union[T.BinaryIO, int] = subprocess.PIPE,
+                      stderr: T.Union[T.BinaryIO, int] = subprocess.PIPE,
+                      **kwargs: T.Any) -> T.Tuple[subprocess.Popen, str, str]:
     p = subprocess.Popen(args, universal_newlines=False, close_fds=False,
                          stdout=stdout, stderr=stderr, **kwargs)
-    input_ = None  # type: typing.Optional[bytes]
+    input_ = None  # type: T.Optional[bytes]
     if write is not None:
         input_ = write.encode('utf-8')
     o, e = p.communicate(input_)
@@ -1262,7 +1271,7 @@ def windows_proof_rmtree(f):
             return
         except FileNotFoundError:
             return
-        except (OSError, PermissionError):
+        except OSError:
             time.sleep(d)
     # Try one last time and throw if it fails.
     shutil.rmtree(f)
@@ -1279,7 +1288,7 @@ def windows_proof_rm(fpath):
             return
         except FileNotFoundError:
             return
-        except (OSError, PermissionError):
+        except OSError:
             time.sleep(d)
     os.unlink(fpath)
 
@@ -1318,7 +1327,7 @@ def detect_subprojects(spdir_name, current_dir='', result=None):
 def get_error_location_string(fname: str, lineno: str) -> str:
     return '{}:{}:'.format(fname, lineno)
 
-def substring_is_in_list(substr: str, strlist: typing.List[str]) -> bool:
+def substring_is_in_list(substr: str, strlist: T.List[str]) -> bool:
     for s in strlist:
         if substr in s:
             return True
@@ -1389,13 +1398,13 @@ class BuildDirLock:
             msvcrt.locking(self.lockfile.fileno(), msvcrt.LK_UNLCK, 1)
         self.lockfile.close()
 
-def relpath(path, start):
+def relpath(path: str, start: str) -> str:
     # On Windows a relative path can't be evaluated for paths on two different
     # drives (i.e. c:\foo and f:\bar).  The only thing left to do is to use the
     # original absolute path.
     try:
         return os.path.relpath(path, start)
-    except ValueError:
+    except (TypeError, ValueError):
         return path
 
 
@@ -1409,8 +1418,14 @@ class LibType(Enum):
     PREFER_STATIC = 3
 
 
-class ProgressBarFallback:
-    '''Fallback progress bar implementation when tqdm is not found'''
+class ProgressBarFallback:  # lgtm [py/iter-returns-non-self]
+    '''
+    Fallback progress bar implementation when tqdm is not found
+
+    Since this class is not an actual iterator, but only provides a minimal
+    fallback, it is safe to ignore the 'Iterator does not return self from
+    __iter__ method' warning.
+    '''
     def __init__(self, iterable=None, total=None, bar_type=None, desc=None):
         if iterable is not None:
             self.iterable = iter(iterable)

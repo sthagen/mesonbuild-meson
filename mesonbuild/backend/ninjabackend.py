@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from typing import List
+import typing as T
 import os
 import re
 import pickle
@@ -165,7 +165,7 @@ class NinjaBuildElement:
         # This is the only way I could find to make this work on all
         # platforms including Windows command shell. Slash is a dir separator
         # on Windows, too, so all characters are unambiguous and, more importantly,
-        # do not require quoting, unless explicitely specified, which is necessary for
+        # do not require quoting, unless explicitly specified, which is necessary for
         # the csc compiler.
         line = line.replace('\\', '/')
         outfile.write(line)
@@ -285,9 +285,10 @@ int dummy;
 
     def generate(self, interp):
         self.interpreter = interp
-        self.ninja_command = environment.detect_ninja(log=True)
-        if self.ninja_command is None:
+        ninja = environment.detect_ninja_command_and_version(log=True)
+        if ninja is None:
             raise MesonException('Could not detect Ninja v1.5 or newer')
+        (self.ninja_command, self.ninja_version) = ninja
         outfilename = os.path.join(self.environment.get_build_dir(), self.ninja_filename)
         tempfilename = outfilename + '~'
         with open(tempfilename, 'w', encoding='utf-8') as outfile:
@@ -333,6 +334,7 @@ int dummy;
         # Only overwrite the old build file after the new one has been
         # fully created.
         os.replace(tempfilename, outfilename)
+        mlog.cmd_ci_include(outfilename)  # For CI debugging
         self.generate_compdb()
 
     # http://clang.llvm.org/docs/JSONCompilationDatabase.html
@@ -342,7 +344,8 @@ int dummy;
             for lang in self.environment.coredata.compilers[for_machine]:
                 rules += [self.get_compiler_rule_name(lang, for_machine)]
                 rules += [self.get_pch_rule_name(lang, for_machine)]
-        ninja_compdb = [self.ninja_command, '-t', 'compdb'] + rules
+        compdb_options = ['-x'] if mesonlib.version_compare(self.ninja_version, '>=1.9') else []
+        ninja_compdb = [self.ninja_command, '-t', 'compdb'] + compdb_options + rules
         builddir = self.environment.get_build_dir()
         try:
             jsondb = subprocess.check_output(ninja_compdb, cwd=builddir)
@@ -766,7 +769,6 @@ int dummy;
             elem = NinjaBuildElement(self.all_outputs, target_name, 'phony', [])
 
         elem.add_dep(deps)
-        cmd = self.replace_paths(target, cmd)
         self.add_build(elem)
         self.processed_targets[target.get_id()] = True
 
@@ -1015,7 +1017,6 @@ int dummy;
         generated_sources = self.get_target_generated_sources(target)
         generated_rel_srcs = []
         for rel_src in generated_sources.keys():
-            dirpart, fnamepart = os.path.split(rel_src)
             if rel_src.lower().endswith('.cs'):
                 generated_rel_srcs.append(os.path.normpath(rel_src))
             deps.append(os.path.normpath(rel_src))
@@ -1290,6 +1291,15 @@ int dummy;
         else:
             raise InvalidArguments('Unknown target type for rustc.')
         args.append(cratetype)
+
+        # If we're dynamically linking, add those arguments
+        #
+        # Rust is super annoying, calling -C link-arg foo does not work, it has
+        # to be -C link-arg=foo
+        if cratetype in {'bin', 'dylib'}:
+            for a in rustc.linker.get_always_args():
+                args += ['-C', 'link-arg={}'.format(a)]
+
         args += ['--crate-name', target.name]
         args += rustc.get_buildtype_args(self.get_option_for_target('buildtype', target))
         args += rustc.get_debug_args(self.get_option_for_target('debug', target))
@@ -1862,7 +1872,7 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
 
         self.fortran_deps[target.get_basename()] = {**module_files, **submodule_files}
 
-    def get_fortran_deps(self, compiler: FortranCompiler, src: Path, target) -> List[str]:
+    def get_fortran_deps(self, compiler: FortranCompiler, src: Path, target) -> T.List[str]:
         """
         Find all module and submodule needed by a Fortran target
         """
@@ -2646,6 +2656,8 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
     def generate_scanbuild(self):
         if not environment.detect_scanbuild():
             return
+        if ('', 'scan-build') in self.build.run_target_names:
+            return
         cmd = self.environment.get_build_command() + \
             ['--internal', 'scanbuild', self.environment.source_dir, self.environment.build_dir] + \
             self.environment.get_build_command() + self.get_user_option_args()
@@ -2662,6 +2674,8 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
                 not os.path.exists(os.path.join(self.environment.source_dir, '_clang-' + name)):
             return
         if target_name in self.all_outputs:
+            return
+        if ('', target_name) in self.build.run_target_names:
             return
         cmd = self.environment.get_build_command() + \
             ['--internal', 'clang' + name, self.environment.source_dir, self.environment.build_dir]
@@ -2682,11 +2696,31 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
             return
         self.generate_clangtool('tidy')
 
+    def generate_tags(self, tool, target_name):
+        import shutil
+        if not shutil.which(tool):
+            return
+        if ('', target_name) in self.build.run_target_names:
+            return
+        if target_name in self.all_outputs:
+            return
+        cmd = self.environment.get_build_command() + \
+            ['--internal', 'tags', tool, self.environment.source_dir]
+        elem = NinjaBuildElement(self.all_outputs, 'meson-' + target_name, 'CUSTOM_COMMAND', 'PHONY')
+        elem.add_item('COMMAND', cmd)
+        elem.add_item('pool', 'console')
+        self.add_build(elem)
+        # Alias that runs the target defined above
+        self.create_target_alias('meson-' + target_name)
+
     # For things like scan-build and other helper tools we might have.
     def generate_utils(self):
         self.generate_scanbuild()
         self.generate_clangformat()
         self.generate_clangtidy()
+        self.generate_tags('etags', 'TAGS')
+        self.generate_tags('ctags', 'ctags')
+        self.generate_tags('cscope', 'cscope')
         cmd = self.environment.get_build_command() + ['--internal', 'uninstall']
         elem = NinjaBuildElement(self.all_outputs, 'meson-uninstall', 'CUSTOM_COMMAND', 'PHONY')
         elem.add_item('COMMAND', cmd)
@@ -2761,7 +2795,7 @@ def load(build_dir):
     return obj
 
 
-def _scan_fortran_file_deps(src: Path, srcdir: Path, dirname: Path, tdeps, compiler) -> List[str]:
+def _scan_fortran_file_deps(src: Path, srcdir: Path, dirname: Path, tdeps, compiler) -> T.List[str]:
     """
     scan a Fortran file for dependencies. Needs to be distinct from target
     to allow for recursion induced by `include` statements.er

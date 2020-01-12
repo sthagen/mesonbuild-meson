@@ -35,6 +35,7 @@ packages = ['mesonbuild',
             'mesonbuild.dependencies',
             'mesonbuild.modules',
             'mesonbuild.scripts',
+            'mesonbuild.templates',
             'mesonbuild.wrap']
 package_data = {
     'mesonbuild.dependencies': ['data/CMakeLists.txt', 'data/CMakeListsLLVM.txt', 'data/CMakePathInfo.txt'],
@@ -49,7 +50,6 @@ if sys.platform != 'win32':
 if __name__ == '__main__':
     setup(name='meson',
           version=version,
-          extras_require={'progress': ['tqdm']},
           packages=packages,
           package_data=package_data,
           entry_points=entries,

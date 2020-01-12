@@ -1,5 +1,5 @@
-int func();
+int func(void);
 
-int main(int argc, char **arg) {
+int main(void) {
     return func();
 }

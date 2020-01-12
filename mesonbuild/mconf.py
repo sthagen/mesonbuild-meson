@@ -62,7 +62,7 @@ class Conf:
             self.source_dir = os.path.abspath(os.path.realpath(self.build_dir))
             intr = mintro.IntrospectionInterpreter(self.source_dir, '', 'ninja', visitors = [AstIDGenerator()])
             intr.analyze()
-            # Reenable logging just in case
+            # Re-enable logging just in case
             mlog.enable()
             self.coredata = intr.coredata
             self.default_values_only = True
@@ -224,12 +224,12 @@ class Conf:
             self.print_options('', {insert_build_prefix(k): o for k, o in self.coredata.builtins_per_machine.build.items()})
         self.print_options('Backend options', self.coredata.backend_options)
         self.print_options('Base options', self.coredata.base_options)
-        self.print_options('Compiler options', host_compiler_options[''])
+        self.print_options('Compiler options', host_compiler_options.get('', {}))
         if show_build_options:
-            self.print_options('', build_compiler_options[''])
+            self.print_options('', build_compiler_options.get('', {}))
         self.print_options('Directories', dir_options)
         self.print_options('Testing options', test_options)
-        self.print_options('Project options', project_options[''])
+        self.print_options('Project options', project_options.get('', {}))
         for subproject in sorted(self.all_subprojects):
             if subproject == '':
                 continue

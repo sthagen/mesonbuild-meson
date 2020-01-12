@@ -15,7 +15,7 @@
 import copy
 import functools
 import os.path
-import typing
+import typing as T
 
 from .. import coredata
 from .. import mlog
@@ -39,7 +39,7 @@ from .mixins.pgi import PGICompiler
 from .mixins.islinker import BasicLinkerIsCompilerMixin, LinkerEnvVarsMixin
 from .mixins.emscripten import EmscriptenMixin
 
-if typing.TYPE_CHECKING:
+if T.TYPE_CHECKING:
     from ..envconfig import MachineInfo
 
 
@@ -59,21 +59,23 @@ class CPPCompiler(CLikeCompiler, Compiler):
         except KeyError:
             raise MesonException('Unknown function attribute "{}"'.format(name))
 
+    language = 'cpp'
+
     def __init__(self, exelist, version, for_machine: MachineChoice, is_cross: bool,
-                 info: 'MachineInfo', exe_wrap: typing.Optional[str] = None, **kwargs):
+                 info: 'MachineInfo', exe_wrap: T.Optional[str] = None, **kwargs):
         # If a child ObjCPP class has already set it, don't set it ourselves
-        self.language = 'cpp'
         Compiler.__init__(self, exelist, version, for_machine, info, **kwargs)
         CLikeCompiler.__init__(self, is_cross, exe_wrap)
 
-    def get_display_language(self):
+    @staticmethod
+    def get_display_language():
         return 'C++'
 
     def get_no_stdinc_args(self):
         return ['-nostdinc++']
 
     def sanity_check(self, work_dir, environment):
-        code = 'class breakCCompiler;int main() { return 0; }\n'
+        code = 'class breakCCompiler;int main(void) { return 0; }\n'
         return self.sanity_check_impl(work_dir, environment, 'sanitycheckcpp.cc', code)
 
     def get_compiler_check_args(self):
@@ -96,7 +98,7 @@ class CPPCompiler(CLikeCompiler, Compiler):
         t = '''{prefix}
         #include <{header}>
         using {symbol};
-        int main () {{ return 0; }}'''
+        int main(void) {{ return 0; }}'''
         return self.compiles(t.format(**fargs), env, extra_args=extra_args,
                              dependencies=dependencies)
 
@@ -167,6 +169,7 @@ class ClangCPPCompiler(ClangCompiler, CPPCompiler):
         opts.update({'cpp_eh': coredata.UserComboOption('C++ exception handling type.',
                                                         ['none', 'default', 'a', 's', 'sc'],
                                                         'default'),
+                     'cpp_rtti': coredata.UserBooleanOption('Enable RTTI', True),
                      'cpp_std': coredata.UserComboOption('C++ language standard to use',
                                                          ['none', 'c++98', 'c++03', 'c++11', 'c++14', 'c++17', 'c++1z', 'c++2a',
                                                           'gnu++11', 'gnu++14', 'gnu++17', 'gnu++1z', 'gnu++2a'],
@@ -180,6 +183,9 @@ class ClangCPPCompiler(ClangCompiler, CPPCompiler):
             args.append(self._find_best_cpp_std(std.value))
 
         non_msvc_eh_options(options['cpp_eh'].value, args)
+
+        if not options['cpp_rtti'].value:
+            args.append('-fno-rtti')
 
         return args
 
@@ -265,6 +271,7 @@ class GnuCPPCompiler(GnuCompiler, CPPCompiler):
         opts.update({'cpp_eh': coredata.UserComboOption('C++ exception handling type.',
                                                         ['none', 'default', 'a', 's', 'sc'],
                                                         'default'),
+                     'cpp_rtti': coredata.UserBooleanOption('Enable RTTI', True),
                      'cpp_std': coredata.UserComboOption('C++ language standard to use',
                                                          ['none', 'c++98', 'c++03', 'c++11', 'c++14', 'c++17', 'c++1z', 'c++2a',
                                                           'gnu++03', 'gnu++11', 'gnu++14', 'gnu++17', 'gnu++1z', 'gnu++2a'],
@@ -284,6 +291,9 @@ class GnuCPPCompiler(GnuCompiler, CPPCompiler):
             args.append(self._find_best_cpp_std(std.value))
 
         non_msvc_eh_options(options['cpp_eh'].value, args)
+
+        if not options['cpp_rtti'].value:
+            args.append('-fno-rtti')
 
         if options['cpp_debugstl'].value:
             args.append('-D_GLIBCXX_DEBUG=1')
@@ -373,6 +383,7 @@ class IntelCPPCompiler(IntelGnuLikeCompiler, CPPCompiler):
         opts.update({'cpp_eh': coredata.UserComboOption('C++ exception handling type.',
                                                         ['none', 'default', 'a', 's', 'sc'],
                                                         'default'),
+                     'cpp_rtti': coredata.UserBooleanOption('Enable RTTI', True),
                      'cpp_std': coredata.UserComboOption('C++ language standard to use',
                                                          ['none'] + c_stds + g_stds,
                                                          'none'),
@@ -391,6 +402,8 @@ class IntelCPPCompiler(IntelGnuLikeCompiler, CPPCompiler):
             args.append('-std=' + remap_cpp03.get(std.value, std.value))
         if options['cpp_eh'].value == 'none':
             args.append('-fno-exceptions')
+        if not options['cpp_rtti'].value:
+            args.append('-fno-rtti')
         if options['cpp_debugstl'].value:
             args.append('-D_GLIBCXX_DEBUG=1')
         return args
@@ -418,10 +431,11 @@ class VisualStudioLikeCPPCompilerMixin:
     def get_option_link_args(self, options):
         return options['cpp_winlibs'].value[:]
 
-    def _get_options_impl(self, opts, cpp_stds: typing.List[str]):
+    def _get_options_impl(self, opts, cpp_stds: T.List[str]):
         opts.update({'cpp_eh': coredata.UserComboOption('C++ exception handling type.',
                                                         ['none', 'default', 'a', 's', 'sc'],
                                                         'default'),
+                     'cpp_rtti': coredata.UserBooleanOption('Enable RTTI', True),
                      'cpp_std': coredata.UserComboOption('C++ language standard to use',
                                                          cpp_stds,
                                                          'none'),
@@ -435,8 +449,13 @@ class VisualStudioLikeCPPCompilerMixin:
         eh = options['cpp_eh']
         if eh.value == 'default':
             args.append('/EHsc')
-        elif eh.value != 'none':
+        elif eh.value == 'none':
+            args.append('/EHs-c-')
+        else:
             args.append('/EH' + eh.value)
+
+        if not options['cpp_rtti'].value:
+            args.append('/GR-')
 
         permissive, ver = self.VC_VERSION_MAP[options['cpp_std'].value]
 
@@ -467,7 +486,7 @@ class CPP11AsCPP14Mixin:
         # if one is using anything before that point, one cannot set the standard.
         if options['cpp_std'].value in {'vc++11', 'c++11'}:
             mlog.warning(self.id, 'does not support C++11;',
-                         'attempting best effort; setting the standard to C++14')
+                         'attempting best effort; setting the standard to C++14', once=True)
             # Don't mutate anything we're going to change, we need to use
             # deepcopy since we're messing with members, and we can't simply
             # copy the members because the option proxy doesn't support it.
@@ -535,7 +554,7 @@ class IntelClCPPCompiler(VisualStudioLikeCPPCompilerMixin, IntelVisualStudioLike
         IntelVisualStudioLikeCompiler.__init__(self, target)
 
     def get_options(self):
-        # This has only been tested with verison 19.0,
+        # This has only been tested with version 19.0,
         cpp_stds = ['none', 'c++11', 'vc++11', 'c++14', 'vc++14', 'c++17', 'vc++17', 'c++latest']
         return self._get_options_impl(super().get_options(), cpp_stds)
 

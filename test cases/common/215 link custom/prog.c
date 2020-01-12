@@ -1,6 +1,6 @@
-void flob();
+void flob(void);
 
-int main(int argc, char **argv) {
+int main(void) {
     flob();
     return 0;
 }

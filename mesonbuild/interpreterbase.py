@@ -243,7 +243,7 @@ class FeatureNew(FeatureCheckBase):
         return 'Project specifies a minimum meson_version \'{}\' but uses features which were added in newer versions:'.format(tv)
 
     def log_usage_warning(self, tv):
-        mlog.warning('Project targetting \'{}\' but tried to use feature introduced '
+        mlog.warning('Project targeting \'{}\' but tried to use feature introduced '
                      'in \'{}\': {}'.format(tv, self.feature_version, self.feature_name))
 
 class FeatureDeprecated(FeatureCheckBase):
@@ -258,7 +258,7 @@ class FeatureDeprecated(FeatureCheckBase):
         return 'Deprecated features used:'
 
     def log_usage_warning(self, tv):
-        mlog.deprecation('Project targetting \'{}\' but tried to use feature '
+        mlog.deprecation('Project targeting \'{}\' but tried to use feature '
                          'deprecated since \'{}\': {}'
                          ''.format(tv, self.feature_version, self.feature_name))
 
@@ -496,7 +496,19 @@ class InterpreterBase:
     def evaluate_dictstatement(self, cur):
         (arguments, kwargs) = self.reduce_arguments(cur.args)
         assert (not arguments)
-        return kwargs
+        result = {}
+        self.argument_depth += 1
+        for key, value in kwargs.items():
+            if not isinstance(key, mparser.StringNode):
+                FeatureNew('Dictionary entry using non literal key', '0.53.0').use(self.subproject)
+            key = self.evaluate_statement(key)
+            if not isinstance(key, str):
+                raise InvalidArguments('Key must be a string')
+            if key in result:
+                raise InvalidArguments('Duplicate dictionary key: {}'.format(key))
+            result[key] = value
+        self.argument_depth -= 1
+        return result
 
     def evaluate_notstatement(self, cur):
         v = self.evaluate_statement(cur.value)
@@ -803,8 +815,11 @@ The result of this is undefined and will become a hard error in a future Meson r
         (args, kwargs) = self.reduce_arguments(args)
         # Special case. This is the only thing you can do with a disabler
         # object. Every other use immediately returns the disabler object.
-        if isinstance(obj, Disabler) and method_name == 'found':
-            return False
+        if isinstance(obj, Disabler):
+            if method_name == 'found':
+                return False
+            else:
+                return Disabler()
         if is_disabled(args, kwargs):
             return Disabler()
         if method_name == 'extract_objects':
@@ -1018,8 +1033,6 @@ The result of this is undefined and will become a hard error in a future Meson r
         reduced_pos = [self.evaluate_statement(arg) for arg in args.arguments]
         reduced_kw = {}
         for key in args.kwargs.keys():
-            if not isinstance(key, str):
-                raise InvalidArguments('Keyword argument name is not a string.')
             a = args.kwargs[key]
             reduced_kw[key] = self.evaluate_statement(a)
         self.argument_depth -= 1

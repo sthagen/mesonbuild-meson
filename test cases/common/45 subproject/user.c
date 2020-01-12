@@ -2,7 +2,7 @@
 #include<stdio.h>
 
 
-int main(int argc, char **argv) {
+int main(void) {
     int res;
     printf("Calling into sublib now.\n");
     res = subfunc();

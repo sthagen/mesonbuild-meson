@@ -14,34 +14,60 @@
 
 """Abstractions for the Intel Compiler families.
 
-Intel provides both a posix/gcc-like compiler (ICC) and an msvc-like compiler
-(ICL).
+Intel provides both a posix/gcc-like compiler (ICC) for MacOS and Linux,
+with Meson mixin IntelGnuLikeCompiler.
+For Windows, the Intel msvc-like compiler (ICL) Meson mixin
+is IntelVisualStudioLikeCompiler.
 """
 
 import os
-import typing
+import typing as T
 
 from ... import mesonlib
 from .gnu import GnuLikeCompiler
 from .visualstudio import VisualStudioLikeCompiler
 
-if typing.TYPE_CHECKING:
+if T.TYPE_CHECKING:
     import subprocess  # noqa: F401
 
 # XXX: avoid circular dependencies
 # TODO: this belongs in a posix compiler class
-clike_optimization_args = {
-    '0': [],
-    'g': [],
-    '1': ['-O1'],
-    '2': ['-O2'],
-    '3': ['-O3'],
-    's': ['-Os'],
-}  # type: typing.Dict[str, typing.List[str]]
+# NOTE: the default Intel optimization is -O2, unlike GNU which defaults to -O0.
+# this can be surprising, particularly for debug builds, so we specify the
+# default as -O0.
+# https://software.intel.com/en-us/cpp-compiler-developer-guide-and-reference-o
+# https://software.intel.com/en-us/cpp-compiler-developer-guide-and-reference-g
+# https://software.intel.com/en-us/fortran-compiler-developer-guide-and-reference-o
+# https://software.intel.com/en-us/fortran-compiler-developer-guide-and-reference-g
+# https://software.intel.com/en-us/fortran-compiler-developer-guide-and-reference-traceback
+# https://gcc.gnu.org/onlinedocs/gcc/Optimize-Options.html
 
 
-# Tested on linux for ICC 14.0.3, 15.0.6, 16.0.4, 17.0.1, 19.0.0
 class IntelGnuLikeCompiler(GnuLikeCompiler):
+    """
+    Tested on linux for ICC 14.0.3, 15.0.6, 16.0.4, 17.0.1, 19.0
+    debugoptimized: -g -O2
+    release: -O3
+    minsize: -O2
+    """
+
+    BUILD_ARGS = {
+        'plain': [],
+        'debug': ["-g", "-traceback"],
+        'debugoptimized': ["-g", "-traceback"],
+        'release': [],
+        'minsize': [],
+        'custom': [],
+    }  # type: T.Dict[str, T.List[str]]
+
+    OPTIM_ARGS = {
+        '0': ['-O0'],
+        'g': ['-O0'],
+        '1': ['-O1'],
+        '2': ['-O2'],
+        '3': ['-O3'],
+        's': ['-Os'],
+    }
 
     def __init__(self):
         super().__init__()
@@ -55,26 +81,23 @@ class IntelGnuLikeCompiler(GnuLikeCompiler):
         self.id = 'intel'
         self.lang_header = 'none'
 
-    def get_optimization_args(self, optimization_level: str) -> typing.List[str]:
-        return clike_optimization_args[optimization_level]
-
     def get_pch_suffix(self) -> str:
         return 'pchi'
 
-    def get_pch_use_args(self, pch_dir: str, header: str) -> typing.List[str]:
+    def get_pch_use_args(self, pch_dir: str, header: str) -> T.List[str]:
         return ['-pch', '-pch_dir', os.path.join(pch_dir), '-x',
                 self.lang_header, '-include', header, '-x', 'none']
 
     def get_pch_name(self, header_name: str) -> str:
         return os.path.basename(header_name) + '.' + self.get_pch_suffix()
 
-    def openmp_flags(self) -> typing.List[str]:
+    def openmp_flags(self) -> T.List[str]:
         if mesonlib.version_compare(self.version, '>=15.0.0'):
             return ['-qopenmp']
         else:
             return ['-openmp']
 
-    def compiles(self, *args, **kwargs) -> typing.Tuple[bool, bool]:
+    def compiles(self, *args, **kwargs) -> T.Tuple[bool, bool]:
         # This covers a case that .get('foo', []) doesn't, that extra_args is
         # defined and is None
         extra_args = kwargs.get('extra_args') or []
@@ -90,22 +113,46 @@ class IntelGnuLikeCompiler(GnuLikeCompiler):
         ]
         return super().compiles(*args, **kwargs)
 
-    def get_profile_generate_args(self) -> typing.List[str]:
+    def get_profile_generate_args(self) -> T.List[str]:
         return ['-prof-gen=threadsafe']
 
-    def get_profile_use_args(self) -> typing.List[str]:
+    def get_profile_use_args(self) -> T.List[str]:
         return ['-prof-use']
+
+    def get_buildtype_args(self, buildtype: str) -> T.List[str]:
+        return self.BUILD_ARGS[buildtype]
+
+    def get_optimization_args(self, optimization_level: str) -> T.List[str]:
+        return self.OPTIM_ARGS[optimization_level]
 
 
 class IntelVisualStudioLikeCompiler(VisualStudioLikeCompiler):
 
     """Abstractions for ICL, the Intel compiler on Windows."""
 
+    BUILD_ARGS = {
+        'plain': [],
+        'debug': ["/Zi", "/traceback"],
+        'debugoptimized': ["/Zi", "/traceback"],
+        'release': [],
+        'minsize': [],
+        'custom': [],
+    }  # type: T.Dict[str, T.List[str]]
+
+    OPTIM_ARGS = {
+        '0': ['/O0'],
+        'g': ['/O0'],
+        '1': ['/O1'],
+        '2': ['/O2'],
+        '3': ['/O3'],
+        's': ['/Os'],
+    }
+
     def __init__(self, target: str):
         super().__init__(target)
         self.id = 'intel-cl'
 
-    def compile(self, code, *, extra_args: typing.Optional[typing.List[str]] = None, **kwargs) -> typing.Iterator['subprocess.Popen']:
+    def compile(self, code, *, extra_args: T.Optional[T.List[str]] = None, **kwargs) -> T.Iterator['subprocess.Popen']:
         # This covers a case that .get('foo', []) doesn't, that extra_args is
         if kwargs.get('mode', 'compile') != 'link':
             extra_args = extra_args.copy() if extra_args is not None else []
@@ -119,7 +166,7 @@ class IntelVisualStudioLikeCompiler(VisualStudioLikeCompiler):
             ])
         return super().compile(code, extra_args, **kwargs)
 
-    def get_toolset_version(self) -> typing.Optional[str]:
+    def get_toolset_version(self) -> T.Optional[str]:
         # Avoid circular dependencies....
         from ...environment import search_version
 
@@ -131,5 +178,11 @@ class IntelVisualStudioLikeCompiler(VisualStudioLikeCompiler):
         version = int(v1 + v2)
         return self._calculate_toolset_version(version)
 
-    def openmp_flags(self) -> typing.List[str]:
+    def openmp_flags(self) -> T.List[str]:
         return ['/Qopenmp']
+
+    def get_buildtype_args(self, buildtype: str) -> T.List[str]:
+        return self.BUILD_ARGS[buildtype]
+
+    def get_optimization_args(self, optimization_level: str) -> T.List[str]:
+        return self.OPTIM_ARGS[optimization_level]

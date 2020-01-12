@@ -4,6 +4,7 @@
 
 using namespace std;
 
-int main() {
+int main(void) {
   cout << getLibStr() << " -- " << getZlibVers() << endl;
+  return EXIT_SUCCESS;
 }

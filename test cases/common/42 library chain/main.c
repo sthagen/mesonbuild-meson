@@ -1,5 +1,5 @@
-int libfun();
+int libfun(void);
 
-int main() {
+int main(void) {
   return libfun();
 }

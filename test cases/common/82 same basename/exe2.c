@@ -1,5 +1,5 @@
-int func();
+int func(void);
 
-int main(int argc, char **argv) {
+int main(void) {
     return func() == 1 ? 0 : 1;
 }

@@ -192,8 +192,8 @@ in a real meson run. Because of this options for the subprojects can differ.
 ## The dependencies section
 
 The list of all _found_ dependencies can be acquired from
-`intro-dependencies.json`. Here, the name, compiler and linker arguments for
-a dependency are listed.
+`intro-dependencies.json`. Here, the name, version, compiler and linker
+arguments for a dependency are listed.
 
 ### Scanning for dependecie with `--scan-dependencies`
 
@@ -207,6 +207,7 @@ The output format is as follows:
   {
     "name": "The name of the dependency",
     "required": true,
+    "version": [">=1.2.3"],
     "conditional": false,
     "has_fallback": false
   }
@@ -219,7 +220,10 @@ in the `meson.build` (all dependencies are required by default). The
 inside a conditional block. In a real meson run these dependencies might not be
 used, thus they _may_ not be required, even if the `required` key is set. The
 `has_fallback` key just indicates whether a fallback was directly set in the
-`dependency()` function.
+`dependency()` function. The `version` key always contains a list of version
+requirements from the `meson.build` and **not** the actual version of the
+dependency on disc. The version list is empty if no version was specified
+in the `meson.build`.
 
 ## Tests
 
@@ -231,7 +235,7 @@ When these tests fail, the user probably wants to run the failing test in a
 debugger. To make this as integrated as possible, extract the tests from the
 `intro-tests.json` and `intro-benchmarks.json` files. This provides you with
 all the information needed to run the test: what command to execute, command
-line arguments and environment variable settings.
+line arguments, environment variable settings and how to process the output.
 
 ```json
 {
@@ -240,6 +244,7 @@ line arguments and environment variable settings.
     "timeout": "the test timeout",
     "suite": ["list", "of", "test", "suites"],
     "is_parallel": true / false,
+    "protocol": "exitcode" / "tap",
     "cmd": ["command", "to", "run"],
     "env": {
         "VARIABLE1": "value 1",
@@ -261,3 +266,4 @@ This API can also work without a build directory for the `--projectinfo` command
 - [KDevelop](https://www.kdevelop.org)
 - [Eclipse CDT](https://www.eclipse.org/cdt/) (experimental)
 - [Meson Cmake Wrapper](https://github.com/prozum/meson-cmake-wrapper) (for cmake IDEs)
+- [Meson Syntax Highlighter](https://plugins.jetbrains.com/plugin/13269-meson-syntax-highlighter) plugin for JetBrains IDEs.

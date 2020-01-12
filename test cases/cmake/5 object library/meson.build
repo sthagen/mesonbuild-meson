@@ -5,10 +5,6 @@ if not dep_test.found()
   error('MESON_SKIP_TEST: zlib is not installed')
 endif
 
-if build_machine.system() == 'windows'
-  error('MESON_SKIP_TEST: Windows is not supported because of symbol export problems')
-endif
-
 cm = import('cmake')
 
 sub_pro = cm.subproject('cmObjLib')

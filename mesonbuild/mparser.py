@@ -674,16 +674,8 @@ class Parser:
         a = ArgumentNode(s)
 
         while not isinstance(s, EmptyNode):
-            potential = self.current
             if self.accept('colon'):
-                if not isinstance(s, StringNode):
-                    raise ParseException('Key must be a string.',
-                                         self.getline(), s.lineno, s.colno)
-                if s.value in a.kwargs:
-                    # + 1 to colno to point to the actual string, not the opening quote
-                    raise ParseException('Duplicate dictionary key: {}'.format(s.value),
-                                         self.getline(), s.lineno, s.colno + 1)
-                a.set_kwarg(s.value, self.statement())
+                a.set_kwarg(s, self.statement())
                 potential = self.current
                 if not self.accept('comma'):
                     return a

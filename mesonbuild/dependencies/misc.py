@@ -1,4 +1,4 @@
-# Copyright 2013-2017 The Meson development team
+# Copyright 2013-2019 The Meson development team
 
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -16,110 +16,19 @@
 
 from pathlib import Path
 import functools
-import os
 import re
 import sysconfig
 
 from .. import mlog
 from .. import mesonlib
-from ..mesonlib import split_args
 from ..environment import detect_cpu_family
+from ..mesonlib import listify
 
 from .base import (
     DependencyException, DependencyMethods, ExternalDependency,
-    ExternalProgram, ExtraFrameworkDependency, PkgConfigDependency,
+    ExtraFrameworkDependency, PkgConfigDependency,
     CMakeDependency, ConfigToolDependency,
 )
-
-
-class CoarrayDependency(ExternalDependency):
-    """
-    Coarrays are a Fortran 2008 feature.
-
-    Coarrays are sometimes implemented via external library (GCC+OpenCoarrays),
-    while other compilers just build in support (Cray, IBM, Intel, NAG).
-    Coarrays may be thought of as a high-level language abstraction of
-    low-level MPI calls.
-    """
-    def __init__(self, environment, kwargs):
-        super().__init__('coarray', environment, 'fortran', kwargs)
-        kwargs['required'] = False
-        kwargs['silent'] = True
-        self.is_found = False
-
-        cid = self.get_compiler().get_id()
-        if cid == 'gcc':
-            """ OpenCoarrays is the most commonly used method for Fortran Coarray with GCC """
-            self.is_found = True
-            kwargs['modules'] = 'OpenCoarrays::caf_mpi'
-            cmakedep = CMakeDependency('OpenCoarrays', environment, kwargs)
-            if not cmakedep.found():
-                self.compile_args = ['-fcoarray=single']
-                self.version = 'single image'
-                return
-
-            self.compile_args = cmakedep.get_compile_args()
-            self.link_args = cmakedep.get_link_args()
-            self.version = cmakedep.get_version()
-        elif cid == 'intel':
-            """ Coarrays are built into Intel compilers, no external library needed """
-            self.is_found = True
-            self.link_args = ['-coarray=shared']
-            self.compile_args = self.link_args
-        elif cid == 'intel-cl':
-            """ Coarrays are built into Intel compilers, no external library needed """
-            self.is_found = True
-            self.compile_args = ['/Qcoarray:shared']
-        elif cid == 'nagfor':
-            """ NAG doesn't require any special arguments for Coarray """
-            self.is_found = True
-
-
-class HDF5Dependency(ExternalDependency):
-
-    def __init__(self, environment, kwargs):
-        language = kwargs.get('language', 'c')
-        super().__init__('hdf5', environment, language, kwargs)
-        kwargs['required'] = False
-        kwargs['silent'] = True
-        self.is_found = False
-
-        pkgconfig_files = ['hdf5']
-
-        if language not in ('c', 'cpp', 'fortran'):
-            raise DependencyException('Language {} is not supported with HDF5.'.format(language))
-
-        for pkg in pkgconfig_files:
-            try:
-                pkgdep = PkgConfigDependency(pkg, environment, kwargs, language=self.language)
-                if pkgdep.found():
-                    self.compile_args = pkgdep.get_compile_args()
-                    # derive needed libraries by language
-                    pd_link_args = pkgdep.get_link_args()
-                    link_args = []
-                    for larg in pd_link_args:
-                        lpath = Path(larg)
-                        if lpath.is_file():
-                            if language == 'cpp':
-                                link_args.append(str(lpath.parent / (lpath.stem + '_hl_cpp' + lpath.suffix)))
-                                link_args.append(str(lpath.parent / (lpath.stem + '_cpp' + lpath.suffix)))
-                            elif language == 'fortran':
-                                link_args.append(str(lpath.parent / (lpath.stem + 'hl_fortran' + lpath.suffix)))
-                                link_args.append(str(lpath.parent / (lpath.stem + '_fortran' + lpath.suffix)))
-
-                            # HDF5 C libs are required by other HDF5 languages
-                            link_args.append(str(lpath.parent / (lpath.stem + '_hl' + lpath.suffix)))
-                            link_args.append(larg)
-                        else:
-                            link_args.append(larg)
-
-                    self.link_args = link_args
-                    self.version = pkgdep.get_version()
-                    self.is_found = True
-                    self.pcdep = pkgdep
-                    break
-            except Exception:
-                pass
 
 
 class NetCDFDependency(ExternalDependency):
@@ -130,226 +39,43 @@ class NetCDFDependency(ExternalDependency):
         kwargs['required'] = False
         kwargs['silent'] = True
         self.is_found = False
-
-        pkgconfig_files = ['netcdf']
+        methods = listify(self.methods)
 
         if language not in ('c', 'cpp', 'fortran'):
             raise DependencyException('Language {} is not supported with NetCDF.'.format(language))
 
-        if language == 'fortran':
-            pkgconfig_files.append('netcdf-fortran')
+        if set([DependencyMethods.AUTO, DependencyMethods.PKGCONFIG]).intersection(methods):
+            pkgconfig_files = ['netcdf']
 
-        self.compile_args = []
-        self.link_args = []
-        self.pcdep = []
-        for pkg in pkgconfig_files:
-            pkgdep = PkgConfigDependency(pkg, environment, kwargs, language=self.language)
-            if pkgdep.found():
-                self.compile_args.extend(pkgdep.get_compile_args())
-                self.link_args.extend(pkgdep.get_link_args())
-                self.version = pkgdep.get_version()
-                self.is_found = True
-                self.pcdep.append(pkgdep)
+            if language == 'fortran':
+                pkgconfig_files.append('netcdf-fortran')
 
-class MPIDependency(ExternalDependency):
-
-    def __init__(self, environment, kwargs):
-        language = kwargs.get('language', 'c')
-        super().__init__('mpi', environment, language, kwargs)
-        kwargs['required'] = False
-        kwargs['silent'] = True
-        self.is_found = False
-
-        # NOTE: Only OpenMPI supplies a pkg-config file at the moment.
-        if language == 'c':
-            env_vars = ['MPICC']
-            pkgconfig_files = ['ompi-c']
-            default_wrappers = ['mpicc']
-        elif language == 'cpp':
-            env_vars = ['MPICXX']
-            pkgconfig_files = ['ompi-cxx']
-            default_wrappers = ['mpic++', 'mpicxx', 'mpiCC']
-        elif language == 'fortran':
-            env_vars = ['MPIFC', 'MPIF90', 'MPIF77']
-            pkgconfig_files = ['ompi-fort']
-            default_wrappers = ['mpifort', 'mpif90', 'mpif77']
-        else:
-            raise DependencyException('Language {} is not supported with MPI.'.format(language))
-
-        for pkg in pkgconfig_files:
-            try:
+            self.compile_args = []
+            self.link_args = []
+            self.pcdep = []
+            for pkg in pkgconfig_files:
                 pkgdep = PkgConfigDependency(pkg, environment, kwargs, language=self.language)
                 if pkgdep.found():
-                    self.compile_args = pkgdep.get_compile_args()
-                    self.link_args = pkgdep.get_link_args()
+                    self.compile_args.extend(pkgdep.get_compile_args())
+                    self.link_args.extend(pkgdep.get_link_args())
                     self.version = pkgdep.get_version()
                     self.is_found = True
-                    self.pcdep = pkgdep
-                    break
-            except Exception:
-                pass
-
-        if not self.is_found:
-            # Prefer environment.
-            for var in env_vars:
-                if var in os.environ:
-                    wrappers = [os.environ[var]]
-                    break
-            else:
-                # Or search for default wrappers.
-                wrappers = default_wrappers
-
-            for prog in wrappers:
-                result = self._try_openmpi_wrapper(prog)
-                if result is not None:
-                    self.is_found = True
-                    self.version = result[0]
-                    self.compile_args = self._filter_compile_args(result[1])
-                    self.link_args = self._filter_link_args(result[2])
-                    break
-                result = self._try_other_wrapper(prog)
-                if result is not None:
-                    self.is_found = True
-                    self.version = result[0]
-                    self.compile_args = self._filter_compile_args(result[1])
-                    self.link_args = self._filter_link_args(result[2])
-                    break
-
-        if not self.is_found and mesonlib.is_windows():
-            # only Intel Fortran compiler is compatible with Microsoft MPI at this time.
-            if language == 'fortran' and environment.detect_fortran_compiler(self.for_machine).name_string() != 'intel-cl':
+                    self.pcdep.append(pkgdep)
+            if self.is_found:
                 return
-            result = self._try_msmpi()
-            if result is not None:
+
+        if set([DependencyMethods.AUTO, DependencyMethods.CMAKE]).intersection(methods):
+            cmakedep = CMakeDependency('NetCDF', environment, kwargs, language=self.language)
+            if cmakedep.found():
+                self.compile_args = cmakedep.get_compile_args()
+                self.link_args = cmakedep.get_link_args()
+                self.version = cmakedep.get_version()
                 self.is_found = True
-                self.version, self.compile_args, self.link_args = result
-
-    def _filter_compile_args(self, args):
-        """
-        MPI wrappers return a bunch of garbage args.
-        Drop -O2 and everything that is not needed.
-        """
-        result = []
-        multi_args = ('-I', )
-        if self.language == 'fortran':
-            fc = self.env.coredata.compilers[self.for_machine]['fortran']
-            multi_args += fc.get_module_incdir_args()
-
-        include_next = False
-        for f in args:
-            if f.startswith(('-D', '-f') + multi_args) or f == '-pthread' \
-                    or (f.startswith('-W') and f != '-Wall' and not f.startswith('-Werror')):
-                result.append(f)
-                if f in multi_args:
-                    # Path is a separate argument.
-                    include_next = True
-            elif include_next:
-                include_next = False
-                result.append(f)
-        return result
-
-    def _filter_link_args(self, args):
-        """
-        MPI wrappers return a bunch of garbage args.
-        Drop -O2 and everything that is not needed.
-        """
-        result = []
-        include_next = False
-        for f in args:
-            if f.startswith(('-L', '-l', '-Xlinker')) or f == '-pthread' \
-                    or (f.startswith('-W') and f != '-Wall' and not f.startswith('-Werror')):
-                result.append(f)
-                if f in ('-L', '-Xlinker'):
-                    include_next = True
-            elif include_next:
-                include_next = False
-                result.append(f)
-        return result
-
-    def _try_openmpi_wrapper(self, prog):
-        prog = ExternalProgram(prog, silent=True)
-        if prog.found():
-            cmd = prog.get_command() + ['--showme:compile']
-            p, o, e = mesonlib.Popen_safe(cmd)
-            p.wait()
-            if p.returncode != 0:
-                mlog.debug('Command', mlog.bold(cmd), 'failed to run:')
-                mlog.debug(mlog.bold('Standard output\n'), o)
-                mlog.debug(mlog.bold('Standard error\n'), e)
                 return
-            cargs = split_args(o)
 
-            cmd = prog.get_command() + ['--showme:link']
-            p, o, e = mesonlib.Popen_safe(cmd)
-            p.wait()
-            if p.returncode != 0:
-                mlog.debug('Command', mlog.bold(cmd), 'failed to run:')
-                mlog.debug(mlog.bold('Standard output\n'), o)
-                mlog.debug(mlog.bold('Standard error\n'), e)
-                return
-            libs = split_args(o)
-
-            cmd = prog.get_command() + ['--showme:version']
-            p, o, e = mesonlib.Popen_safe(cmd)
-            p.wait()
-            if p.returncode != 0:
-                mlog.debug('Command', mlog.bold(cmd), 'failed to run:')
-                mlog.debug(mlog.bold('Standard output\n'), o)
-                mlog.debug(mlog.bold('Standard error\n'), e)
-                return
-            version = re.search(r'\d+.\d+.\d+', o)
-            if version:
-                version = version.group(0)
-            else:
-                version = None
-
-            return version, cargs, libs
-
-    def _try_other_wrapper(self, prog):
-        prog = ExternalProgram(prog, silent=True)
-        if prog.found():
-            cmd = prog.get_command() + ['-show']
-            p, o, e = mesonlib.Popen_safe(cmd)
-            p.wait()
-            if p.returncode != 0:
-                mlog.debug('Command', mlog.bold(cmd), 'failed to run:')
-                mlog.debug(mlog.bold('Standard output\n'), o)
-                mlog.debug(mlog.bold('Standard error\n'), e)
-                return
-            args = split_args(o)
-
-            version = None
-
-            return version, args, args
-
-    def _try_msmpi(self):
-        if self.language == 'cpp':
-            # MS-MPI does not support the C++ version of MPI, only the standard C API.
-            return
-        if 'MSMPI_INC' not in os.environ:
-            return
-        incdir = os.environ['MSMPI_INC']
-        arch = detect_cpu_family(self.env.coredata.compilers.host)
-        if arch == 'x86':
-            if 'MSMPI_LIB32' not in os.environ:
-                return
-            libdir = os.environ['MSMPI_LIB32']
-            post = 'x86'
-        elif arch == 'x86_64':
-            if 'MSMPI_LIB64' not in os.environ:
-                return
-            libdir = os.environ['MSMPI_LIB64']
-            post = 'x64'
-        else:
-            return
-        if self.language == 'fortran':
-            return (None,
-                    ['-I' + incdir, '-I' + os.path.join(incdir, post)],
-                    [os.path.join(libdir, 'msmpi.lib'), os.path.join(libdir, 'msmpifec.lib')])
-        else:
-            return (None,
-                    ['-I' + incdir, '-I' + os.path.join(incdir, post)],
-                    [os.path.join(libdir, 'msmpi.lib')])
+    @staticmethod
+    def get_methods():
+        return [DependencyMethods.AUTO, DependencyMethods.PKGCONFIG, DependencyMethods.CMAKE]
 
 
 class OpenMPDependency(ExternalDependency):
@@ -401,15 +127,34 @@ class ThreadDependency(ExternalDependency):
     def __init__(self, environment, kwargs):
         super().__init__('threads', environment, None, kwargs)
         self.name = 'threads'
-        self.is_found = True
-        # Happens if you are using a language with threads
-        # concept without C, such as plain Cuda.
-        if self.clib_compiler is None:
-            self.compile_args = []
-            self.link_args = []
-        else:
-            self.compile_args = self.clib_compiler.thread_flags(environment)
-            self.link_args = self.clib_compiler.thread_link_flags(environment)
+        self.is_found = False
+        methods = listify(self.methods)
+        if DependencyMethods.AUTO in methods:
+            self.is_found = True
+            # Happens if you are using a language with threads
+            # concept without C, such as plain Cuda.
+            if self.clib_compiler is None:
+                self.compile_args = []
+                self.link_args = []
+            else:
+                self.compile_args = self.clib_compiler.thread_flags(environment)
+                self.link_args = self.clib_compiler.thread_link_flags(environment)
+            return
+
+        if DependencyMethods.CMAKE in methods:
+            # for unit tests and for those who simply want
+            # dependency('threads', method: 'cmake')
+            cmakedep = CMakeDependency('Threads', environment, kwargs)
+            if cmakedep.found():
+                self.compile_args = cmakedep.get_compile_args()
+                self.link_args = cmakedep.get_link_args()
+                self.version = cmakedep.get_version()
+                self.is_found = True
+                return
+
+    @staticmethod
+    def get_methods():
+        return [DependencyMethods.AUTO, DependencyMethods.CMAKE]
 
 
 class BlocksDependency(ExternalDependency):

@@ -55,7 +55,7 @@ particularly the paths section may be necessary.
 
 ### Core options
 
-Options that are labled "per machine" in the table are set per machine.
+Options that are labeled "per machine" in the table are set per machine.
 Prefixing the option with `build.` just affects the build machine configuration,
 while unprefixed just affects the host machine configuration, respectively.
 Using the option as-is with no prefix affects all machines. For example:
@@ -69,7 +69,7 @@ Using the option as-is with no prefix affects all machines. For example:
 | Option                               | Default value | Description                                                    | Is per machine |
 | ------                               | ------------- | -----------                                                    | -------------- |
 | auto_features {enabled, disabled, auto} | auto       | Override value of all 'auto' features                          | no             |
-| backend {ninja, vs,<br>vs2010, vs2015, vs2017, xcode} | ninja | Backend to use                                        | no             |
+| backend {ninja, vs,<br>vs2010, vs2015, vs2017, vs2019, xcode} | ninja | Backend to use                                | no             |
 | buildtype {plain, debug,<br>debugoptimized, release, minsize, custom} | debug |  Build type to use                    | no             |
 | debug                                | true          | Debug                                                          | no             |
 | default_library {shared, static, both} | shared      | Default library type                                           | no             |
@@ -121,7 +121,7 @@ The value of `b_sanitize` can be one of: `none`, `address`, `thread`,
 `-Wl,-bitcode_bundle` while linking. These options are incompatible with
 `b_asneeded`, so that option will be silently disabled.
 
-[Shared modules](#Reference-manual.md#shared_module) will not have bitcode
+[Shared modules](Reference-manual.md#shared_module) will not have bitcode
 embedded because `-Wl,-bitcode_bundle` is incompatible with both `-bundle` and
 `-Wl,-undefined,dynamic_lookup` which are necessary for shared modules to work.
 
@@ -144,7 +144,9 @@ compiler being used:
 | cpp_std      | none          | none, c++98, c++03, c++11, c++14, c++17, <br/>c++1z, gnu++03, gnu++11, gnu++14, gnu++17, gnu++1z, <br/> vc++14, vc++17, vc++latest | C++ language standard to use |
 | cpp_debugstl | false         | true, false                              | C++ STL debug mode |
 | cpp_eh       | default       | none, default, a, s, sc                  | C++ exception handling type |
+| cpp_rtti     | true          | true, false                              | Whether to enable RTTI (runtime type identification) |
 | cpp_winlibs  | see below     | free-form comma-separated list           | Standard Windows libs to link against |
+| fortran_std  | none          | [none, legacy, f95, f2003, f2008, f2018] | Fortran language standard to use |
 
 The default values of `c_winlibs` and `cpp_winlibs` are in compiler-specific
 argument forms, but the libraries are: kernel32, user32, gdi32, winspool,

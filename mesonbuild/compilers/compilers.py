@@ -13,22 +13,22 @@
 # limitations under the License.
 
 import contextlib, os.path, re, tempfile
-import typing
-from typing import Optional, Tuple, List
+import collections.abc
+import typing as T
 
 from ..linkers import StaticLinker, GnuLikeDynamicLinkerMixin, SolarisDynamicLinker
 from .. import coredata
 from .. import mlog
 from .. import mesonlib
 from ..mesonlib import (
-    EnvironmentException, MachineChoice, MesonException, OrderedSet,
+    EnvironmentException, MachineChoice, MesonException,
     Popen_safe, split_args
 )
 from ..envconfig import (
     Properties,
 )
 
-if typing.TYPE_CHECKING:
+if T.TYPE_CHECKING:
     from ..coredata import OptionDictType
     from ..envconfig import MachineInfo
     from ..environment import Environment
@@ -88,8 +88,10 @@ cflags_mapping = {'c': 'CFLAGS',
                   'vala': 'VALAFLAGS',
                   'rust': 'RUSTFLAGS'}
 
-# execinfo is a compiler lib on BSD
-unixy_compiler_internal_libs = ('m', 'c', 'pthread', 'dl', 'rt', 'execinfo')
+unixy_compiler_internal_libs = ('m', 'c', 'pthread', 'dl', 'rt')
+# execinfo is a compiler lib on FreeBSD and NetBSD
+if mesonlib.is_freebsd() or mesonlib.is_netbsd():
+    unixy_compiler_internal_libs += ('execinfo',)
 
 # All these are only for C-linkable languages; see `clink_langs` above.
 
@@ -384,11 +386,12 @@ class RunResult:
         self.stdout = stdout
         self.stderr = stderr
 
-class CompilerArgs(list):
+class CompilerArgs(T.MutableSequence[str]):
     '''
-    Class derived from list() that manages a list of compiler arguments. Should
-    be used while constructing compiler arguments from various sources. Can be
-    operated with ordinary lists, so this does not need to be used everywhere.
+    List-like class that manages a list of compiler arguments. Should be used
+    while constructing compiler arguments from various sources. Can be
+    operated with ordinary lists, so this does not need to be used
+    everywhere.
 
     All arguments must be inserted and stored in GCC-style (-lfoo, -Idir, etc)
     and can converted to the native type of each compiler by using the
@@ -437,37 +440,45 @@ class CompilerArgs(list):
     # In generate_link() we add external libs without de-dup, but we must
     # *always* de-dup these because they're special arguments to the linker
     always_dedup_args = tuple('-l' + lib for lib in unixy_compiler_internal_libs)
-    compiler = None
 
-    def _check_args(self, args):
-        cargs = []
-        if len(args) > 2:
-            raise TypeError("CompilerArgs() only accepts at most 2 arguments: "
-                            "The compiler, and optionally an initial list")
-        elif not args:
-            return cargs
-        elif len(args) == 1:
-            if isinstance(args[0], (Compiler, StaticLinker)):
-                self.compiler = args[0]
-            else:
-                raise TypeError("you must pass a Compiler instance as one of "
-                                "the arguments")
-        elif len(args) == 2:
-            if isinstance(args[0], (Compiler, StaticLinker)):
-                self.compiler = args[0]
-                cargs = args[1]
-            elif isinstance(args[1], (Compiler, StaticLinker)):
-                cargs = args[0]
-                self.compiler = args[1]
-            else:
-                raise TypeError("you must pass a Compiler instance as one of "
-                                "the two arguments")
-        else:
-            raise AssertionError('Not reached')
-        return cargs
+    def __init__(self, compiler: T.Union['Compiler', StaticLinker],
+                 iterable: T.Optional[T.Iterable[str]] = None):
+        self.compiler = compiler
+        self.__container = list(iterable) if iterable is not None else []  # type: T.List[str]
 
-    def __init__(self, *args):
-        super().__init__(self._check_args(args))
+    @T.overload                                # noqa: F811
+    def __getitem__(self, index: int) -> str:  # noqa: F811
+        pass
+
+    @T.overload                                          # noqa: F811
+    def __getitem__(self, index: slice) -> T.List[str]:  # noqa: F811
+        pass
+
+    def __getitem__(self, index):  # noqa: F811
+        return self.__container[index]
+
+    @T.overload                                             # noqa: F811
+    def __setitem__(self, index: int, value: str) -> None:  # noqa: F811
+        pass
+
+    @T.overload                                                       # noqa: F811
+    def __setitem__(self, index: slice, value: T.List[str]) -> None:  # noqa: F811
+        pass
+
+    def __setitem__(self, index, value) -> None:  # noqa: F811
+        self.__container[index] = value
+
+    def __delitem__(self, index: T.Union[int, slice]) -> None:
+        del self.__container[index]
+
+    def __len__(self) -> int:
+        return len(self.__container)
+
+    def insert(self, index: int, value: str) -> None:
+        self.__container.insert(index, value)
+
+    def copy(self) -> 'CompilerArgs':
+        return CompilerArgs(self.compiler, self.__container.copy())
 
     @classmethod
     def _can_dedup(cls, arg):
@@ -520,7 +531,7 @@ class CompilerArgs(list):
             return True
         return False
 
-    def to_native(self, copy: bool = False) -> typing.List[str]:
+    def to_native(self, copy: bool = False) -> T.List[str]:
         # Check if we need to add --start/end-group for circular dependencies
         # between static libraries, and for recursively searching for symbols
         # needed by static libraries that are provided by object files or
@@ -532,7 +543,7 @@ class CompilerArgs(list):
         # This covers all ld.bfd, ld.gold, ld.gold, and xild on Linux, which
         # all act like (or are) gnu ld
         # TODO: this could probably be added to the DynamicLinker instead
-        if (hasattr(self.compiler, 'linker') and
+        if (isinstance(self.compiler, Compiler) and
                 self.compiler.linker is not None and
                 isinstance(self.compiler.linker, (GnuLikeDynamicLinkerMixin, SolarisDynamicLinker))):
             group_start = -1
@@ -552,9 +563,9 @@ class CompilerArgs(list):
         # Remove system/default include paths added with -isystem
         if hasattr(self.compiler, 'get_default_include_dirs'):
             default_dirs = self.compiler.get_default_include_dirs()
-            bad_idx_list = []
+            bad_idx_list = []  # type: T.List[int]
             for i, each in enumerate(new):
-                # Remove the -isystem and the path if the path is a dafault path
+                # Remove the -isystem and the path if the path is a default path
                 if (each == '-isystem' and
                         i < (len(new) - 1) and
                         new[i + 1] in default_dirs):
@@ -565,9 +576,9 @@ class CompilerArgs(list):
                     bad_idx_list += [i]
             for i in reversed(bad_idx_list):
                 new.pop(i)
-        return self.compiler.unix_args_to_native(new)
+        return self.compiler.unix_args_to_native(new.__container)
 
-    def append_direct(self, arg):
+    def append_direct(self, arg: str) -> None:
         '''
         Append the specified argument without any reordering or de-dup except
         for absolute paths to libraries, etc, which can always be de-duped
@@ -576,9 +587,9 @@ class CompilerArgs(list):
         if os.path.isabs(arg):
             self.append(arg)
         else:
-            super().append(arg)
+            self.__container.append(arg)
 
-    def extend_direct(self, iterable):
+    def extend_direct(self, iterable: T.Iterable[str]) -> None:
         '''
         Extend using the elements in the specified iterable without any
         reordering or de-dup except for absolute paths where the order of
@@ -587,7 +598,7 @@ class CompilerArgs(list):
         for elem in iterable:
             self.append_direct(elem)
 
-    def extend_preserving_lflags(self, iterable):
+    def extend_preserving_lflags(self, iterable: T.Iterable[str]) -> None:
         normal_flags = []
         lflags = []
         for i in iterable:
@@ -598,20 +609,20 @@ class CompilerArgs(list):
         self.extend(normal_flags)
         self.extend_direct(lflags)
 
-    def __add__(self, args):
-        new = CompilerArgs(self, self.compiler)
+    def __add__(self, args: T.Iterable[str]) -> 'CompilerArgs':
+        new = self.copy()
         new += args
         return new
 
-    def __iadd__(self, args):
+    def __iadd__(self, args: T.Iterable[str]) -> 'CompilerArgs':
         '''
         Add two CompilerArgs while taking into account overriding of arguments
         and while preserving the order of arguments as much as possible
         '''
-        pre = []
-        post = []
-        if not isinstance(args, list):
-            raise TypeError('can only concatenate list (not "{}") to list'.format(args))
+        pre = []   # type: T.List[str]
+        post = []  # type: T.List[str]
+        if not isinstance(args, collections.abc.Iterable):
+            raise TypeError('can only concatenate Iterable[str] (not "{}") to CompilerArgs'.format(args))
         for arg in args:
             # If the argument can be de-duped, do it either by removing the
             # previous occurrence of it and adding a new one, or not adding the
@@ -636,28 +647,30 @@ class CompilerArgs(list):
         # Insert at the beginning
         self[:0] = pre
         # Append to the end
-        super().__iadd__(post)
+        self.__container += post
         return self
 
-    def __radd__(self, args):
-        new = CompilerArgs(args, self.compiler)
+    def __radd__(self, args: T.Iterable[str]):
+        new = CompilerArgs(self.compiler, args)
         new += self
         return new
 
-    def __mul__(self, args):
-        raise TypeError("can't multiply compiler arguments")
+    def __eq__(self, other: T.Any) -> T.Union[bool, 'NotImplemented']:
+        # Only allow equality checks against other CompilerArgs and lists instances
+        if isinstance(other, CompilerArgs):
+            return self.compiler == other.compiler and self.__container == other.__container
+        elif isinstance(other, list):
+            return self.__container == other
+        return NotImplemented
 
-    def __imul__(self, args):
-        raise TypeError("can't multiply compiler arguments")
-
-    def __rmul__(self, args):
-        raise TypeError("can't multiply compiler arguments")
-
-    def append(self, arg):
+    def append(self, arg: str) -> None:
         self.__iadd__([arg])
 
-    def extend(self, args):
+    def extend(self, args: T.Iterable[str]) -> None:
         self.__iadd__(args)
+
+    def __repr__(self) -> str:
+        return 'CompilerArgs({!r}, {!r})'.format(self.compiler, self.__container)
 
 class Compiler:
     # Libraries to ignore in find_library() since they are provided by the
@@ -667,10 +680,11 @@ class Compiler:
     # manually searched.
     internal_libs = ()
 
-    LINKER_PREFIX = None  # type: typing.Union[None, str, typing.List[str]]
+    LINKER_PREFIX = None  # type: T.Union[None, str, T.List[str]]
+    INVOKES_LINKER = True
 
     def __init__(self, exelist, version, for_machine: MachineChoice, info: 'MachineInfo',
-                 linker: typing.Optional['DynamicLinker'] = None, **kwargs):
+                 linker: T.Optional['DynamicLinker'] = None, **kwargs):
         if isinstance(exelist, str):
             self.exelist = [exelist]
         elif isinstance(exelist, list):
@@ -709,6 +723,9 @@ class Compiler:
     def get_id(self) -> str:
         return self.id
 
+    def get_linker_id(self) -> str:
+        return self.linker.id
+
     def get_version_string(self) -> str:
         details = [self.id, self.version]
         if self.full_version:
@@ -718,13 +735,14 @@ class Compiler:
     def get_language(self) -> str:
         return self.language
 
-    def get_display_language(self) -> str:
-        return self.language.capitalize()
+    @classmethod
+    def get_display_language(cls) -> str:
+        return cls.language.capitalize()
 
     def get_default_suffix(self) -> str:
         return self.default_suffix
 
-    def get_define(self, dname, prefix, env, extra_args, dependencies) -> Tuple[str, bool]:
+    def get_define(self, dname, prefix, env, extra_args, dependencies) -> T.Tuple[str, bool]:
         raise EnvironmentException('%s does not support get_define ' % self.get_id())
 
     def compute_int(self, expression, low, high, guess, prefix, env, extra_args, dependencies) -> int:
@@ -733,10 +751,12 @@ class Compiler:
     def compute_parameters_with_absolute_paths(self, parameter_list, build_dir):
         raise EnvironmentException('%s does not support compute_parameters_with_absolute_paths ' % self.get_id())
 
-    def has_members(self, typename, membernames, prefix, env, *, extra_args=None, dependencies=None) -> Tuple[bool, bool]:
+    def has_members(self, typename, membernames, prefix, env, *,
+                    extra_args=None, dependencies=None) -> T.Tuple[bool, bool]:
         raise EnvironmentException('%s does not support has_member(s) ' % self.get_id())
 
-    def has_type(self, typename, prefix, env, extra_args, *, dependencies=None) -> Tuple[bool, bool]:
+    def has_type(self, typename, prefix, env, extra_args, *,
+                 dependencies=None) -> T.Tuple[bool, bool]:
         raise EnvironmentException('%s does not support has_type ' % self.get_id())
 
     def symbols_have_underscore_prefix(self, env) -> bool:
@@ -745,10 +765,10 @@ class Compiler:
     def get_exelist(self):
         return self.exelist[:]
 
-    def get_linker_exelist(self) -> typing.List[str]:
+    def get_linker_exelist(self) -> T.List[str]:
         return self.linker.get_exelist()
 
-    def get_linker_output_args(self, outputname: str) -> typing.List[str]:
+    def get_linker_output_args(self, outputname: str) -> T.List[str]:
         return self.linker.get_output_args(outputname)
 
     def get_builtin_define(self, *args, **kwargs):
@@ -779,126 +799,31 @@ class Compiler:
         """
         return []
 
-    def use_preproc_flags(self) -> bool:
-        """
-        Whether the compiler (or processes it spawns) cares about CPPFLAGS
-        """
-        return self.get_language() in {'c', 'cpp', 'objc', 'objcpp'}
-
-    def use_ldflags(self) -> bool:
-        """
-        Whether the compiler (or processes it spawns) cares about LDFLAGS
-        """
-        return self.get_language() in languages_using_ldflags
-
-    def get_linker_args_from_envvars(self) -> typing.List[str]:
+    def get_linker_args_from_envvars(self) -> T.List[str]:
         return self.linker.get_args_from_envvars()
 
-    def get_args_from_envvars(self) -> typing.Tuple[typing.List[str], typing.List[str]]:
-        """
-        Returns a tuple of (compile_flags, link_flags) for the specified language
-        from the inherited environment
-        """
-        def log_var(var, val: Optional[str]):
-            if val:
-                mlog.log('Appending {} from environment: {!r}'.format(var, val))
-            else:
-                mlog.debug('No {} in the environment, not changing global flags.'.format(var))
-
-        lang = self.get_language()
-        compiler_is_linker = self.linker is not None and self.linker.invoked_by_compiler()
-
-        if lang not in cflags_mapping:
-            return [], []
-
-        compile_flags = []  # type: typing.List[str]
-        link_flags = []     # type: typing.List[str]
-
-        env_compile_flags = os.environ.get(cflags_mapping[lang])
-        log_var(cflags_mapping[lang], env_compile_flags)
-        if env_compile_flags is not None:
-            compile_flags += split_args(env_compile_flags)
-
-        # Link flags (same for all languages)
-        if self.use_ldflags():
-            env_link_flags = self.get_linker_args_from_envvars()
-        else:
-            env_link_flags = []
-        log_var('LDFLAGS', env_link_flags)
-        link_flags += env_link_flags
-        if compiler_is_linker:
-            # When the compiler is used as a wrapper around the linker (such as
-            # with GCC and Clang), the compile flags can be needed while linking
-            # too. This is also what Autotools does. However, we don't want to do
-            # this when the linker is stand-alone such as with MSVC C/C++, etc.
-            link_flags = compile_flags + link_flags
-
-        # Pre-processor flags for certain languages
-        if self.use_preproc_flags():
-            env_preproc_flags = os.environ.get('CPPFLAGS')
-            log_var('CPPFLAGS', env_preproc_flags)
-            if env_preproc_flags is not None:
-                compile_flags += split_args(env_preproc_flags)
-
-        return compile_flags, link_flags
-
-    def get_options(self):
-        opts = {} # build afresh every time
-        description = 'Extra arguments passed to the {}'.format(self.get_display_language())
-        opts.update({
-            self.language + '_args': coredata.UserArrayOption(
-                description + ' compiler',
-                [], split_args=True, user_input=True, allow_dups=True),
-            self.language + '_link_args': coredata.UserArrayOption(
-                description + ' linker',
-                [], split_args=True, user_input=True, allow_dups=True),
-        })
-
-        return opts
-
-    def get_and_default_options(self, properties: Properties):
-        """
-        Take default values from env variables and/or config files.
-        """
-        opts = self.get_options()
-
-        if properties.fallback:
-            # Get from env vars.
-            compile_args, link_args = self.get_args_from_envvars()
-        else:
-            compile_args = []
-            link_args = []
-
-        for k, o in opts.items():
-            if k in properties:
-                # Get from configuration files.
-                o.set_value(properties[k])
-            elif k == self.language + '_args':
-                o.set_value(compile_args)
-            elif k == self.language + '_link_args':
-                o.set_value(link_args)
-
-        return opts
+    def get_options(self) -> T.Dict[str, coredata.UserOption]:
+        return {}
 
     def get_option_compile_args(self, options):
         return []
 
-    def get_option_link_args(self, options: 'OptionDictType') -> typing.List[str]:
+    def get_option_link_args(self, options: 'OptionDictType') -> T.List[str]:
         return self.linker.get_option_args(options)
 
-    def check_header(self, *args, **kwargs) -> Tuple[bool, bool]:
+    def check_header(self, *args, **kwargs) -> T.Tuple[bool, bool]:
         raise EnvironmentException('Language %s does not support header checks.' % self.get_display_language())
 
-    def has_header(self, *args, **kwargs) -> Tuple[bool, bool]:
+    def has_header(self, *args, **kwargs) -> T.Tuple[bool, bool]:
         raise EnvironmentException('Language %s does not support header checks.' % self.get_display_language())
 
-    def has_header_symbol(self, *args, **kwargs) -> Tuple[bool, bool]:
+    def has_header_symbol(self, *args, **kwargs) -> T.Tuple[bool, bool]:
         raise EnvironmentException('Language %s does not support header symbol checks.' % self.get_display_language())
 
-    def compiles(self, *args, **kwargs) -> Tuple[bool, bool]:
+    def compiles(self, *args, **kwargs) -> T.Tuple[bool, bool]:
         raise EnvironmentException('Language %s does not support compile checks.' % self.get_display_language())
 
-    def links(self, *args, **kwargs) -> Tuple[bool, bool]:
+    def links(self, *args, **kwargs) -> T.Tuple[bool, bool]:
         raise EnvironmentException('Language %s does not support link checks.' % self.get_display_language())
 
     def run(self, *args, **kwargs) -> RunResult:
@@ -910,7 +835,7 @@ class Compiler:
     def alignment(self, *args, **kwargs) -> int:
         raise EnvironmentException('Language %s does not support alignment checks.' % self.get_display_language())
 
-    def has_function(self, *args, **kwargs) -> Tuple[bool, bool]:
+    def has_function(self, *args, **kwargs) -> T.Tuple[bool, bool]:
         raise EnvironmentException('Language %s does not support function checks.' % self.get_display_language())
 
     @classmethod
@@ -919,7 +844,7 @@ class Compiler:
         return args[:]
 
     @classmethod
-    def native_args_to_unix(cls, args: typing.List[str]) -> typing.List[str]:
+    def native_args_to_unix(cls, args: T.List[str]) -> T.List[str]:
         "Always returns a copy that can be independently mutated"
         return args[:]
 
@@ -932,12 +857,12 @@ class Compiler:
     def get_program_dirs(self, *args, **kwargs):
         return []
 
-    def has_multi_arguments(self, args, env) -> Tuple[bool, bool]:
+    def has_multi_arguments(self, args, env) -> T.Tuple[bool, bool]:
         raise EnvironmentException(
             'Language {} does not support has_multi_arguments.'.format(
                 self.get_display_language()))
 
-    def has_multi_link_arguments(self, args: typing.List[str], env: 'Environment') -> Tuple[bool, bool]:
+    def has_multi_link_arguments(self, args: T.List[str], env: 'Environment') -> T.Tuple[bool, bool]:
         return self.linker.has_multi_arguments(args, env)
 
     def _get_compile_output(self, dirname, mode):
@@ -1004,7 +929,7 @@ class Compiler:
                     p.output_name = output
                 p.cached = False  # Make sure that the cached attribute always exists
                 yield p
-        except (PermissionError, OSError):
+        except OSError:
             # On Windows antivirus programs and the like hold on to files so
             # they can't be deleted. There's not much to do in this case. Also,
             # catch OSError because the directory is then no longer empty.
@@ -1051,22 +976,22 @@ class Compiler:
     def get_compile_debugfile_args(self, rel_obj, **kwargs):
         return []
 
-    def get_link_debugfile_args(self, targetfile: str) -> typing.List[str]:
+    def get_link_debugfile_args(self, targetfile: str) -> T.List[str]:
         return self.linker.get_debugfile_args(targetfile)
 
-    def get_std_shared_lib_link_args(self) -> typing.List[str]:
+    def get_std_shared_lib_link_args(self) -> T.List[str]:
         return self.linker.get_std_shared_lib_args()
 
-    def get_std_shared_module_link_args(self, options: 'OptionDictType') -> typing.List[str]:
+    def get_std_shared_module_link_args(self, options: 'OptionDictType') -> T.List[str]:
         return self.linker.get_std_shared_module_args(options)
 
-    def get_link_whole_for(self, args: typing.List[str]) -> typing.List[str]:
+    def get_link_whole_for(self, args: T.List[str]) -> T.List[str]:
         return self.linker.get_link_whole_for(args)
 
-    def get_allow_undefined_link_args(self) -> typing.List[str]:
+    def get_allow_undefined_link_args(self) -> T.List[str]:
         return self.linker.get_allow_undefined_args()
 
-    def no_undefined_link_args(self) -> typing.List[str]:
+    def no_undefined_link_args(self) -> T.List[str]:
         return self.linker.no_undefined_args()
 
     # Compiler arguments needed to enable the given instruction set.
@@ -1077,7 +1002,7 @@ class Compiler:
 
     def build_rpath_args(self, env: 'Environment', build_dir: str, from_dir: str,
                          rpath_paths: str, build_rpath: str,
-                         install_rpath: str) -> typing.List[str]:
+                         install_rpath: str) -> T.List[str]:
         return self.linker.build_rpath_args(
             env, build_dir, from_dir, rpath_paths, build_rpath, install_rpath)
 
@@ -1108,7 +1033,7 @@ class Compiler:
         m = 'Language {} does not support position-independent executable'
         raise EnvironmentException(m.format(self.get_display_language()))
 
-    def get_pie_link_args(self) -> typing.List[str]:
+    def get_pie_link_args(self) -> T.List[str]:
         return self.linker.get_pie_args()
 
     def get_argument_syntax(self):
@@ -1130,39 +1055,40 @@ class Compiler:
         raise EnvironmentException(
             '%s does not support get_profile_use_args ' % self.get_id())
 
-    def get_undefined_link_args(self) -> typing.List[str]:
+    def get_undefined_link_args(self) -> T.List[str]:
         return self.linker.get_undefined_link_args()
 
     def remove_linkerlike_args(self, args):
         return [x for x in args if not x.startswith('-Wl')]
 
-    def get_lto_compile_args(self) -> List[str]:
+    def get_lto_compile_args(self) -> T.List[str]:
         return []
 
-    def get_lto_link_args(self) -> List[str]:
+    def get_lto_link_args(self) -> T.List[str]:
         return self.linker.get_lto_args()
 
-    def sanitizer_compile_args(self, value: str) -> List[str]:
+    def sanitizer_compile_args(self, value: str) -> T.List[str]:
         return []
 
-    def sanitizer_link_args(self, value: str) -> List[str]:
+    def sanitizer_link_args(self, value: str) -> T.List[str]:
         return self.linker.sanitizer_args(value)
 
-    def get_asneeded_args(self) -> typing.List[str]:
+    def get_asneeded_args(self) -> T.List[str]:
         return self.linker.get_asneeded_args()
 
-    def bitcode_args(self) -> typing.List[str]:
+    def bitcode_args(self) -> T.List[str]:
         return self.linker.bitcode_args()
 
-    def get_linker_debug_crt_args(self) -> typing.List[str]:
+    def get_linker_debug_crt_args(self) -> T.List[str]:
         return self.linker.get_debug_crt_args()
 
-    def get_buildtype_linker_args(self, buildtype: str) -> typing.List[str]:
+    def get_buildtype_linker_args(self, buildtype: str) -> T.List[str]:
         return self.linker.get_buildtype_args(buildtype)
 
     def get_soname_args(self, env: 'Environment', prefix: str, shlib_name: str,
-                        suffix: str, soversion: str, darwin_versions: typing.Tuple[str, str],
-                        is_shared_module: bool) -> typing.List[str]:
+                        suffix: str, soversion: str,
+                        darwin_versions: T.Tuple[str, str],
+                        is_shared_module: bool) -> T.List[str]:
         return self.linker.get_soname_args(
             env, prefix, shlib_name, suffix, soversion,
             darwin_versions, is_shared_module)
@@ -1175,6 +1101,12 @@ class Compiler:
 
     def get_dependency_link_args(self, dep):
         return dep.get_link_args()
+
+    @classmethod
+    def use_linker_args(cls, linker: str) -> T.List[str]:
+        """Get a list of arguments to pass to the compiler to set the linker.
+        """
+        return []
 
 
 def get_largefile_args(compiler):
@@ -1197,3 +1129,84 @@ def get_largefile_args(compiler):
         # transitionary features and must be enabled by programs that use
         # those features explicitly.
     return []
+
+
+def get_args_from_envvars(lang: str, use_linker_args: bool) -> T.Tuple[T.List[str], T.List[str]]:
+    """
+    Returns a tuple of (compile_flags, link_flags) for the specified language
+    from the inherited environment
+    """
+    def log_var(var, val: T.Optional[str]):
+        if val:
+            mlog.log('Appending {} from environment: {!r}'.format(var, val))
+        else:
+            mlog.debug('No {} in the environment, not changing global flags.'.format(var))
+
+    if lang not in cflags_mapping:
+        return [], []
+
+    compile_flags = []  # type: T.List[str]
+    link_flags = []     # type: T.List[str]
+
+    env_compile_flags = os.environ.get(cflags_mapping[lang])
+    log_var(cflags_mapping[lang], env_compile_flags)
+    if env_compile_flags is not None:
+        compile_flags += split_args(env_compile_flags)
+
+    # Link flags (same for all languages)
+    if lang in languages_using_ldflags:
+        # This is duplicated between the linkers, but I'm not sure how else
+        # to handle this
+        env_link_flags = split_args(os.environ.get('LDFLAGS', ''))
+    else:
+        env_link_flags = []
+    log_var('LDFLAGS', env_link_flags)
+    link_flags += env_link_flags
+    if use_linker_args:
+        # When the compiler is used as a wrapper around the linker (such as
+        # with GCC and Clang), the compile flags can be needed while linking
+        # too. This is also what Autotools does. However, we don't want to do
+        # this when the linker is stand-alone such as with MSVC C/C++, etc.
+        link_flags = compile_flags + link_flags
+
+    # Pre-processor flags for certain languages
+    if lang in {'c', 'cpp', 'objc', 'objcpp'}:
+        env_preproc_flags = os.environ.get('CPPFLAGS')
+        log_var('CPPFLAGS', env_preproc_flags)
+        if env_preproc_flags is not None:
+            compile_flags += split_args(env_preproc_flags)
+
+    return compile_flags, link_flags
+
+
+def get_global_options(lang: str, comp: T.Type[Compiler],
+                       properties: Properties) -> T.Dict[str, coredata.UserOption]:
+    """Retreive options that apply to all compilers for a given language."""
+    description = 'Extra arguments passed to the {}'.format(lang)
+    opts = {
+        lang + '_args': coredata.UserArrayOption(
+            description + ' compiler',
+            [], split_args=True, user_input=True, allow_dups=True),
+        lang + '_link_args': coredata.UserArrayOption(
+            description + ' linker',
+            [], split_args=True, user_input=True, allow_dups=True),
+    }
+
+    if properties.fallback:
+        # Get from env vars.
+        # XXX: True here is a hack
+        compile_args, link_args = get_args_from_envvars(lang, comp.INVOKES_LINKER)
+    else:
+        compile_args = []
+        link_args = []
+
+    for k, o in opts.items():
+        if k in properties:
+            # Get from configuration files.
+            o.set_value(properties[k])
+        elif k == lang + '_args':
+            o.set_value(compile_args)
+        elif k == lang + '_link_args':
+            o.set_value(link_args)
+
+    return opts

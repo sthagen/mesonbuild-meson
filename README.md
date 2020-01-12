@@ -22,8 +22,11 @@ build system.
 
 You can run Meson directly from a revision control checkout or an
 extracted tarball. If you wish you can install it locally with the
-standard Python distutils command `python3 setup.py install <your
-options here>`.
+standard Python command
+
+```sh
+python3 -m pip install meson <your options here>
+```
 
 Meson is also available from
 [PyPi](https://pypi.python.org/pypi/meson), so it can be installed
@@ -31,6 +34,12 @@ with `pip3 install meson` (this does not require a source checkout,
 pip will download the package automatically). The exact command to
 type to install with Pip can vary between systems, be sure to use the
 Python 3 version of Pip.
+
+For builds using Ninja, Ninja can be [downloaded directly](https://github.com/ninja-build/ninja/releases) or via
+
+```sh
+python3 -m pip install ninja
+```
 
 #### Running
 

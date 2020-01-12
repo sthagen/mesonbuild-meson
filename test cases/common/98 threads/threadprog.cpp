@@ -14,7 +14,7 @@ DWORD WINAPI thread_func(LPVOID) {
     return 0;
 }
 
-int main(int, char**) {
+int main(void) {
     printf("Starting thread.\n");
     HANDLE th;
     DWORD id;
@@ -28,11 +28,11 @@ int main(int, char**) {
 #include<thread>
 #include<cstdio>
 
-void main_func() {
+void main_func(void) {
     printf("Printing from a thread.\n");
 }
 
-int main(int, char**) {
+int main(void) {
     printf("Starting thread.\n");
     std::thread th(main_func);
     th.join();

@@ -13,13 +13,13 @@
 # limitations under the License.
 
 import subprocess, os.path
-import typing
+import typing as T
 
 from ..mesonlib import EnvironmentException, MachineChoice
 
 from .compilers import Compiler, swift_buildtype_args, clike_debug_args
 
-if typing.TYPE_CHECKING:
+if T.TYPE_CHECKING:
     from ..envconfig import MachineInfo
 
 swift_optimization_args = {'0': [],
@@ -33,10 +33,10 @@ swift_optimization_args = {'0': [],
 class SwiftCompiler(Compiler):
 
     LINKER_PREFIX = ['-Xlinker']
+    language = 'swift'
 
     def __init__(self, exelist, version, for_machine: MachineChoice,
                  is_cross, info: 'MachineInfo', **kwargs):
-        self.language = 'swift'
         super().__init__(exelist, version, for_machine, info, **kwargs)
         self.version = version
         self.id = 'llvm'

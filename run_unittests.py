@@ -31,6 +31,7 @@ import operator
 import threading
 import urllib.error
 import urllib.request
+import zipfile
 from itertools import chain
 from unittest import mock
 from configparser import ConfigParser
@@ -57,6 +58,7 @@ from mesonbuild.mesonlib import (
 from mesonbuild.environment import detect_ninja
 from mesonbuild.mesonlib import MesonException, EnvironmentException
 from mesonbuild.dependencies import PkgConfigDependency, ExternalProgram
+import mesonbuild.dependencies.base
 from mesonbuild.build import Target
 import mesonbuild.modules.pkgconfig
 
@@ -290,26 +292,6 @@ def no_pkgconfig():
         shutil.which = old_which
         ExternalProgram._search = old_search
 
-class PatchModule:
-    '''
-    Fancy monkey-patching! Whee! Can't use mock.patch because it only
-    patches in the local namespace.
-    '''
-
-    def __init__(self, func, name, impl):
-        self.func = func
-        assert(isinstance(name, str))
-        self.func_name = name
-        self.old_impl = None
-        self.new_impl = impl
-
-    def __enter__(self):
-        self.old_impl = self.func
-        exec('{} = self.new_impl'.format(self.func_name))
-
-    def __exit__(self, *args):
-        exec('{} = self.old_impl'.format(self.func_name))
-
 
 class InternalTests(unittest.TestCase):
 
@@ -360,18 +342,14 @@ class InternalTests(unittest.TestCase):
     def test_compiler_args_class(self):
         cargsfunc = mesonbuild.compilers.CompilerArgs
         cc = mesonbuild.compilers.CCompiler([], 'fake', False, MachineChoice.HOST, mock.Mock())
-        # Test that bad initialization fails
-        self.assertRaises(TypeError, cargsfunc, [])
-        self.assertRaises(TypeError, cargsfunc, [], [])
-        self.assertRaises(TypeError, cargsfunc, cc, [], [])
         # Test that empty initialization works
         a = cargsfunc(cc)
         self.assertEqual(a, [])
         # Test that list initialization works
-        a = cargsfunc(['-I.', '-I..'], cc)
+        a = cargsfunc(cc, ['-I.', '-I..'])
         self.assertEqual(a, ['-I.', '-I..'])
         # Test that there is no de-dup on initialization
-        self.assertEqual(cargsfunc(['-I.', '-I.'], cc), ['-I.', '-I.'])
+        self.assertEqual(cargsfunc(cc, ['-I.', '-I.']), ['-I.', '-I.'])
 
         ## Test that appending works
         a.append('-I..')
@@ -445,7 +423,7 @@ class InternalTests(unittest.TestCase):
     def test_compiler_args_class_gnuld(self):
         cargsfunc = mesonbuild.compilers.CompilerArgs
         ## Test --start/end-group
-        linker = mesonbuild.linkers.GnuDynamicLinker([], MachineChoice.HOST, 'fake', '-Wl,')
+        linker = mesonbuild.linkers.GnuDynamicLinker([], MachineChoice.HOST, 'fake', '-Wl,', [])
         gcc = mesonbuild.compilers.GnuCCompiler([], 'fake', False, MachineChoice.HOST, mock.Mock(), linker=linker)
         ## Ensure that the fake compiler is never called by overriding the relevant function
         gcc.get_default_include_dirs = lambda: ['/usr/include', '/usr/share/include', '/usr/local/include']
@@ -474,7 +452,7 @@ class InternalTests(unittest.TestCase):
     def test_compiler_args_remove_system(self):
         cargsfunc = mesonbuild.compilers.CompilerArgs
         ## Test --start/end-group
-        linker = mesonbuild.linkers.GnuDynamicLinker([], MachineChoice.HOST, 'fake', '-Wl,')
+        linker = mesonbuild.linkers.GnuDynamicLinker([], MachineChoice.HOST, 'fake', '-Wl,', [])
         gcc = mesonbuild.compilers.GnuCCompiler([], 'fake', False, MachineChoice.HOST, mock.Mock(), linker=linker)
         ## Ensure that the fake compiler is never called by overriding the relevant function
         gcc.get_default_include_dirs = lambda: ['/usr/include', '/usr/share/include', '/usr/local/include']
@@ -729,18 +707,20 @@ class InternalTests(unittest.TestCase):
         class Mock:
             pass
 
+        dummystate = Mock()
+        dummystate.subproject = 'dummy'
         mock = Mock()
         mock.pcdep = Mock()
         mock.pcdep.name = "some_name"
         mock.version_reqs = []
 
         # pkgconfig dependency as lib
-        deps = mesonbuild.modules.pkgconfig.DependenciesHelper("thislib")
+        deps = mesonbuild.modules.pkgconfig.DependenciesHelper(dummystate, "thislib")
         deps.add_pub_libs([mock])
         self.assertEqual(deps.format_reqs(deps.pub_reqs), "some_name")
 
         # pkgconfig dependency as requires
-        deps = mesonbuild.modules.pkgconfig.DependenciesHelper("thislib")
+        deps = mesonbuild.modules.pkgconfig.DependenciesHelper(dummystate, "thislib")
         deps.add_pub_reqs([mock])
         self.assertEqual(deps.format_reqs(deps.pub_reqs), "some_name")
 
@@ -860,13 +840,13 @@ class InternalTests(unittest.TestCase):
 
             def fake_call_pkgbin(self, args, env=None):
                 if '--libs' not in args:
-                    return 0, ''
+                    return 0, '', ''
                 if args[0] == 'foo':
-                    return 0, '-L{} -lfoo -L{} -lbar'.format(p2.as_posix(), p1.as_posix())
+                    return 0, '-L{} -lfoo -L{} -lbar'.format(p2.as_posix(), p1.as_posix()), ''
                 if args[0] == 'bar':
-                    return 0, '-L{} -lbar'.format(p2.as_posix())
+                    return 0, '-L{} -lbar'.format(p2.as_posix()), ''
                 if args[0] == 'internal':
-                    return 0, '-L{} -lpthread -lm -lc -lrt -ldl'.format(p1.as_posix())
+                    return 0, '-L{} -lpthread -lm -lc -lrt -ldl'.format(p1.as_posix()), ''
 
             old_call = PkgConfigDependency._call_pkgbin
             old_check = PkgConfigDependency.check_pkgconfig
@@ -1163,6 +1143,54 @@ class InternalTests(unittest.TestCase):
             d = mesonbuild.depfile.DepFile(f)
             deps = d.get_all_dependencies(target)
             self.assertEqual(deps, expdeps)
+
+    def test_log_once(self):
+        f = io.StringIO()
+        with mock.patch('mesonbuild.mlog.log_file', f), \
+                mock.patch('mesonbuild.mlog._logged_once', set()):
+            mesonbuild.mlog.log_once('foo')
+            mesonbuild.mlog.log_once('foo')
+            actual = f.getvalue().strip()
+            self.assertEqual(actual, 'foo', actual)
+
+    def test_log_once_ansi(self):
+        f = io.StringIO()
+        with mock.patch('mesonbuild.mlog.log_file', f), \
+                mock.patch('mesonbuild.mlog._logged_once', set()):
+            mesonbuild.mlog.log_once(mesonbuild.mlog.bold('foo'))
+            mesonbuild.mlog.log_once(mesonbuild.mlog.bold('foo'))
+            actual = f.getvalue().strip()
+            self.assertEqual(actual.count('foo'), 1, actual)
+
+            mesonbuild.mlog.log_once('foo')
+            actual = f.getvalue().strip()
+            self.assertEqual(actual.count('foo'), 1, actual)
+
+            f.truncate()
+
+            mesonbuild.mlog.warning('bar', once=True)
+            mesonbuild.mlog.warning('bar', once=True)
+            actual = f.getvalue().strip()
+            self.assertEqual(actual.count('bar'), 1, actual)
+
+    def test_sort_libpaths(self):
+        sort_libpaths = mesonbuild.dependencies.base.sort_libpaths
+        self.assertEqual(sort_libpaths(
+            ['/home/mesonuser/.local/lib', '/usr/local/lib', '/usr/lib'],
+            ['/home/mesonuser/.local/lib/pkgconfig', '/usr/local/lib/pkgconfig']),
+            ['/home/mesonuser/.local/lib', '/usr/local/lib', '/usr/lib'])
+        self.assertEqual(sort_libpaths(
+            ['/usr/local/lib', '/home/mesonuser/.local/lib', '/usr/lib'],
+            ['/home/mesonuser/.local/lib/pkgconfig', '/usr/local/lib/pkgconfig']),
+            ['/home/mesonuser/.local/lib', '/usr/local/lib', '/usr/lib'])
+        self.assertEqual(sort_libpaths(
+            ['/usr/lib', '/usr/local/lib', '/home/mesonuser/.local/lib'],
+            ['/home/mesonuser/.local/lib/pkgconfig', '/usr/local/lib/pkgconfig']),
+            ['/home/mesonuser/.local/lib', '/usr/local/lib', '/usr/lib'])
+        self.assertEqual(sort_libpaths(
+            ['/usr/lib', '/usr/local/lib', '/home/mesonuser/.local/lib'],
+            ['/home/mesonuser/.local/lib/pkgconfig', '/usr/local/libdata/pkgconfig']),
+            ['/home/mesonuser/.local/lib', '/usr/local/lib', '/usr/lib'])
 
 
 @unittest.skipIf(is_tarball(), 'Skipping because this is a tarball release')
@@ -1961,7 +1989,7 @@ class AllPlatformTests(BasePlatformTests):
         https://github.com/mesonbuild/meson/pull/4555
 
         Reverted to the first file only because of https://github.com/mesonbuild/meson/pull/4547#discussion_r244173438
-        TODO Change the format to a list officialy in a followup PR
+        TODO Change the format to a list officially in a followup PR
         '''
         if self.backend is not Backend.ninja:
             raise unittest.SkipTest('{!r} backend can\'t install files'.format(self.backend.name))
@@ -1974,6 +2002,33 @@ class AllPlatformTests(BasePlatformTests):
         self.assertPathListEqual(intro[1]['install_filename'], ['/opt/same.h', '/opt/same.sh'])
         self.assertPathListEqual(intro[2]['install_filename'], ['/usr/include/first.h', None])
         self.assertPathListEqual(intro[3]['install_filename'], [None, '/usr/bin/second.sh'])
+
+    def test_install_log_content(self):
+        '''
+        Tests that the install-log.txt is consistent with the installed files and directories.
+        Specifically checks that the log file only contains one entry per file/directory.
+        https://github.com/mesonbuild/meson/issues/4499
+        '''
+        testdir = os.path.join(self.common_test_dir, '62 install subdir')
+        self.init(testdir)
+        self.install()
+        installpath = Path(self.installdir)
+        # Find installed files and directories
+        expected = {installpath: 0}
+        for name in installpath.rglob('*'):
+            expected[name] = 0
+        # Find logged files and directories
+        with Path(self.builddir, 'meson-logs', 'install-log.txt').open() as f:
+            logged = list(map(lambda l: Path(l.strip()),
+                              filter(lambda l: not l.startswith('#'),
+                                     f.readlines())))
+        for name in logged:
+            self.assertTrue(name in expected, 'Log contains extra entry {}'.format(name))
+            expected[name] += 1
+
+        for name, count in expected.items():
+            self.assertGreater(count, 0, 'Log is missing entry for {}'.format(name))
+            self.assertLess(count, 2, 'Log has multiple entries for {}'.format(name))
 
     def test_uninstall(self):
         exename = os.path.join(self.installdir, 'usr/bin/prog' + exe_suffix)
@@ -2292,11 +2347,11 @@ class AllPlatformTests(BasePlatformTests):
             if isinstance(cc, intel):
                 self.assertIsInstance(linker, ar)
                 if is_osx():
-                    self.assertIsInstance(cc.linker, mesonbuild.linkers.XildAppleDynamicLinker)
+                    self.assertIsInstance(cc.linker, mesonbuild.linkers.AppleDynamicLinker)
                 elif is_windows():
                     self.assertIsInstance(cc.linker, mesonbuild.linkers.XilinkDynamicLinker)
                 else:
-                    self.assertIsInstance(cc.linker, mesonbuild.linkers.XildLinuxDynamicLinker)
+                    self.assertIsInstance(cc.linker, mesonbuild.linkers.GnuDynamicLinker)
             if isinstance(cc, msvc):
                 self.assertTrue(is_windows())
                 self.assertIsInstance(linker, lib)
@@ -2497,6 +2552,8 @@ class AllPlatformTests(BasePlatformTests):
     def test_dist_git(self):
         if not shutil.which('git'):
             raise unittest.SkipTest('Git not found')
+        if self.backend is not Backend.ninja:
+            raise unittest.SkipTest('Dist is only supported with Ninja')
 
         try:
             self.dist_impl(_git_init)
@@ -2521,7 +2578,7 @@ class AllPlatformTests(BasePlatformTests):
             subprocess.check_call(['hg', 'commit', '-m', 'I am a project'], cwd=project_dir)
 
         try:
-            self.dist_impl(hg_init)
+            self.dist_impl(hg_init, include_subprojects=False)
         except PermissionError:
             # When run under Windows CI, something (virus scanner?)
             # holds on to the hg files so cleaning up the dir
@@ -2531,6 +2588,8 @@ class AllPlatformTests(BasePlatformTests):
     def test_dist_git_script(self):
         if not shutil.which('git'):
             raise unittest.SkipTest('Git not found')
+        if self.backend is not Backend.ninja:
+            raise unittest.SkipTest('Dist is only supported with Ninja')
 
         try:
             with tempfile.TemporaryDirectory() as tmpdir:
@@ -2546,7 +2605,14 @@ class AllPlatformTests(BasePlatformTests):
             # fails sometimes.
             pass
 
-    def dist_impl(self, vcs_init):
+    def create_dummy_subproject(self, project_dir, name):
+        path = os.path.join(project_dir, 'subprojects', name)
+        os.makedirs(path)
+        with open(os.path.join(path, 'meson.build'), 'w') as ofile:
+            ofile.write("project('{}')".format(name))
+        return path
+
+    def dist_impl(self, vcs_init, include_subprojects=True):
         # Create this on the fly because having rogue .git directories inside
         # the source tree leads to all kinds of trouble.
         with tempfile.TemporaryDirectory() as project_dir:
@@ -2554,6 +2620,8 @@ class AllPlatformTests(BasePlatformTests):
                 ofile.write('''project('disttest', 'c', version : '1.4.3')
 e = executable('distexe', 'distexe.c')
 test('dist test', e)
+subproject('vcssub', required : false)
+subproject('tarballsub', required : false)
 ''')
             with open(os.path.join(project_dir, 'distexe.c'), 'w') as ofile:
                 ofile.write('''#include<stdio.h>
@@ -2568,6 +2636,10 @@ int main(int argc, char **argv) {
             zip_distfile = os.path.join(self.distdir, 'disttest-1.4.3.zip')
             zip_checksumfile = zip_distfile + '.sha256sum'
             vcs_init(project_dir)
+            if include_subprojects:
+                vcs_init(self.create_dummy_subproject(project_dir, 'vcssub'))
+                self.create_dummy_subproject(project_dir, 'tarballsub')
+                self.create_dummy_subproject(project_dir, 'unusedsub')
             self.init(project_dir)
             self.build('dist')
             self.assertPathExists(xz_distfile)
@@ -2578,6 +2650,26 @@ int main(int argc, char **argv) {
                       workdir=self.builddir)
             self.assertPathExists(zip_distfile)
             self.assertPathExists(zip_checksumfile)
+
+            if include_subprojects:
+                z = zipfile.ZipFile(zip_distfile)
+                self.assertEqual(sorted(['disttest-1.4.3/',
+                                         'disttest-1.4.3/meson.build',
+                                         'disttest-1.4.3/distexe.c']),
+                                 sorted(z.namelist()))
+
+                self._run(self.meson_command + ['dist', '--formats', 'zip', '--include-subprojects'],
+                          workdir=self.builddir)
+                z = zipfile.ZipFile(zip_distfile)
+                self.assertEqual(sorted(['disttest-1.4.3/',
+                                         'disttest-1.4.3/subprojects/',
+                                         'disttest-1.4.3/meson.build',
+                                         'disttest-1.4.3/distexe.c',
+                                         'disttest-1.4.3/subprojects/tarballsub/',
+                                         'disttest-1.4.3/subprojects/vcssub/',
+                                         'disttest-1.4.3/subprojects/tarballsub/meson.build',
+                                         'disttest-1.4.3/subprojects/vcssub/meson.build']),
+                                 sorted(z.namelist()))
 
     def test_rpath_uses_ORIGIN(self):
         '''
@@ -2978,8 +3070,33 @@ int main(int argc, char **argv) {
         ninja = detect_ninja()
         if ninja is None:
             raise unittest.SkipTest('This test currently requires ninja. Fix this once "meson build" works.')
-        for lang in ('c', 'cpp'):
+        langs = ['c']
+        env = get_fake_env()
+        try:
+            env.detect_cpp_compiler(MachineChoice.HOST)
+            langs.append('cpp')
+        except EnvironmentException:
+            pass
+        try:
+            env.detect_d_compiler(MachineChoice.HOST)
+            langs.append('d')
+        except EnvironmentException:
+            pass
+        try:
+            env.detect_fortran_compiler(MachineChoice.HOST)
+            langs.append('fortran')
+        except EnvironmentException:
+            pass
+        try:
+            env.detect_objc_compiler(MachineChoice.HOST)
+            langs.append('objc')
+        except EnvironmentException:
+            pass
+        # FIXME: omitting rust as Windows AppVeyor CI finds Rust but doesn't link correctly
+
+        for lang in langs:
             for target_type in ('executable', 'library'):
+                # test empty directory
                 with tempfile.TemporaryDirectory() as tmpdir:
                     self._run(self.meson_command + ['init', '--language', lang, '--type', target_type],
                               workdir=tmpdir)
@@ -2987,10 +3104,12 @@ int main(int argc, char **argv) {
                               workdir=tmpdir)
                     self._run(ninja,
                               workdir=os.path.join(tmpdir, 'builddir'))
-            with tempfile.TemporaryDirectory() as tmpdir:
-                with open(os.path.join(tmpdir, 'foo.' + lang), 'w') as f:
-                    f.write('int main() {}')
-                self._run(self.meson_command + ['init', '-b'], workdir=tmpdir)
+            # test directory with existing code file
+            if lang in ('c', 'cpp'):
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    with open(os.path.join(tmpdir, 'foo.' + lang), 'w') as f:
+                        f.write('int main(void) {}')
+                    self._run(self.meson_command + ['init', '-b'], workdir=tmpdir)
 
     # The test uses mocking and thus requires that
     # the current process is the one to run the Meson steps.
@@ -3131,7 +3250,7 @@ recommended as it is not supported on some platforms''')
         env = get_fake_env(testdirlib, self.builddir, self.prefix)
         if env.detect_c_compiler(MachineChoice.HOST).get_id() in {'msvc', 'clang-cl', 'intel-cl'}:
             # msvc-like compiler, also test it with msvc-specific flags
-            libdir_flags += ['/LIBPATH:']
+            libdir_flags += ['/LIBPATH:', '-LIBPATH:']
         else:
             # static libraries are not linkable with -l with msvc because meson installs them
             # as .a files which unix_args_to_native will not know as it expects libraries to use
@@ -3145,6 +3264,7 @@ recommended as it is not supported on some platforms''')
 
         for libdir_flag in libdir_flags:
             # build library
+            self.new_builddir()
             self.init(testdirlib, extra_args=extra_args)
             self.build()
             self.install()
@@ -3154,7 +3274,7 @@ recommended as it is not supported on some platforms''')
 
             # build user of library
             self.new_builddir()
-            # replace is needed because meson mangles platform pathes passed via LDFLAGS
+            # replace is needed because meson mangles platform paths passed via LDFLAGS
             self.init(os.path.join(testdirbase, 'exe'),
                       override_envvars={"LDFLAGS": '{}{}'.format(libdir_flag, libdir.replace('\\', '/'))})
             self.build()
@@ -3178,7 +3298,6 @@ recommended as it is not supported on some platforms''')
             # restore dirs for the next test case
             self.installdir = initial_builddir
             self.builddir = initial_installdir
-
 
     def test_conflicting_d_dash_option(self):
         testdir = os.path.join(self.unit_test_dir, '37 mixed command line args')
@@ -3324,6 +3443,11 @@ recommended as it is not supported on some platforms''')
         self.assertEqual(obj.compiler_options.host['c_args'].value, ['foo bar', 'one', 'two'])
         self.wipe()
 
+        self.init(testdir, extra_args=['-Dset_percent_opt=myoption%'])
+        obj = mesonbuild.coredata.load(self.builddir)
+        self.assertEqual(obj.user_options['set_percent_opt'].value, 'myoption%')
+        self.wipe()
+
         # Setting a 2nd time the same option should override the first value
         try:
             self.init(testdir, extra_args=['--bindir=foo', '--bindir=bar',
@@ -3382,12 +3506,12 @@ recommended as it is not supported on some platforms''')
         testdir = os.path.join(self.unit_test_dir, '41 featurenew subprojects')
         out = self.init(testdir)
         # Parent project warns correctly
-        self.assertRegex(out, "WARNING: Project targetting '>=0.45'.*'0.47.0': dict")
+        self.assertRegex(out, "WARNING: Project targeting '>=0.45'.*'0.47.0': dict")
         # Subprojects warn correctly
-        self.assertRegex(out, r"\|WARNING: Project targetting '>=0.40'.*'0.44.0': disabler")
-        self.assertRegex(out, r"\|WARNING: Project targetting '!=0.40'.*'0.44.0': disabler")
+        self.assertRegex(out, r"\|WARNING: Project targeting '>=0.40'.*'0.44.0': disabler")
+        self.assertRegex(out, r"\|WARNING: Project targeting '!=0.40'.*'0.44.0': disabler")
         # Subproject has a new-enough meson_version, no warning
-        self.assertNotRegex(out, "WARNING: Project targetting.*Python")
+        self.assertNotRegex(out, "WARNING: Project targeting.*Python")
         # Ensure a summary is printed in the subproject and the outer project
         self.assertRegex(out, r"\|WARNING: Project specifies a minimum meson_version '>=0.40'")
         self.assertRegex(out, r"\| \* 0.44.0: {'disabler'}")
@@ -3739,6 +3863,7 @@ recommended as it is not supported on some platforms''')
             ('timeout', int),
             ('suite', list),
             ('is_parallel', bool),
+            ('protocol', str),
         ]
 
         buildoptions_keylist = [
@@ -3762,6 +3887,7 @@ recommended as it is not supported on some platforms''')
 
         dependencies_typelist = [
             ('name', str),
+            ('version', str),
             ('compile_args', list),
             ('link_args', list),
         ]
@@ -3968,30 +4094,35 @@ recommended as it is not supported on some platforms''')
             {
                 'name': 'threads',
                 'required': True,
+                'version': [],
                 'has_fallback': False,
                 'conditional': False
             },
             {
                 'name': 'zlib',
                 'required': False,
+                'version': [],
                 'has_fallback': False,
                 'conditional': False
             },
             {
                 'name': 'bugDep1',
-                'required': False,
+                'required': True,
+                'version': [],
                 'has_fallback': False,
                 'conditional': False
             },
             {
                 'name': 'somethingthatdoesnotexist',
                 'required': True,
+                'version': ['>=1.2.3'],
                 'has_fallback': False,
                 'conditional': True
             },
             {
                 'name': 'look_i_have_a_fallback',
                 'required': True,
+                'version': ['>=1.0.0', '<=99.9.9'],
                 'has_fallback': True,
                 'conditional': True
             }
@@ -4027,6 +4158,45 @@ recommended as it is not supported on some platforms''')
         self.run_target('build-all')
         self.assertPathExists(os.path.join(self.builddir, 'prog' + exe_suffix))
         self.assertPathExists(os.path.join(self.builddir, 'hello.txt'))
+
+    def test_configure(self):
+        testdir = os.path.join(self.common_test_dir, '2 cpp')
+        self.init(testdir)
+        self._run(self.mconf_command + [self.builddir])
+
+    # FIXME: The test is failing on Windows CI even if the print looks good.
+    # Maybe encoding issue?
+    @unittest.skipIf(is_windows(), 'This test fails on Windows CI')
+    def test_summary(self):
+        testdir = os.path.join(self.unit_test_dir, '72 summary')
+        out = self.init(testdir)
+        expected = textwrap.dedent(r'''
+            Some Subproject 2.0
+
+                 string: bar
+                integer: 1
+                boolean: True
+
+            My Project 1.0
+
+              Configuration
+                   Some boolean: False
+                Another boolean: True
+                    Some string: Hello World
+                         A list: string
+                                 1
+                                 True
+                       A number: 1
+                            yes: YES
+                             no: NO
+            ''')
+        # Dict ordering is not guaranteed and an exact string comparison randomly
+        # fails on the CI because lines are reordered.
+        expected_lines = expected.split('\n')[1:]
+        out_start = out.find(expected_lines[0])
+        out_lines = out[out_start:].split('\n')[:len(expected_lines)]
+        self.assertEqual(sorted(expected_lines), sorted(out_lines))
+
 
 class FailureTests(BasePlatformTests):
     '''
@@ -4275,18 +4445,18 @@ class FailureTests(BasePlatformTests):
     def test_using_too_recent_feature(self):
         # Here we use a dict, which was introduced in 0.47.0
         self.assertMesonOutputs("dict = {}",
-                                ".*WARNING.*Project targetting.*but.*",
+                                ".*WARNING.*Project targeting.*but.*",
                                 meson_version='>= 0.46.0')
 
     def test_using_recent_feature(self):
         # Same as above, except the meson version is now appropriate
         self.assertMesonDoesNotOutput("dict = {}",
-                                      ".*WARNING.*Project targetting.*but.*",
+                                      ".*WARNING.*Project targeting.*but.*",
                                       meson_version='>= 0.47')
 
     def test_using_too_recent_feature_dependency(self):
         self.assertMesonOutputs("dependency('pcap', required: false)",
-                                ".*WARNING.*Project targetting.*but.*",
+                                ".*WARNING.*Project targeting.*but.*",
                                 meson_version='>= 0.41.0')
 
     def test_vcs_tag_featurenew_build_always_stale(self):
@@ -4317,6 +4487,12 @@ class FailureTests(BasePlatformTests):
         match = 'Meson version is.*but project requires >=2000'
         self.assertMesonRaises("", match, meson_version='>=2000', options=options)
 
+    def test_assert_default_message(self):
+        self.assertMesonRaises("k1 = 'a'\n" +
+                               "assert({\n" +
+                               "  k1: 1,\n" +
+                               "}['a'] == 2)\n",
+                               r"Assert failed: {k1 : 1}\['a'\] == 2")
 
 @unittest.skipUnless(is_windows() or is_cygwin(), "requires Windows (or Windows via Cygwin)")
 class WindowsTests(BasePlatformTests):
@@ -4446,6 +4622,29 @@ class WindowsTests(BasePlatformTests):
         files = [os.path.basename(path) for path in installed.values()]
 
         self.assertTrue('prog.pdb' in files)
+
+    def _check_ld(self, name: str, lang: str, expected: str) -> None:
+        if not shutil.which(name):
+            raise unittest.SkipTest('Could not find {}.'.format(name))
+        with mock.patch.dict(os.environ, {'LD': name}):
+            env = get_fake_env()
+            try:
+                comp = getattr(env, 'detect_{}_compiler'.format(lang))(MachineChoice.HOST)
+            except EnvironmentException:
+                raise unittest.SkipTest('Could not find a compiler for {}'.format(lang))
+            self.assertEqual(comp.linker.id, expected)
+
+    def test_link_environment_variable_lld_link(self):
+        self._check_ld('lld-link', 'c', 'lld-link')
+
+    def test_link_environment_variable_link(self):
+        self._check_ld('link', 'c', 'link')
+
+    def test_link_environment_variable_optlink(self):
+        self._check_ld('optlink', 'c', 'optlink')
+
+    def test_link_environment_variable_rust(self):
+        self._check_ld('link', 'rust', 'link')
 
 @unittest.skipUnless(is_osx(), "requires Darwin")
 class DarwinTests(BasePlatformTests):
@@ -5403,51 +5602,12 @@ class LinuxlikeTests(BasePlatformTests):
             self.build()
 
     @skipIfNoPkgconfig
-    def test_pkgconfig_secondary_dependencies(self):
-        '''
-        Check that Meson gets -Wl,-rpath-link right for secondary dependencies
-
-        This test requires at least two libraries, as -Wl,-rpath-link is only
-        required for dependencies of dependencies (i.e. secondary dependencies).
-        '''
-        with tempfile.TemporaryDirectory() as tempdirname:
-            testdirbase = os.path.join(self.unit_test_dir, '67 rpath-link secondary')
-
-            # build libA
-            testdirlibA = os.path.join(testdirbase, 'libA')
-            testlibAprefix = os.path.join(tempdirname, 'libAprefix')
-            self.init(testdirlibA, extra_args=['--prefix=' + testlibAprefix,
-                                               '--libdir=lib',
-                                               '--default-library=shared'], default_args=False)
-            self.build()
-            self.install(use_destdir=False)
-
-            # build libB (uses libA)
-            pkg_dir = [os.path.join(testlibAprefix, 'lib/pkgconfig')]
-            self.new_builddir()
-            testdirlibB = os.path.join(testdirbase, 'libB')
-            testlibBprefix = os.path.join(tempdirname, 'libBprefix')
-            self.init(testdirlibB, extra_args=['--prefix=' + testlibBprefix,
-                                               '--libdir=lib',
-                                               '--default-library=shared'], default_args=False,
-                      override_envvars={'PKG_CONFIG_PATH': ':'.join(pkg_dir)})
-            self.build()
-            self.install(use_destdir=False)
-
-            # build executable (uses libB, secondary dependency on libA)
-            pkg_dir.append(os.path.join(testlibBprefix, 'lib/pkgconfig'))
-            self.new_builddir()
-            self.init(os.path.join(testdirbase, 'app'),
-                      override_envvars={'PKG_CONFIG_PATH': ':'.join(pkg_dir)})
-            self.build()
-
-    @skipIfNoPkgconfig
     def test_static_archive_stripping(self):
         '''
         Check that Meson produces valid static archives with --strip enabled
         '''
         with tempfile.TemporaryDirectory() as tempdirname:
-            testdirbase = os.path.join(self.unit_test_dir, '68 static archive stripping')
+            testdirbase = os.path.join(self.unit_test_dir, '67 static archive stripping')
 
             # build lib
             self.new_builddir()
@@ -5695,7 +5855,7 @@ c = ['{0}']
             raise unittest.SkipTest("Cygwin doesn't support LD_LIBRARY_PATH.")
 
         # Build some libraries and install them
-        testdir = os.path.join(self.unit_test_dir, '69 static link/lib')
+        testdir = os.path.join(self.unit_test_dir, '68 static link/lib')
         libdir = os.path.join(self.installdir, self.libdir)
         oldprefix = self.prefix
         self.prefix = self.installdir
@@ -5707,11 +5867,49 @@ c = ['{0}']
         self.prefix = oldprefix
         meson_args = ['-Dc_link_args=-L{}'.format(libdir),
                       '--fatal-meson-warnings']
-        testdir = os.path.join(self.unit_test_dir, '69 static link')
+        testdir = os.path.join(self.unit_test_dir, '68 static link')
         env = {'PKG_CONFIG_LIBDIR': os.path.join(libdir, 'pkgconfig')}
         self.init(testdir, extra_args=meson_args, override_envvars=env)
         self.build()
         self.run_tests()
+
+    def _check_ld(self, check: str, name: str, lang: str, expected: str) -> None:
+        if is_sunos():
+            raise unittest.SkipTest('Solaris currently cannot override the linker.')
+        if not shutil.which(check):
+            raise unittest.SkipTest('Could not find {}.'.format(check))
+        with mock.patch.dict(os.environ, {'LD': name}):
+            env = get_fake_env()
+            comp = getattr(env, 'detect_{}_compiler'.format(lang))(MachineChoice.HOST)
+            if lang != 'rust' and comp.use_linker_args('foo') == []:
+                raise unittest.SkipTest(
+                    'Compiler {} does not support using alternative linkers'.format(comp.id))
+            self.assertEqual(comp.linker.id, expected)
+
+    def test_ld_environment_variable_bfd(self):
+        self._check_ld('ld.bfd', 'bfd', 'c', 'GNU ld.bfd')
+
+    def test_ld_environment_variable_gold(self):
+        self._check_ld('ld.gold', 'gold', 'c', 'GNU ld.gold')
+
+    def test_ld_environment_variable_lld(self):
+        self._check_ld('ld.lld', 'lld', 'c', 'lld')
+
+    def test_ld_environment_variable_rust(self):
+        self._check_ld('ld.gold', 'gold', 'rust', 'GNU ld.gold')
+
+    def test_ld_environment_variable_cpp(self):
+        self._check_ld('ld.gold', 'gold', 'cpp', 'GNU ld.gold')
+
+    def test_ld_environment_variable_objc(self):
+        self._check_ld('ld.gold', 'gold', 'objc', 'GNU ld.gold')
+
+    def test_ld_environment_variable_objcpp(self):
+        self._check_ld('ld.gold', 'gold', 'objcpp', 'GNU ld.gold')
+
+    def test_ld_environment_variable_fortran(self):
+        self._check_ld('ld.gold', 'gold', 'fortran', 'GNU ld.gold')
+
 
 def should_run_cross_arm_tests():
     return shutil.which('arm-linux-gnueabihf-gcc') and not platform.machine().lower().startswith('arm')
@@ -6959,6 +7157,8 @@ def main():
         import pytest # noqa: F401
         # Need pytest-xdist for `-n` arg
         import xdist # noqa: F401
+        if sys.version_info.major <= 3 and sys.version_info.minor <= 5:
+            raise ImportError('pytest with python <= 3.5 is causing issues on the CI')
         pytest_args = ['-n', 'auto', './run_unittests.py']
         pytest_args += convert_args(sys.argv[1:])
         return subprocess.run(python_command + ['-m', 'pytest'] + pytest_args).returncode
@@ -6976,4 +7176,4 @@ def main():
     return unittest.main(defaultTest=cases, buffer=True)
 
 if __name__ == '__main__':
-    sys.exit(main())
+    raise SystemExit(main())

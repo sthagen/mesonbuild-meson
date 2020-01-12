@@ -2,8 +2,7 @@
 
 unsigned square_unsigned (unsigned a);
 
-int
-main (int argc, char * argv[])
+int main(void)
 {
   unsigned int ret = square_unsigned (2);
   if (ret != 4) {

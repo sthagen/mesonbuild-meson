@@ -1,5 +1,5 @@
 #include<mylib.h>
 
-int main(int argc, char **argv) {
+int main(void) {
     return func1() - func2();
 }
