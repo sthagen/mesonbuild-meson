@@ -246,12 +246,16 @@ class DynamicLinker(metaclass=abc.ABCMeta):
         'custom': [],
     }  # type: T.Dict[str, T.List[str]]
 
-    def _apply_prefix(self, arg: str) -> T.List[str]:
+    def _apply_prefix(self, arg: T.Union[str, T.List[str]]) -> T.List[str]:
+        args = [arg] if isinstance(arg, str) else arg
         if self.prefix_arg is None:
-            return [arg]
+            return args
         elif isinstance(self.prefix_arg, str):
-            return [self.prefix_arg + arg]
-        return self.prefix_arg + [arg]
+            return [self.prefix_arg + arg for arg in args]
+        ret = []
+        for arg in args:
+            ret += self.prefix_arg + [arg]
+        return ret
 
     def __init__(self, exelist: T.List[str], for_machine: mesonlib.MachineChoice,
                  id_: str, prefix_arg: T.Union[str, T.List[str]],
@@ -276,7 +280,8 @@ class DynamicLinker(metaclass=abc.ABCMeta):
         return self.exelist.copy()
 
     def get_accepts_rsp(self) -> bool:
-        # TODO: is it really a matter of is_windows or is it for_windows?
+        # rsp files are only used when building on Windows because we want to
+        # avoid issues with quoting and max argument length
         return mesonlib.is_windows()
 
     def get_always_args(self) -> T.List[str]:
@@ -795,7 +800,7 @@ class VisualStudioLikeLinkerMixin:
         return self._apply_prefix('/MDd')
 
     def get_output_args(self, outputname: str) -> T.List[str]:
-        return self._apply_prefix('/MACHINE:' + self.machine) + self._apply_prefix('/OUT:' + outputname)
+        return self._apply_prefix(['/MACHINE:' + self.machine, '/OUT:' + outputname])
 
     def get_always_args(self) -> T.List[str]:
         return self._apply_prefix('/nologo') + super().get_always_args()
@@ -809,7 +814,7 @@ class VisualStudioLikeLinkerMixin:
     def get_debugfile_args(self, targetfile: str) -> T.List[str]:
         pdbarr = targetfile.split('.')[:-1]
         pdbarr += ['pdb']
-        return self._apply_prefix('/DEBUG') + self._apply_prefix('/PDB:' + '.'.join(pdbarr))
+        return self._apply_prefix(['/DEBUG', '/PDB:' + '.'.join(pdbarr)])
 
     def get_link_whole_for(self, args: T.List[str]) -> T.List[str]:
         # Only since VS2015
@@ -839,6 +844,9 @@ class MSVCDynamicLinker(VisualStudioLikeLinkerMixin, DynamicLinker):
                  direct: bool = True):
         super().__init__(exelist or ['link.exe'], for_machine, 'link',
                          prefix, always_args, machine=machine, version=version, direct=direct)
+
+    def get_always_args(self) -> T.List[str]:
+        return self._apply_prefix(['/nologo', '/release']) + super().get_always_args()
 
 
 class ClangClDynamicLinker(VisualStudioLikeLinkerMixin, DynamicLinker):
