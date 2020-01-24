@@ -42,6 +42,7 @@ known_cpu_families = (
     'arm',
     'e2k',
     'ia64',
+    'm68k',
     'microblaze',
     'mips',
     'mips64',
@@ -141,6 +142,12 @@ class Properties(HasEnvVarFallback):
 
     def get_sys_root(self) -> T.Optional[T.Union[str, T.List[str]]]:
         return self.properties.get('sys_root', None)
+
+    def get_pkg_config_libdir(self) -> T.Optional[T.List[str]]:
+        p = self.properties.get('pkg_config_libdir', None)
+        if p is None:
+            return p
+        return mesonlib.listify(p)
 
     def __eq__(self, other: T.Any) -> 'T.Union[bool, NotImplemented]':
         if isinstance(other, type(self)):
@@ -307,11 +314,19 @@ class BinaryTable(HasEnvVarFallback):
         'rust': 'RUSTC',
         'vala': 'VALAC',
 
+        # Linkers
+        'c_ld': 'CC_LD',
+        'cpp_ld': 'CXX_LD',
+        'd_ld': 'D_LD',
+        'fortran_ld': 'F_LD',
+        'objc_ld': 'OBJC_LD',
+        'objcpp_ld': 'OBJCPP_LD',
+        'rust_ld': 'RUST_LD',
+
         # Binutils
         'strip': 'STRIP',
         'ar': 'AR',
         'windres': 'WINDRES',
-        'ld': 'LD',
 
         # Other tools
         'cmake': 'CMAKE',

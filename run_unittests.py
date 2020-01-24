@@ -44,6 +44,7 @@ from distutils.dir_util import copy_tree
 import mesonbuild.mlog
 import mesonbuild.depfile
 import mesonbuild.compilers
+import mesonbuild.envconfig
 import mesonbuild.environment
 import mesonbuild.mesonlib
 import mesonbuild.coredata
@@ -1230,7 +1231,7 @@ class DataTests(unittest.TestCase):
         platform on the CI.
         '''
         md = None
-        with open('docs/markdown/Builtin-options.md') as f:
+        with open('docs/markdown/Builtin-options.md', encoding='utf-8') as f:
             md = f.read()
         self.assertIsNotNone(md)
         env = get_fake_env()
@@ -1250,7 +1251,7 @@ class DataTests(unittest.TestCase):
         Builtin-Options.md.
         '''
         md = None
-        with open('docs/markdown/Builtin-options.md') as f:
+        with open('docs/markdown/Builtin-options.md', encoding='utf-8') as f:
             md = f.read()
         self.assertIsNotNone(md)
 
@@ -1284,7 +1285,7 @@ class DataTests(unittest.TestCase):
         ]))
 
     def test_cpu_families_documented(self):
-        with open("docs/markdown/Reference-tables.md") as f:
+        with open("docs/markdown/Reference-tables.md", encoding='utf-8') as f:
             md = f.read()
         self.assertIsNotNone(md)
 
@@ -1303,7 +1304,7 @@ class DataTests(unittest.TestCase):
         '''
         Test that each markdown files in docs/markdown is referenced in sitemap.txt
         '''
-        with open("docs/sitemap.txt") as f:
+        with open("docs/sitemap.txt", encoding='utf-8') as f:
             md = f.read()
         self.assertIsNotNone(md)
         toc = list(m.group(1) for m in re.finditer(r"^\s*(\w.*)$", md, re.MULTILINE))
@@ -1375,6 +1376,7 @@ class DataTests(unittest.TestCase):
 class BasePlatformTests(unittest.TestCase):
     def setUp(self):
         super().setUp()
+        self.maxDiff = None
         src_root = os.path.dirname(__file__)
         src_root = os.path.join(os.getcwd(), src_root)
         self.src_root = src_root
@@ -3621,6 +3623,34 @@ recommended as it is not supported on some platforms''')
         self.wipe()
         self.init(testdir, extra_args=['-Dstart_native=true'], override_envvars=env)
 
+    @skipIfNoPkgconfig
+    @unittest.skipIf(is_windows(), 'Help needed with fixing this test on windows')
+    def test_pkg_config_libdir(self):
+        testdir = os.path.join(self.unit_test_dir,
+                               '46 native dep pkgconfig var')
+        with tempfile.NamedTemporaryFile(mode='w', delete=False) as crossfile:
+            crossfile.write(textwrap.dedent(
+                '''[binaries]
+                pkgconfig = 'pkg-config'
+
+                [properties]
+                pkg_config_libdir = [r'{0}']
+
+                [host_machine]
+                system = 'linux'
+                cpu_family = 'arm'
+                cpu = 'armv7'
+                endian = 'little'
+                '''.format(os.path.join(testdir, 'cross_pkgconfig'))))
+            crossfile.flush()
+            self.meson_cross_file = crossfile.name
+
+        env = {'PKG_CONFIG_LIBDIR':  os.path.join(testdir,
+                                                  'native_pkgconfig')}
+        self.init(testdir, extra_args=['-Dstart_native=false'], override_envvars=env)
+        self.wipe()
+        self.init(testdir, extra_args=['-Dstart_native=true'], override_envvars=env)
+
     def __reconfigure(self, change_minor=False):
         # Set an older version to force a reconfigure from scratch
         filename = os.path.join(self.privatedir, 'coredata.dat')
@@ -4165,9 +4195,6 @@ recommended as it is not supported on some platforms''')
         self.init(testdir)
         self._run(self.mconf_command + [self.builddir])
 
-    # FIXME: The test is failing on Windows CI even if the print looks good.
-    # Maybe encoding issue?
-    @unittest.skipIf(is_windows(), 'This test fails on Windows CI')
     def test_summary(self):
         testdir = os.path.join(self.unit_test_dir, '72 summary')
         out = self.init(testdir)
@@ -4190,13 +4217,20 @@ recommended as it is not supported on some platforms''')
                        A number: 1
                             yes: YES
                              no: NO
+
+              Subprojects
+                            sub: YES
+                           sub2: NO
             ''')
-        # Dict ordering is not guaranteed and an exact string comparison randomly
-        # fails on the CI because lines are reordered.
         expected_lines = expected.split('\n')[1:]
         out_start = out.find(expected_lines[0])
         out_lines = out[out_start:].split('\n')[:len(expected_lines)]
-        self.assertEqual(sorted(expected_lines), sorted(out_lines))
+        if sys.version_info < (3, 7, 0):
+            # Dictionary order is not stable in Python <3.7, so sort the lines
+            # while comparing
+            self.assertEqual(sorted(expected_lines), sorted(out_lines))
+        else:
+            self.assertEqual(expected_lines, out_lines)
 
 
 class FailureTests(BasePlatformTests):
@@ -4635,7 +4669,8 @@ class WindowsTests(BasePlatformTests):
     def _check_ld(self, name: str, lang: str, expected: str) -> None:
         if not shutil.which(name):
             raise unittest.SkipTest('Could not find {}.'.format(name))
-        with mock.patch.dict(os.environ, {'LD': name}):
+        envvar = mesonbuild.envconfig.BinaryTable.evarMap['{}_ld'.format(lang)]
+        with mock.patch.dict(os.environ, {envvar: name}):
             env = get_fake_env()
             try:
                 comp = getattr(env, 'detect_{}_compiler'.format(lang))(MachineChoice.HOST)
@@ -4869,7 +4904,10 @@ class LinuxlikeTests(BasePlatformTests):
         privatedir2 = self.privatedir
 
         os.environ
-        env = {'PKG_CONFIG_LIBDIR': os.pathsep.join([privatedir1, privatedir2])}
+        env = {
+            'PKG_CONFIG_LIBDIR': os.pathsep.join([privatedir1, privatedir2]),
+            'PKG_CONFIG_SYSTEM_LIBRARY_PATH': '/usr/lib',
+        }
         self._run(['pkg-config', 'dependency-test', '--validate'], override_envvars=env)
 
         # pkg-config strips some duplicated flags so we have to parse the
@@ -5915,7 +5953,8 @@ c = ['{0}']
             raise unittest.SkipTest('Solaris currently cannot override the linker.')
         if not shutil.which(check):
             raise unittest.SkipTest('Could not find {}.'.format(check))
-        with mock.patch.dict(os.environ, {'LD': name}):
+        envvar = mesonbuild.envconfig.BinaryTable.evarMap['{}_ld'.format(lang)]
+        with mock.patch.dict(os.environ, {envvar: name}):
             env = get_fake_env()
             comp = getattr(env, 'detect_{}_compiler'.format(lang))(MachineChoice.HOST)
             if lang != 'rust' and comp.use_linker_args('foo') == []:
@@ -5948,8 +5987,8 @@ c = ['{0}']
         self._check_ld('ld.gold', 'gold', 'fortran', 'GNU ld.gold')
 
     def compute_sha256(self, filename):
-        with open(filename,"rb") as f:
-            return hashlib.sha256(f.read()).hexdigest();
+        with open(filename, 'rb') as f:
+            return hashlib.sha256(f.read()).hexdigest()
 
     def test_wrap_with_file_url(self):
         testdir = os.path.join(self.unit_test_dir, '73 wrap file url')
@@ -6838,7 +6877,7 @@ class NativeFileTests(BasePlatformTests):
 
 class CrossFileTests(BasePlatformTests):
 
-    """Tests for cross file functioality not directly related to
+    """Tests for cross file functionality not directly related to
     cross compiling.
 
     This is mainly aimed to testing overrides from cross files.

@@ -386,7 +386,7 @@ class RunResult:
         self.stdout = stdout
         self.stderr = stderr
 
-class CompilerArgs(T.MutableSequence[str]):
+class CompilerArgs(collections.abc.MutableSequence):
     '''
     List-like class that manages a list of compiler arguments. Should be used
     while constructing compiler arguments from various sources. Can be
@@ -655,7 +655,7 @@ class CompilerArgs(T.MutableSequence[str]):
         new += self
         return new
 
-    def __eq__(self, other: T.Any) -> T.Union[bool, 'NotImplemented']:
+    def __eq__(self, other: T.Any) -> T.Union[bool, type(NotImplemented)]:
         # Only allow equality checks against other CompilerArgs and lists instances
         if isinstance(other, CompilerArgs):
             return self.compiler == other.compiler and self.__container == other.__container
