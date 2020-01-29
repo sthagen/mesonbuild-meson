@@ -24,6 +24,7 @@ from ..mesonlib import MachineChoice, MesonException, OrderedSet, OptionOverride
 from ..mesonlib import classify_unity_sources
 from ..mesonlib import File
 from ..compilers import CompilerArgs, VisualStudioLikeCompiler
+from ..interpreter import Interpreter
 from collections import OrderedDict
 import shlex
 from functools import lru_cache
@@ -106,40 +107,41 @@ class TestSerialisation:
         self.priority = priority
         self.needs_exe_wrapper = needs_exe_wrapper
 
-def get_backend_from_name(backend, build):
+def get_backend_from_name(backend: str, build: T.Optional[build.Build] = None, interpreter: T.Optional[Interpreter] = None) -> T.Optional['Backend']:
     if backend == 'ninja':
         from . import ninjabackend
-        return ninjabackend.NinjaBackend(build)
+        return ninjabackend.NinjaBackend(build, interpreter)
     elif backend == 'vs':
         from . import vs2010backend
-        return vs2010backend.autodetect_vs_version(build)
+        return vs2010backend.autodetect_vs_version(build, interpreter)
     elif backend == 'vs2010':
         from . import vs2010backend
-        return vs2010backend.Vs2010Backend(build)
+        return vs2010backend.Vs2010Backend(build, interpreter)
     elif backend == 'vs2015':
         from . import vs2015backend
-        return vs2015backend.Vs2015Backend(build)
+        return vs2015backend.Vs2015Backend(build, interpreter)
     elif backend == 'vs2017':
         from . import vs2017backend
-        return vs2017backend.Vs2017Backend(build)
+        return vs2017backend.Vs2017Backend(build, interpreter)
     elif backend == 'vs2019':
         from . import vs2019backend
-        return vs2019backend.Vs2019Backend(build)
+        return vs2019backend.Vs2019Backend(build, interpreter)
     elif backend == 'xcode':
         from . import xcodebackend
-        return xcodebackend.XCodeBackend(build)
+        return xcodebackend.XCodeBackend(build, interpreter)
     return None
 
 # This class contains the basic functionality that is needed by all backends.
 # Feel free to move stuff in and out of it as you see fit.
 class Backend:
-    def __init__(self, build):
+    def __init__(self, build: T.Optional[build.Build], interpreter: T.Optional[Interpreter]):
         # Make it possible to construct a dummy backend
         # This is used for introspection without a build directory
         if build is None:
             self.environment = None
             return
         self.build = build
+        self.interpreter = interpreter
         self.environment = build.environment
         self.processed_targets = {}
         self.build_dir = self.environment.get_build_dir()
@@ -787,12 +789,6 @@ class Backend:
             deps.extend(self.environment.coredata.cross_files)
         deps.extend(self.environment.coredata.config_files)
         deps.append('meson-private/coredata.dat')
-        if os.path.exists(os.path.join(self.environment.get_source_dir(), 'meson_options.txt')):
-            deps.append(os.path.join(self.build_to_src, 'meson_options.txt'))
-        for sp in self.build.subprojects.keys():
-            fname = os.path.join(self.environment.get_source_dir(), sp, 'meson_options.txt')
-            if os.path.isfile(fname):
-                deps.append(os.path.join(self.build_to_src, sp, 'meson_options.txt'))
         self.check_clock_skew(deps)
         return deps
 

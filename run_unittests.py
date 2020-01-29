@@ -43,6 +43,7 @@ from distutils.dir_util import copy_tree
 
 import mesonbuild.mlog
 import mesonbuild.depfile
+import mesonbuild.dependencies.base
 import mesonbuild.compilers
 import mesonbuild.envconfig
 import mesonbuild.environment
@@ -75,6 +76,13 @@ from run_tests import (
 
 
 URLOPEN_TIMEOUT = 5
+
+@contextmanager
+def chdir(path: str):
+    curdir = os.getcwd()
+    os.chdir(path)
+    yield
+    os.chdir(curdir)
 
 
 def get_dynamic_section_entry(fname, entry):
@@ -1193,6 +1201,26 @@ class InternalTests(unittest.TestCase):
             ['/usr/lib', '/usr/local/lib', '/home/mesonuser/.local/lib'],
             ['/home/mesonuser/.local/lib/pkgconfig', '/usr/local/libdata/pkgconfig']),
             ['/home/mesonuser/.local/lib', '/usr/local/lib', '/usr/lib'])
+
+    def test_dependency_factory_order(self):
+        b = mesonbuild.dependencies.base
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with chdir(tmpdir):
+                env = get_fake_env()
+
+                f = b.DependencyFactory(
+                    'test_dep',
+                    methods=[b.DependencyMethods.PKGCONFIG, b.DependencyMethods.CMAKE]
+                )
+                actual = [m() for m in f(env, MachineChoice.HOST, {'required': False})]
+                self.assertListEqual([m.type_name for m in actual], ['pkgconfig', 'cmake'])
+
+                f = b.DependencyFactory(
+                    'test_dep',
+                    methods=[b.DependencyMethods.CMAKE, b.DependencyMethods.PKGCONFIG]
+                )
+                actual = [m() for m in f(env, MachineChoice.HOST, {'required': False})]
+                self.assertListEqual([m.type_name for m in actual], ['cmake', 'pkgconfig'])
 
 
 @unittest.skipIf(is_tarball(), 'Skipping because this is a tarball release')
@@ -5861,24 +5889,23 @@ class LinuxlikeTests(BasePlatformTests):
         testdir = os.path.join(self.common_test_dir, testdir)
         subdir = os.path.join(testdir, subdir_path)
         curdir = os.getcwd()
-        os.chdir(subdir)
-        # Can't distribute broken symlinks in the source tree because it breaks
-        # the creation of zipapps. Create it dynamically and run the test by
-        # hand.
-        src = '../../nonexistent.txt'
-        os.symlink(src, 'invalid-symlink.txt')
-        try:
-            self.init(testdir)
-            self.build()
-            self.install()
-            install_path = subdir_path.split(os.path.sep)[-1]
-            link = os.path.join(self.installdir, 'usr', 'share', install_path, 'invalid-symlink.txt')
-            self.assertTrue(os.path.islink(link), msg=link)
-            self.assertEqual(src, os.readlink(link))
-            self.assertFalse(os.path.isfile(link), msg=link)
-        finally:
-            os.remove(os.path.join(subdir, 'invalid-symlink.txt'))
-            os.chdir(curdir)
+        with chdir(subdir):
+            # Can't distribute broken symlinks in the source tree because it breaks
+            # the creation of zipapps. Create it dynamically and run the test by
+            # hand.
+            src = '../../nonexistent.txt'
+            os.symlink(src, 'invalid-symlink.txt')
+            try:
+                self.init(testdir)
+                self.build()
+                self.install()
+                install_path = subdir_path.split(os.path.sep)[-1]
+                link = os.path.join(self.installdir, 'usr', 'share', install_path, 'invalid-symlink.txt')
+                self.assertTrue(os.path.islink(link), msg=link)
+                self.assertEqual(src, os.readlink(link))
+                self.assertFalse(os.path.isfile(link), msg=link)
+            finally:
+                os.remove(os.path.join(subdir, 'invalid-symlink.txt'))
 
     def test_install_subdir_symlinks(self):
         self.install_subdir_invalid_symlinks('62 install subdir', os.path.join('sub', 'sub1'))
@@ -5986,6 +6013,7 @@ c = ['{0}']
     def test_ld_environment_variable_lld(self):
         self._check_ld('ld.lld', 'lld', 'c', 'lld')
 
+    @skipIfNoExecutable('rustc')
     def test_ld_environment_variable_rust(self):
         self._check_ld('ld.gold', 'gold', 'rust', 'GNU ld.gold')
 
@@ -5998,6 +6026,7 @@ c = ['{0}']
     def test_ld_environment_variable_objcpp(self):
         self._check_ld('ld.gold', 'gold', 'objcpp', 'GNU ld.gold')
 
+    @skipIfNoExecutable('gfortran')
     def test_ld_environment_variable_fortran(self):
         self._check_ld('ld.gold', 'gold', 'fortran', 'GNU ld.gold')
 

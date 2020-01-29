@@ -18,64 +18,44 @@ from pathlib import Path
 import functools
 import re
 import sysconfig
+import typing as T
 
 from .. import mlog
 from .. import mesonlib
 from ..environment import detect_cpu_family
-from ..mesonlib import listify
 
 from .base import (
     DependencyException, DependencyMethods, ExternalDependency,
-    ExtraFrameworkDependency, PkgConfigDependency,
-    CMakeDependency, ConfigToolDependency,
+    PkgConfigDependency, CMakeDependency, ConfigToolDependency,
+    factory_methods, DependencyFactory,
 )
 
+if T.TYPE_CHECKING:
+    from ..environment import Environment, MachineChoice
+    from .base import DependencyType  # noqa: F401
 
-class NetCDFDependency(ExternalDependency):
 
-    def __init__(self, environment, kwargs):
-        language = kwargs.get('language', 'c')
-        super().__init__('netcdf', environment, language, kwargs)
-        kwargs['required'] = False
-        kwargs['silent'] = True
-        self.is_found = False
-        methods = listify(self.methods)
+@factory_methods({DependencyMethods.PKGCONFIG, DependencyMethods.CMAKE})
+def netcdf_factory(env: 'Environment', for_machine: 'MachineChoice',
+                   kwargs: T.Dict[str, T.Any], methods: T.List[DependencyMethods]) -> T.List['DependencyType']:
+    language = kwargs.get('language', 'c')
+    if language not in ('c', 'cpp', 'fortran'):
+        raise DependencyException('Language {} is not supported with NetCDF.'.format(language))
 
-        if language not in ('c', 'cpp', 'fortran'):
-            raise DependencyException('Language {} is not supported with NetCDF.'.format(language))
+    candidates = []  # type: T.List['DependencyType']
 
-        if set([DependencyMethods.AUTO, DependencyMethods.PKGCONFIG]).intersection(methods):
-            pkgconfig_files = ['netcdf']
+    if DependencyMethods.PKGCONFIG in methods:
+        pkgconfig_files = ['netcdf']
+        if language == 'fortran':
+            pkgconfig_files.append('netcdf-fortran')
 
-            if language == 'fortran':
-                pkgconfig_files.append('netcdf-fortran')
+        for pkg in pkgconfig_files:
+            candidates.append(functools.partial(PkgConfigDependency, pkg, env, kwargs, language=language))
 
-            self.compile_args = []
-            self.link_args = []
-            self.pcdep = []
-            for pkg in pkgconfig_files:
-                pkgdep = PkgConfigDependency(pkg, environment, kwargs, language=self.language)
-                if pkgdep.found():
-                    self.compile_args.extend(pkgdep.get_compile_args())
-                    self.link_args.extend(pkgdep.get_link_args())
-                    self.version = pkgdep.get_version()
-                    self.is_found = True
-                    self.pcdep.append(pkgdep)
-            if self.is_found:
-                return
+    if DependencyMethods.CMAKE in methods:
+        candidates.append(functools.partial(CMakeDependency, 'NetCDF', env, kwargs, language=language))
 
-        if set([DependencyMethods.AUTO, DependencyMethods.CMAKE]).intersection(methods):
-            cmakedep = CMakeDependency('NetCDF', environment, kwargs, language=self.language)
-            if cmakedep.found():
-                self.compile_args = cmakedep.get_compile_args()
-                self.link_args = cmakedep.get_link_args()
-                self.version = cmakedep.get_version()
-                self.is_found = True
-                return
-
-    @staticmethod
-    def get_methods():
-        return [DependencyMethods.AUTO, DependencyMethods.PKGCONFIG, DependencyMethods.CMAKE]
+    return candidates
 
 
 class OpenMPDependency(ExternalDependency):
@@ -94,7 +74,7 @@ class OpenMPDependency(ExternalDependency):
 
     def __init__(self, environment, kwargs):
         language = kwargs.get('language')
-        super().__init__('openmp', environment, language, kwargs)
+        super().__init__('openmp', environment, kwargs, language=language)
         self.is_found = False
         if self.clib_compiler.get_id() == 'pgi':
             # through at least PGI 19.4, there is no macro defined for OpenMP, but OpenMP 3.1 is supported.
@@ -124,33 +104,17 @@ class OpenMPDependency(ExternalDependency):
 
 
 class ThreadDependency(ExternalDependency):
-    def __init__(self, environment, kwargs):
-        super().__init__('threads', environment, None, kwargs)
-        self.name = 'threads'
-        self.is_found = False
-        methods = listify(self.methods)
-        if DependencyMethods.AUTO in methods:
-            self.is_found = True
-            # Happens if you are using a language with threads
-            # concept without C, such as plain Cuda.
-            if self.clib_compiler is None:
-                self.compile_args = []
-                self.link_args = []
-            else:
-                self.compile_args = self.clib_compiler.thread_flags(environment)
-                self.link_args = self.clib_compiler.thread_link_flags(environment)
-            return
-
-        if DependencyMethods.CMAKE in methods:
-            # for unit tests and for those who simply want
-            # dependency('threads', method: 'cmake')
-            cmakedep = CMakeDependency('Threads', environment, kwargs)
-            if cmakedep.found():
-                self.compile_args = cmakedep.get_compile_args()
-                self.link_args = cmakedep.get_link_args()
-                self.version = cmakedep.get_version()
-                self.is_found = True
-                return
+    def __init__(self, name: str, environment, kwargs):
+        super().__init__(name, environment, kwargs)
+        self.is_found = True
+        # Happens if you are using a language with threads
+        # concept without C, such as plain Cuda.
+        if self.clib_compiler is None:
+            self.compile_args = []
+            self.link_args = []
+        else:
+            self.compile_args = self.clib_compiler.thread_flags(environment)
+            self.link_args = self.clib_compiler.thread_link_flags(environment)
 
     @staticmethod
     def get_methods():
@@ -159,7 +123,7 @@ class ThreadDependency(ExternalDependency):
 
 class BlocksDependency(ExternalDependency):
     def __init__(self, environment, kwargs):
-        super().__init__('blocks', environment, None, kwargs)
+        super().__init__('blocks', environment, kwargs)
         self.name = 'blocks'
         self.is_found = False
 
@@ -190,11 +154,13 @@ class BlocksDependency(ExternalDependency):
             self.is_found = True
 
 
-class Python3Dependency(ExternalDependency):
-    def __init__(self, environment, kwargs):
-        super().__init__('python3', environment, None, kwargs)
+class Python3DependencySystem(ExternalDependency):
+    def __init__(self, name, environment, kwargs):
+        super().__init__(name, environment, kwargs)
 
         if not environment.machines.matches_build_machine(self.for_machine):
+            return
+        if not environment.machines[self.for_machine].is_windows():
             return
 
         self.name = 'python3'
@@ -202,28 +168,6 @@ class Python3Dependency(ExternalDependency):
         # We can only be sure that it is Python 3 at this point
         self.version = '3'
         self._find_libpy3_windows(environment)
-
-    @classmethod
-    def _factory(cls, environment, kwargs):
-        methods = cls._process_method_kw(kwargs)
-        candidates = []
-
-        if DependencyMethods.PKGCONFIG in methods:
-            candidates.append(functools.partial(PkgConfigDependency, 'python3', environment, kwargs))
-
-        if DependencyMethods.SYSCONFIG in methods:
-            candidates.append(functools.partial(Python3Dependency, environment, kwargs))
-
-        if DependencyMethods.EXTRAFRAMEWORK in methods:
-            # In OSX the Python 3 framework does not have a version
-            # number in its name.
-            # There is a python in /System/Library/Frameworks, but that's
-            # python 2, Python 3 will always be in /Library
-            candidates.append(functools.partial(
-                ExtraFrameworkDependency, 'Python', False, ['/Library/Frameworks'],
-                environment, kwargs.get('language', None), kwargs))
-
-        return candidates
 
     @staticmethod
     def get_windows_python_arch():
@@ -322,83 +266,41 @@ class Python3Dependency(ExternalDependency):
     def log_tried(self):
         return 'sysconfig'
 
-class PcapDependency(ExternalDependency):
+class PcapDependencyConfigTool(ConfigToolDependency):
 
-    def __init__(self, environment, kwargs):
-        super().__init__('pcap', environment, None, kwargs)
-
-    @classmethod
-    def _factory(cls, environment, kwargs):
-        methods = cls._process_method_kw(kwargs)
-        candidates = []
-
-        if DependencyMethods.PKGCONFIG in methods:
-            candidates.append(functools.partial(PkgConfigDependency, 'pcap', environment, kwargs))
-
-        if DependencyMethods.CONFIG_TOOL in methods:
-            candidates.append(functools.partial(ConfigToolDependency.factory,
-                                                'pcap', environment, None,
-                                                kwargs, ['pcap-config'],
-                                                'pcap-config',
-                                                PcapDependency.tool_finish_init))
-
-        return candidates
+    tools = ['pcap-config']
+    tool_name = 'pcap-config'
 
     @staticmethod
-    def tool_finish_init(ctdep):
-        ctdep.compile_args = ctdep.get_config_value(['--cflags'], 'compile_args')
-        ctdep.link_args = ctdep.get_config_value(['--libs'], 'link_args')
-        ctdep.version = PcapDependency.get_pcap_lib_version(ctdep)
+    def finish_init(self) -> None:
+        self.compile_args = self.get_config_value(['--cflags'], 'compile_args')
+        self.link_args = self.get_config_value(['--libs'], 'link_args')
+        self.version = self.get_pcap_lib_version()
 
     @staticmethod
     def get_methods():
         return [DependencyMethods.PKGCONFIG, DependencyMethods.CONFIG_TOOL]
 
-    @staticmethod
-    def get_pcap_lib_version(ctdep):
+    def get_pcap_lib_version(self):
         # Since we seem to need to run a program to discover the pcap version,
         # we can't do that when cross-compiling
-        if not ctdep.env.machines.matches_build_machine(ctdep.for_machine):
+        if not self.env.machines.matches_build_machine(self.for_machine):
             return None
 
-        v = ctdep.clib_compiler.get_return_value('pcap_lib_version', 'string',
-                                                 '#include <pcap.h>', ctdep.env, [], [ctdep])
+        v = self.clib_compiler.get_return_value('pcap_lib_version', 'string',
+                                                '#include <pcap.h>', self.env, [], [self])
         v = re.sub(r'libpcap version ', '', v)
         v = re.sub(r' -- Apple version.*$', '', v)
         return v
 
 
-class CupsDependency(ExternalDependency):
-    def __init__(self, environment, kwargs):
-        super().__init__('cups', environment, None, kwargs)
+class CupsDependencyConfigTool(ConfigToolDependency):
 
-    @classmethod
-    def _factory(cls, environment, kwargs):
-        methods = cls._process_method_kw(kwargs)
-        candidates = []
-
-        if DependencyMethods.PKGCONFIG in methods:
-            candidates.append(functools.partial(PkgConfigDependency, 'cups', environment, kwargs))
-
-        if DependencyMethods.CONFIG_TOOL in methods:
-            candidates.append(functools.partial(ConfigToolDependency.factory,
-                                                'cups', environment, None,
-                                                kwargs, ['cups-config'],
-                                                'cups-config', CupsDependency.tool_finish_init))
-
-        if DependencyMethods.EXTRAFRAMEWORK in methods:
-            if mesonlib.is_osx():
-                candidates.append(functools.partial(
-                    ExtraFrameworkDependency, 'cups', False, None, environment,
-                    kwargs.get('language', None), kwargs))
-
-        if DependencyMethods.CMAKE in methods:
-            candidates.append(functools.partial(CMakeDependency, 'Cups', environment, kwargs))
-
-        return candidates
+    tools = ['cups-config']
+    tool_name = 'cups-config'
 
     @staticmethod
-    def tool_finish_init(ctdep):
+    def finish_init(ctdep):
         ctdep.compile_args = ctdep.get_config_value(['--cflags'], 'compile_args')
         ctdep.link_args = ctdep.get_config_value(['--ldflags', '--libs'], 'link_args')
 
@@ -410,26 +312,13 @@ class CupsDependency(ExternalDependency):
             return [DependencyMethods.PKGCONFIG, DependencyMethods.CONFIG_TOOL, DependencyMethods.CMAKE]
 
 
-class LibWmfDependency(ExternalDependency):
-    def __init__(self, environment, kwargs):
-        super().__init__('libwmf', environment, None, kwargs)
+class LibWmfDependencyConfigTool(ConfigToolDependency):
 
-    @classmethod
-    def _factory(cls, environment, kwargs):
-        methods = cls._process_method_kw(kwargs)
-        candidates = []
-
-        if DependencyMethods.PKGCONFIG in methods:
-            candidates.append(functools.partial(PkgConfigDependency, 'libwmf', environment, kwargs))
-
-        if DependencyMethods.CONFIG_TOOL in methods:
-            candidates.append(functools.partial(ConfigToolDependency.factory,
-                                                'libwmf', environment, None, kwargs, ['libwmf-config'], 'libwmf-config', LibWmfDependency.tool_finish_init))
-
-        return candidates
+    tools = ['libwmf-config']
+    tool_name = 'libwmf-config'
 
     @staticmethod
-    def tool_finish_init(ctdep):
+    def finish_init(ctdep):
         ctdep.compile_args = ctdep.get_config_value(['--cflags'], 'compile_args')
         ctdep.link_args = ctdep.get_config_value(['--libs'], 'link_args')
 
@@ -438,28 +327,13 @@ class LibWmfDependency(ExternalDependency):
         return [DependencyMethods.PKGCONFIG, DependencyMethods.CONFIG_TOOL]
 
 
-class LibGCryptDependency(ExternalDependency):
-    def __init__(self, environment, kwargs):
-        super().__init__('libgcrypt', environment, None, kwargs)
+class LibGCryptDependencyConfigTool(ConfigToolDependency):
 
-    @classmethod
-    def _factory(cls, environment, kwargs):
-        methods = cls._process_method_kw(kwargs)
-        candidates = []
-
-        if DependencyMethods.PKGCONFIG in methods:
-            candidates.append(functools.partial(PkgConfigDependency, 'libgcrypt', environment, kwargs))
-
-        if DependencyMethods.CONFIG_TOOL in methods:
-            candidates.append(functools.partial(ConfigToolDependency.factory,
-                                                'libgcrypt', environment, None, kwargs, ['libgcrypt-config'],
-                                                'libgcrypt-config',
-                                                LibGCryptDependency.tool_finish_init))
-
-        return candidates
+    tools = ['libgcrypt-config']
+    tool_name = 'libgcrypt-config'
 
     @staticmethod
-    def tool_finish_init(ctdep):
+    def finish_init(ctdep):
         ctdep.compile_args = ctdep.get_config_value(['--cflags'], 'compile_args')
         ctdep.link_args = ctdep.get_config_value(['--libs'], 'link_args')
         ctdep.version = ctdep.get_config_value(['--version'], 'version')[0]
@@ -469,28 +343,13 @@ class LibGCryptDependency(ExternalDependency):
         return [DependencyMethods.PKGCONFIG, DependencyMethods.CONFIG_TOOL]
 
 
-class GpgmeDependency(ExternalDependency):
-    def __init__(self, environment, kwargs):
-        super().__init__('gpgme', environment, None, kwargs)
+class GpgmeDependencyConfigTool(ConfigToolDependency):
 
-    @classmethod
-    def _factory(cls, environment, kwargs):
-        methods = cls._process_method_kw(kwargs)
-        candidates = []
-
-        if DependencyMethods.PKGCONFIG in methods:
-            candidates.append(functools.partial(PkgConfigDependency, 'gpgme', environment, kwargs))
-
-        if DependencyMethods.CONFIG_TOOL in methods:
-            candidates.append(functools.partial(ConfigToolDependency.factory,
-                                                'gpgme', environment, None, kwargs, ['gpgme-config'],
-                                                'gpgme-config',
-                                                GpgmeDependency.tool_finish_init))
-
-        return candidates
+    tools = ['gpgme-config']
+    tool_name = 'gpg-config'
 
     @staticmethod
-    def tool_finish_init(ctdep):
+    def finish_init(ctdep):
         ctdep.compile_args = ctdep.get_config_value(['--cflags'], 'compile_args')
         ctdep.link_args = ctdep.get_config_value(['--libs'], 'link_args')
         ctdep.version = ctdep.get_config_value(['--version'], 'version')[0]
@@ -503,7 +362,7 @@ class GpgmeDependency(ExternalDependency):
 class ShadercDependency(ExternalDependency):
 
     def __init__(self, environment, kwargs):
-        super().__init__('shaderc', environment, None, kwargs)
+        super().__init__('shaderc', environment, kwargs)
 
         static_lib = 'shaderc_combined'
         shared_lib = 'shaderc_shared'
@@ -528,55 +387,103 @@ class ShadercDependency(ExternalDependency):
     def log_tried(self):
         return 'system'
 
-    @classmethod
-    def _factory(cls, environment, kwargs):
-        methods = cls._process_method_kw(kwargs)
-        candidates = []
-
-        if DependencyMethods.PKGCONFIG in methods:
-            # ShaderC packages their shared and static libs together
-            # and provides different pkg-config files for each one. We
-            # smooth over this difference by handling the static
-            # keyword before handing off to the pkg-config handler.
-            shared_libs = ['shaderc']
-            static_libs = ['shaderc_combined', 'shaderc_static']
-
-            if kwargs.get('static', False):
-                c = [functools.partial(PkgConfigDependency, name, environment, kwargs)
-                     for name in static_libs + shared_libs]
-            else:
-                c = [functools.partial(PkgConfigDependency, name, environment, kwargs)
-                     for name in shared_libs + static_libs]
-            candidates.extend(c)
-
-        if DependencyMethods.SYSTEM in methods:
-            candidates.append(functools.partial(ShadercDependency, environment, kwargs))
-
-        return candidates
-
     @staticmethod
     def get_methods():
         return [DependencyMethods.SYSTEM, DependencyMethods.PKGCONFIG]
 
-class CursesDependency(ExternalDependency):
-    def __init__(self, environment, kwargs):
-        super().__init__('curses', environment, None, kwargs)
-        self.name = 'curses'
-        self.is_found = False
-        methods = listify(self.methods)
 
-        if set([DependencyMethods.AUTO, DependencyMethods.PKGCONFIG]).intersection(methods):
-            pkgconfig_files = ['ncurses', 'ncursesw']
-            for pkg in pkgconfig_files:
-                pkgdep = PkgConfigDependency(pkg, environment, kwargs)
-                if pkgdep.found():
-                    self.compile_args = pkgdep.get_compile_args()
-                    self.link_args = pkgdep.get_link_args()
-                    self.version = pkgdep.get_version()
-                    self.is_found = True
-                    self.pcdep = pkgdep
-                    return
+@factory_methods({DependencyMethods.PKGCONFIG})
+def curses_factory(env: 'Environment', for_machine: 'MachineChoice',
+                   kwargs: T.Dict[str, T.Any], methods: T.List[DependencyMethods]) -> T.List['DependencyType']:
+    candidates = []  # type: T.List['DependencyType']
 
-    @staticmethod
-    def get_methods():
-        return [DependencyMethods.AUTO, DependencyMethods.PKGCONFIG]
+    if DependencyMethods.PKGCONFIG in methods:
+        pkgconfig_files = ['ncurses', 'ncursesw']
+        for pkg in pkgconfig_files:
+            candidates.append(functools.partial(PkgConfigDependency, pkg, env, kwargs))
+
+    return candidates
+
+
+@factory_methods({DependencyMethods.PKGCONFIG, DependencyMethods.SYSTEM})
+def shaderc_factory(env: 'Environment', for_machine: 'MachineChoice',
+                    kwargs: T.Dict[str, T.Any], methods: T.List[DependencyMethods]) -> T.List['DependencyType']:
+    """Custom DependencyFactory for ShaderC.
+
+    ShaderC's odd you get three different libraries from the same build
+    thing are just easier to represent as a separate function than
+    twisting DependencyFactory even more.
+    """
+    candidates = []  # type: T.List['DependencyType']
+
+    if DependencyMethods.PKGCONFIG in methods:
+        # ShaderC packages their shared and static libs together
+        # and provides different pkg-config files for each one. We
+        # smooth over this difference by handling the static
+        # keyword before handing off to the pkg-config handler.
+        shared_libs = ['shaderc']
+        static_libs = ['shaderc_combined', 'shaderc_static']
+
+        if kwargs.get('static', False):
+            c = [functools.partial(PkgConfigDependency, name, env, kwargs)
+                 for name in static_libs + shared_libs]
+        else:
+            c = [functools.partial(PkgConfigDependency, name, env, kwargs)
+                 for name in shared_libs + static_libs]
+        candidates.extend(c)
+
+    if DependencyMethods.SYSTEM in methods:
+        candidates.append(functools.partial(ShadercDependency, env, kwargs))
+
+    return candidates
+
+
+cups_factory = DependencyFactory(
+    'cups',
+    [DependencyMethods.PKGCONFIG, DependencyMethods.CONFIG_TOOL, DependencyMethods.EXTRAFRAMEWORK, DependencyMethods.CMAKE],
+    configtool_class=CupsDependencyConfigTool,
+    cmake_name='Cups',
+)
+
+gpgme_factory = DependencyFactory(
+    'gpgme',
+    [DependencyMethods.PKGCONFIG, DependencyMethods.CONFIG_TOOL],
+    configtool_class=GpgmeDependencyConfigTool,
+)
+
+libgcrypt_factory = DependencyFactory(
+    'libgcrypt',
+    [DependencyMethods.PKGCONFIG, DependencyMethods.CONFIG_TOOL],
+    configtool_class=LibGCryptDependencyConfigTool,
+)
+
+libwmf_factory = DependencyFactory(
+    'libwmf',
+    [DependencyMethods.PKGCONFIG, DependencyMethods.CONFIG_TOOL],
+    configtool_class=LibWmfDependencyConfigTool,
+)
+
+pcap_factory = DependencyFactory(
+    'pcap',
+    [DependencyMethods.PKGCONFIG, DependencyMethods.CONFIG_TOOL],
+    configtool_class=PcapDependencyConfigTool,
+    pkgconfig_name='libpcap',
+)
+
+python3_factory = DependencyFactory(
+    'python3',
+    [DependencyMethods.PKGCONFIG, DependencyMethods.SYSTEM, DependencyMethods.EXTRAFRAMEWORK],
+    system_class=Python3DependencySystem,
+    # There is no version number in the macOS version number
+    framework_name='Python',
+    # There is a python in /System/Library/Frameworks, but thats python 2.x,
+    # Python 3 will always be in /Library
+    extra_kwargs={'paths': ['/Library/Frameworks']},
+)
+
+threads_factory = DependencyFactory(
+    'threads',
+    [DependencyMethods.SYSTEM, DependencyMethods.CMAKE],
+    cmake_name='Threads',
+    system_class=ThreadDependency,
+)

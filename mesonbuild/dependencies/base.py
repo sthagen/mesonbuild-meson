@@ -37,6 +37,10 @@ from ..mesonlib import MachineChoice, MesonException, OrderedSet, PerMachine
 from ..mesonlib import Popen_safe, version_compare_many, version_compare, listify, stringlistify, extract_as_list, split_args
 from ..mesonlib import Version, LibType
 
+if T.TYPE_CHECKING:
+    from ..compilers.compilers import Compiler  # noqa: F401
+    DependencyType = T.TypeVar('DependencyType', bound='Dependency')
+
 # These must be defined in this file to avoid cyclical references.
 packages = {}
 _packages_accept_language = set()
@@ -70,38 +74,6 @@ class DependencyMethods(Enum):
 
 
 class Dependency:
-    @classmethod
-    def _process_method_kw(cls, kwargs):
-        method = kwargs.get('method', 'auto')
-        if isinstance(method, DependencyMethods):
-            return method
-        if method not in [e.value for e in DependencyMethods]:
-            raise DependencyException('method {!r} is invalid'.format(method))
-        method = DependencyMethods(method)
-
-        # This sets per-tool config methods which are deprecated to to the new
-        # generic CONFIG_TOOL value.
-        if method in [DependencyMethods.SDLCONFIG, DependencyMethods.CUPSCONFIG,
-                      DependencyMethods.PCAPCONFIG, DependencyMethods.LIBWMFCONFIG]:
-            mlog.warning(textwrap.dedent("""\
-                Configuration method {} has been deprecated in favor of
-                'config-tool'. This will be removed in a future version of
-                meson.""".format(method)))
-            method = DependencyMethods.CONFIG_TOOL
-
-        # Set the detection method. If the method is set to auto, use any available method.
-        # If method is set to a specific string, allow only that detection method.
-        if method == DependencyMethods.AUTO:
-            methods = cls.get_methods()
-        elif method in cls.get_methods():
-            methods = [method]
-        else:
-            raise DependencyException(
-                'Unsupported detection method: {}, allowed methods are {}'.format(
-                    method.value,
-                    mlog.format_list([x.value for x in [DependencyMethods.AUTO] + cls.get_methods()])))
-
-        return methods
 
     @classmethod
     def _process_include_type_kw(cls, kwargs) -> str:
@@ -125,7 +97,7 @@ class Dependency:
         # If None, self.link_args will be used
         self.raw_link_args = None
         self.sources = []
-        self.methods = self._process_method_kw(kwargs)
+        self.methods = process_method_kw(self.get_methods(), kwargs)
         self.include_type = self._process_include_type_kw(kwargs)
         self.ext_deps = []  # type: T.List[Dependency]
 
@@ -208,19 +180,21 @@ class Dependency:
         """
         raise RuntimeError('Unreachable code in partial_dependency called')
 
-    def _add_sub_dependency(self, dep_type: T.Type['Dependency'], env: Environment,
-                            kwargs: T.Dict[str, T.Any], *,
-                            method: DependencyMethods = DependencyMethods.AUTO) -> None:
-        """Add an internal dependency of of the given type.
+    def _add_sub_dependency(self, deplist: T.List['DependencyType']) -> bool:
+        """Add an internal depdency from a list of possible dependencies.
 
-        This method is intended to simplify cases of adding a dependency on
-        another dependency type (such as threads). This will by default set
-        the method back to auto, but the 'method' keyword argument can be
-        used to overwrite this behavior.
+        This method is intended to make it easier to add additional
+        dependencies to another dependency internally.
+
+        Returns true if the dependency was successfully added, false
+        otherwise.
         """
-        kwargs = kwargs.copy()
-        kwargs['method'] = method
-        self.ext_deps.append(dep_type(env, kwargs))
+        for d in deplist:
+            dep = d()
+            if dep.is_found:
+                self.ext_deps.append(dep)
+                return True
+        return False
 
     def get_variable(self, *, cmake: T.Optional[str] = None, pkgconfig: T.Optional[str] = None,
                      configtool: T.Optional[str] = None, internal: T.Optional[str] = None,
@@ -293,7 +267,7 @@ class HasNativeKwarg:
         return MachineChoice.BUILD if kwargs.get('native', False) else MachineChoice.HOST
 
 class ExternalDependency(Dependency, HasNativeKwarg):
-    def __init__(self, type_name, environment, language, kwargs):
+    def __init__(self, type_name, environment, kwargs, language: T.Optional[str] = None):
         Dependency.__init__(self, type_name, kwargs)
         self.env = environment
         self.name = type_name # default
@@ -309,25 +283,7 @@ class ExternalDependency(Dependency, HasNativeKwarg):
             raise DependencyException('Static keyword must be boolean')
         # Is this dependency to be run on the build platform?
         HasNativeKwarg.__init__(self, kwargs)
-        self.clib_compiler = None
-        # Set the compiler that will be used by this dependency
-        # This is only used for configuration checks
-        compilers = self.env.coredata.compilers[self.for_machine]
-        # Set the compiler for this dependency if a language is specified,
-        # else try to pick something that looks usable.
-        if self.language:
-            if self.language not in compilers:
-                m = self.name.capitalize() + ' requires a {0} compiler, but ' \
-                    '{0} is not in the list of project languages'
-                raise DependencyException(m.format(self.language.capitalize()))
-            self.clib_compiler = compilers[self.language]
-        else:
-            # Try to find a compiler that can find C libraries for
-            # running compiler.find_library()
-            for lang in clib_langs:
-                self.clib_compiler = compilers.get(lang, None)
-                if self.clib_compiler:
-                    break
+        self.clib_compiler = detect_compiler(self.name, environment, self.for_machine, self.language)
 
     def get_compiler(self):
         return self.clib_compiler
@@ -415,8 +371,8 @@ class ConfigToolDependency(ExternalDependency):
     tool_name = None
     __strip_version = re.compile(r'^[0-9.]*')
 
-    def __init__(self, name, environment, language, kwargs):
-        super().__init__('config-tool', environment, language, kwargs)
+    def __init__(self, name, environment, kwargs, language: T.Optional[str] = None):
+        super().__init__('config-tool', environment, kwargs, language=language)
         self.name = name
         self.tools = listify(kwargs.get('tools', self.tools))
 
@@ -439,30 +395,6 @@ class ConfigToolDependency(ExternalDependency):
             # `1.2.3.git-1234`
             return m.group(0).rstrip('.')
         return version
-
-    @classmethod
-    def factory(cls, name, environment, language, kwargs, tools, tool_name, finish_init=None):
-        """Constructor for use in dependencies that can be found multiple ways.
-
-        In addition to the standard constructor values, this constructor sets
-        the tool_name and tools values of the instance.
-        """
-        # This deserves some explanation, because metaprogramming is hard.
-        # This uses type() to create a dynamic subclass of ConfigToolDependency
-        # with the tools and tool_name class attributes set, this class is then
-        # instantiated and returned. The reduce function (method) is also
-        # attached, since python's pickle module won't be able to do anything
-        # with this dynamically generated class otherwise.
-        def reduce(self):
-            return (cls._unpickle, (), self.__dict__)
-        sub = type('{}Dependency'.format(name.capitalize()), (cls, ),
-                   {'tools': tools, 'tool_name': tool_name, '__reduce__': reduce, 'finish_init': staticmethod(finish_init)})
-
-        return sub(name, environment, language, kwargs)
-
-    @classmethod
-    def _unpickle(cls):
-        return cls.__new__(cls)
 
     def find_config(self, versions=None):
         """Helper method that searches for config tool binaries in PATH and
@@ -595,8 +527,8 @@ class PkgConfigDependency(ExternalDependency):
     # We cache all pkg-config subprocess invocations to avoid redundant calls
     pkgbin_cache = {}
 
-    def __init__(self, name, environment, kwargs, language=None):
-        super().__init__('pkgconfig', environment, language, kwargs)
+    def __init__(self, name, environment, kwargs, language: T.Optional[str] = None):
+        super().__init__('pkgconfig', environment, kwargs, language=language)
         self.name = name
         self.is_libtool = False
         # Store a copy of the pkg-config path on the object itself so it is
@@ -1075,7 +1007,7 @@ class CMakeDependency(ExternalDependency):
         # one module
         return module
 
-    def __init__(self, name: str, environment: Environment, kwargs, language: str = None):
+    def __init__(self, name: str, environment: Environment, kwargs, language: T.Optional[str] = None):
         # Gather a list of all languages to support
         self.language_list = []  # type: T.List[str]
         if language is None:
@@ -1097,7 +1029,7 @@ class CMakeDependency(ExternalDependency):
         # Ensure that the list is unique
         self.language_list = list(set(self.language_list))
 
-        super().__init__('cmake', environment, language, kwargs)
+        super().__init__('cmake', environment, kwargs, language=language)
         self.name = name
         self.is_libtool = False
         # Store a copy of the CMake path on the object itself so it is
@@ -1598,7 +1530,7 @@ class DubDependency(ExternalDependency):
     class_dubbin = None
 
     def __init__(self, name, environment, kwargs):
-        super().__init__('dub', environment, 'd', kwargs)
+        super().__init__('dub', environment, kwargs, language='d')
         self.name = name
         self.compiler = super().get_compiler()
         self.module_path = None
@@ -2060,7 +1992,7 @@ class EmptyExternalProgram(ExternalProgram):  # lgtm [py/missing-call-to-init]
 
 class ExternalLibrary(ExternalDependency):
     def __init__(self, name, link_args, environment, language, silent=False):
-        super().__init__('library', environment, language, {})
+        super().__init__('library', environment, {}, language=language)
         self.name = name
         self.language = language
         self.is_found = False
@@ -2102,10 +2034,10 @@ class ExternalLibrary(ExternalDependency):
 class ExtraFrameworkDependency(ExternalDependency):
     system_framework_paths = None
 
-    def __init__(self, name, required, paths, env, lang, kwargs):
-        super().__init__('extraframeworks', env, lang, kwargs)
+    def __init__(self, name, env, kwargs, language: T.Optional[str] = None):
+        paths = kwargs.get('paths', [])
+        super().__init__('extraframeworks', env, kwargs, language=language)
         self.name = name
-        self.required = required
         # Full path to framework directory
         self.framework_path = None
         if not self.clib_compiler:
@@ -2201,6 +2133,83 @@ class ExtraFrameworkDependency(ExternalDependency):
         return 'framework'
 
 
+class DependencyFactory:
+
+    """Factory to get dependencies from multiple sources.
+
+    This class provides an initializer that takes a set of names and classes
+    for various kinds of dependencies. When the initialized object is called
+    it returns a list of callables return Dependency objects to try in order.
+
+    :name: The name of the dependency. This will be passed as the name
+        parameter of the each dependency unless it is overridden on a per
+        type basis.
+    :methods: An ordered list of DependencyMethods. This is the order
+        dependencies will be returned in unless they are removed by the
+        _process_method function
+    :*_name: This will overwrite the name passed to the coresponding class.
+        For example, if the name is 'zlib', but cmake calls the dependency
+        'Z', then using `cmake_name='Z'` will pass the name as 'Z' to cmake.
+    :*_class: A *type* or callable that creates a class, and has the
+        signature of an ExternalDependency
+    :system_class: If you pass DependencyMethods.SYSTEM in methods, you must
+        set this argument.
+    """
+
+    def __init__(self, name: str, methods: T.List[DependencyMethods], *,
+                 extra_kwargs: T.Optional[T.Dict[str, T.Any]] = None,
+                 pkgconfig_name: T.Optional[str] = None,
+                 pkgconfig_class: 'T.Type[PkgConfigDependency]' = PkgConfigDependency,
+                 cmake_name: T.Optional[str] = None,
+                 cmake_class: 'T.Type[CMakeDependency]' = CMakeDependency,
+                 configtool_class: 'T.Optional[T.Type[ConfigToolDependency]]' = None,
+                 framework_name: T.Optional[str] = None,
+                 framework_class: 'T.Type[ExtraFrameworkDependency]' = ExtraFrameworkDependency,
+                 system_class: 'T.Type[ExternalDependency]' = ExternalDependency):
+
+        if DependencyMethods.CONFIG_TOOL in methods and not configtool_class:
+            raise DependencyException('A configtool must have a custom class')
+
+        self.extra_kwargs = extra_kwargs or {}
+        self.methods = methods
+        self.classes = {
+            # Just attach the correct name right now, either the generic name
+            # or the method specific name.
+            DependencyMethods.EXTRAFRAMEWORK: functools.partial(framework_class, framework_name or name),
+            DependencyMethods.PKGCONFIG: functools.partial(pkgconfig_class, pkgconfig_name or name),
+            DependencyMethods.CMAKE: functools.partial(cmake_class, cmake_name or name),
+            DependencyMethods.SYSTEM: functools.partial(system_class, name),
+            DependencyMethods.CONFIG_TOOL: None,
+        }
+        if configtool_class is not None:
+            self.classes[DependencyMethods.CONFIG_TOOL] = functools.partial(configtool_class, name)
+
+    @staticmethod
+    def _process_method(method: DependencyMethods, env: Environment, for_machine: MachineChoice) -> bool:
+        """Report whether a method is valid or not.
+
+        If the method is valid, return true, otherwise return false. This is
+        used in a list comprehension to filter methods that are not possible.
+
+        By default this only remove EXTRAFRAMEWORK dependencies for non-mac platforms.
+        """
+        # Extra frameworks are only valid for macOS and other apple products
+        if (method is DependencyMethods.EXTRAFRAMEWORK and
+                not env.machines[for_machine].is_darwin()):
+            return False
+        return True
+
+    def __call__(self, env: Environment, for_machine: MachineChoice,
+                 kwargs: T.Dict[str, T.Any]) -> T.List['DependencyType']:
+        """Return a list of Dependencies with the arguments already attached."""
+        methods = process_method_kw(self.methods, kwargs)
+        nwargs = self.extra_kwargs.copy()
+        nwargs.update(kwargs)
+
+        return [functools.partial(self.classes[m], env, nwargs) for m in methods
+                if self._process_method(m, env, for_machine)]
+
+
 def get_dep_identifier(name, kwargs) -> T.Tuple:
     identifier = (name, )
     for key, value in kwargs.items():
@@ -2252,7 +2261,7 @@ def find_external_dependency(name, env, kwargs):
     type_text = PerMachine('Build-time', 'Run-time')[for_machine] + ' dependency'
 
     # build a list of dependency methods to try
-    candidates = _build_external_dependency_list(name, env, kwargs)
+    candidates = _build_external_dependency_list(name, env, for_machine, kwargs)
 
     pkg_exc = []
     pkgdep = []
@@ -2315,7 +2324,8 @@ def find_external_dependency(name, env, kwargs):
     return NotFoundDependency(env)
 
 
-def _build_external_dependency_list(name, env: Environment, kwargs: T.Dict[str, T.Any]) -> list:
+def _build_external_dependency_list(name: str, env: Environment, for_machine: MachineChoice,
+                                    kwargs: T.Dict[str, T.Any]) -> T.List['DependencyType']:
     # First check if the method is valid
     if 'method' in kwargs and kwargs['method'] not in [e.value for e in DependencyMethods]:
         raise DependencyException('method {!r} is invalid'.format(kwargs['method']))
@@ -2326,10 +2336,10 @@ def _build_external_dependency_list(name, env: Environment, kwargs: T.Dict[str, 
         # Create the list of dependency object constructors using a factory
         # class method, if one exists, otherwise the list just consists of the
         # constructor
-        if getattr(packages[lname], '_factory', None):
-            dep = packages[lname]._factory(env, kwargs)
-        else:
+        if isinstance(packages[lname], type) and issubclass(packages[lname], Dependency):
             dep = [functools.partial(packages[lname], env, kwargs)]
+        else:
+            dep = packages[lname](env, for_machine, kwargs)
         return dep
 
     candidates = []
@@ -2353,8 +2363,7 @@ def _build_external_dependency_list(name, env: Environment, kwargs: T.Dict[str, 
     if 'extraframework' == kwargs.get('method', ''):
         # On OSX, also try framework dependency detector
         if mesonlib.is_osx():
-            candidates.append(functools.partial(ExtraFrameworkDependency, name,
-                                                False, None, env, None, kwargs))
+            candidates.append(functools.partial(ExtraFrameworkDependency, name, env, kwargs))
         return candidates
 
     # Otherwise, just use the pkgconfig and cmake dependency detector
@@ -2363,8 +2372,7 @@ def _build_external_dependency_list(name, env: Environment, kwargs: T.Dict[str, 
 
         # On OSX, also try framework dependency detector
         if mesonlib.is_osx():
-            candidates.append(functools.partial(ExtraFrameworkDependency, name,
-                                                False, None, env, None, kwargs))
+            candidates.append(functools.partial(ExtraFrameworkDependency, name, env, kwargs))
 
         # Only use CMake as a last resort, since it might not work 100% (see #6113)
         candidates.append(functools.partial(CMakeDependency, name, env, kwargs))
@@ -2405,3 +2413,85 @@ def strip_system_libdirs(environment, for_machine: MachineChoice, link_args):
     """
     exclude = {'-L{}'.format(p) for p in environment.get_compiler_system_dirs(for_machine)}
     return [l for l in link_args if l not in exclude]
+
+
+def process_method_kw(possible: T.List[DependencyMethods], kwargs) -> T.List[DependencyMethods]:
+    method = kwargs.get('method', 'auto')
+    if isinstance(method, DependencyMethods):
+        return method
+    if method not in [e.value for e in DependencyMethods]:
+        raise DependencyException('method {!r} is invalid'.format(method))
+    method = DependencyMethods(method)
+
+    # This sets per-tool config methods which are deprecated to to the new
+    # generic CONFIG_TOOL value.
+    if method in [DependencyMethods.SDLCONFIG, DependencyMethods.CUPSCONFIG,
+                  DependencyMethods.PCAPCONFIG, DependencyMethods.LIBWMFCONFIG]:
+        mlog.warning(textwrap.dedent("""\
+            Configuration method {} has been deprecated in favor of
+            'config-tool'. This will be removed in a future version of
+            meson.""".format(method)))
+        method = DependencyMethods.CONFIG_TOOL
+
+    # Set the detection method. If the method is set to auto, use any available method.
+    # If method is set to a specific string, allow only that detection method.
+    if method == DependencyMethods.AUTO:
+        methods = possible
+    elif method in possible:
+        methods = [method]
+    else:
+        raise DependencyException(
+            'Unsupported detection method: {}, allowed methods are {}'.format(
+                method.value,
+                mlog.format_list([x.value for x in [DependencyMethods.AUTO] + possible])))
+
+    return methods
+
+
+if T.TYPE_CHECKING:
+    FactoryType = T.Callable[[Environment, MachineChoice, T.Dict[str, T.Any]],
+                             T.List['DependencyType']]
+    FullFactoryType = T.Callable[[Environment, MachineChoice, T.Dict[str, T.Any], T.Set[DependencyMethods]],
+                                 T.List['DependencyType']]
+
+
+def factory_methods(methods: T.Set[DependencyMethods]) -> 'FactoryType':
+    """Decorator for handling methods for dependency factory functions.
+
+    This helps to make factory functions self documenting
+    >>> @factory_methods([DependencyMethods.PKGCONFIG, DependencyMethods.CMAKE])
+    >>> def factory(env: Environment, for_machine: MachineChoice, kwargs: T.Dict[str, T.Any], methods: T.Set[DependencyMethods]) -> T.List[DependencyType]:
+    >>>     pass
+    """
+
+    def inner(func: 'FullFactoryType') -> 'FactoryType':
+
+        @functools.wraps(func)
+        def wrapped(env: Environment, for_machine: MachineChoice, kwargs: T.Dict[str, T.Any]) -> T.List['DependencyType']:
+            return func(env, for_machine, kwargs, process_method_kw(methods, kwargs))
+
+        return wrapped
+
+    return inner
+
+
+def detect_compiler(name: str, env: Environment, for_machine: MachineChoice,
+                    language: T.Optional[str]) -> T.Optional['Compiler']:
+    """Given a language and environment find the compiler used."""
+    compilers = env.coredata.compilers[for_machine]
+
+    # Set the compiler for this dependency if a language is specified,
+    # else try to pick something that looks usable.
+    if language:
+        if language not in compilers:
+            m = name.capitalize() + ' requires a {0} compiler, but ' \
+                '{0} is not in the list of project languages'
+            raise DependencyException(m.format(language.capitalize()))
+        return compilers[language]
+    else:
+        for lang in clib_langs:
+            try:
+                return compilers[lang]
+            except KeyError:
+                continue
+    return None

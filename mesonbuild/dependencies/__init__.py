@@ -18,58 +18,67 @@ from .hdf5 import HDF5Dependency
 from .base import (  # noqa: F401
     Dependency, DependencyException, DependencyMethods, ExternalProgram, EmptyExternalProgram, NonExistingExternalProgram,
     ExternalDependency, NotFoundDependency, ExternalLibrary, ExtraFrameworkDependency, InternalDependency,
-    PkgConfigDependency, CMakeDependency, find_external_dependency, get_dep_identifier, packages, _packages_accept_language)
-from .dev import GMockDependency, GTestDependency, LLVMDependency, ValgrindDependency
-from .coarrays import CoarrayDependency
+    PkgConfigDependency, CMakeDependency, find_external_dependency, get_dep_identifier, packages, _packages_accept_language,
+    DependencyFactory)
+from .dev import ValgrindDependency, gmock_factory, gtest_factory, llvm_factory
+from .coarrays import coarray_factory
 from .mpi import MPIDependency
 from .scalapack import ScalapackDependency
-from .misc import (BlocksDependency, CursesDependency, NetCDFDependency, OpenMPDependency, Python3Dependency, ThreadDependency,
-                   PcapDependency, CupsDependency, LibWmfDependency, LibGCryptDependency, GpgmeDependency, ShadercDependency)
+from .misc import (
+    BlocksDependency, OpenMPDependency, cups_factory, curses_factory, gpgme_factory,
+    libgcrypt_factory, libwmf_factory, netcdf_factory, pcap_factory, python3_factory,
+    shaderc_factory, threads_factory,
+)
 from .platform import AppleFrameworks
-from .ui import GLDependency, GnuStepDependency, Qt4Dependency, Qt5Dependency, SDL2Dependency, WxDependency, VulkanDependency
+from .ui import GnuStepDependency, Qt4Dependency, Qt5Dependency, WxDependency, gl_factory, sdl2_factory, vulkan_factory
 
 
+# This is a dict where the keys should be strings, and the values must be one
+# of:
+# - An ExternalDependency subclass
+# - A DependencyFactory object
+# - A callable with a signature of (Environment, MachineChoice, Dict[str, Any]) -> List[Callable[[], DependencyType]]
 packages.update({
     # From dev:
-    'gtest': GTestDependency,
-    'gmock': GMockDependency,
-    'llvm': LLVMDependency,
+    'gtest': gtest_factory,
+    'gmock': gmock_factory,
+    'llvm': llvm_factory,
     'valgrind': ValgrindDependency,
 
     'boost': BoostDependency,
     'cuda': CudaDependency,
 
     # per-file
-    'coarray': CoarrayDependency,
+    'coarray': coarray_factory,
     'hdf5': HDF5Dependency,
     'mpi': MPIDependency,
     'scalapack': ScalapackDependency,
 
     # From misc:
     'blocks': BlocksDependency,
-    'curses': CursesDependency,
-    'netcdf': NetCDFDependency,
+    'curses': curses_factory,
+    'netcdf': netcdf_factory,
     'openmp': OpenMPDependency,
-    'python3': Python3Dependency,
-    'threads': ThreadDependency,
-    'pcap': PcapDependency,
-    'cups': CupsDependency,
-    'libwmf': LibWmfDependency,
-    'libgcrypt': LibGCryptDependency,
-    'gpgme': GpgmeDependency,
-    'shaderc': ShadercDependency,
+    'python3': python3_factory,
+    'threads': threads_factory,
+    'pcap': pcap_factory,
+    'cups': cups_factory,
+    'libwmf': libwmf_factory,
+    'libgcrypt': libgcrypt_factory,
+    'gpgme': gpgme_factory,
+    'shaderc': shaderc_factory,
 
     # From platform:
     'appleframeworks': AppleFrameworks,
 
     # From ui:
-    'gl': GLDependency,
+    'gl': gl_factory,
     'gnustep': GnuStepDependency,
     'qt4': Qt4Dependency,
     'qt5': Qt5Dependency,
-    'sdl2': SDL2Dependency,
+    'sdl2': sdl2_factory,
     'wxwidgets': WxDependency,
-    'vulkan': VulkanDependency,
+    'vulkan': vulkan_factory,
 })
 _packages_accept_language.update({
     'hdf5',

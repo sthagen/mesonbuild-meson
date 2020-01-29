@@ -14,10 +14,10 @@
 
 # This file contains the detection logic for external dependencies that
 # are UI-related.
-import functools
 import os
 import re
 import subprocess
+import typing as T
 from collections import OrderedDict
 
 from .. import mlog
@@ -30,12 +30,12 @@ from ..environment import detect_cpu_family
 from .base import DependencyException, DependencyMethods
 from .base import ExternalDependency, ExternalProgram, NonExistingExternalProgram
 from .base import ExtraFrameworkDependency, PkgConfigDependency
-from .base import ConfigToolDependency
+from .base import ConfigToolDependency, DependencyFactory
 
 
-class GLDependency(ExternalDependency):
-    def __init__(self, environment, kwargs):
-        super().__init__('gl', environment, None, kwargs)
+class GLDependencySystem(ExternalDependency):
+    def __init__(self, name: str, environment, kwargs):
+        super().__init__(name, environment, kwargs)
 
         if self.env.machines[self.for_machine].is_darwin():
             self.is_found = True
@@ -49,19 +49,6 @@ class GLDependency(ExternalDependency):
             self.link_args = ['-lopengl32']
             # FIXME: Detect version using self.clib_compiler
             return
-
-    @classmethod
-    def _factory(cls, environment, kwargs):
-        methods = cls._process_method_kw(kwargs)
-        candidates = []
-
-        if DependencyMethods.PKGCONFIG in methods:
-            candidates.append(functools.partial(PkgConfigDependency, 'gl', environment, kwargs))
-
-        if DependencyMethods.SYSTEM in methods:
-            candidates.append(functools.partial(GLDependency, environment, kwargs))
-
-        return candidates
 
     @staticmethod
     def get_methods():
@@ -79,7 +66,7 @@ class GnuStepDependency(ConfigToolDependency):
     tool_name = 'gnustep-config'
 
     def __init__(self, environment, kwargs):
-        super().__init__('gnustep', environment, 'objc', kwargs)
+        super().__init__('gnustep', environment, kwargs, language='objc')
         if not self.is_found:
             return
         self.modules = kwargs.get('modules', [])
@@ -176,8 +163,8 @@ def _qt_get_private_includes(mod_inc_dir, module, mod_version):
             os.path.join(private_dir, 'Qt' + module))
 
 class QtExtraFrameworkDependency(ExtraFrameworkDependency):
-    def __init__(self, name, required, paths, env, lang, kwargs):
-        super().__init__(name, required, paths, env, lang, kwargs)
+    def __init__(self, name, env, kwargs, language: T.Optional[str] = None):
+        super().__init__(name, env, kwargs, language=language)
         self.mod_name = name[2:]
 
     def get_compile_args(self, with_private_headers=False, qt_version="0"):
@@ -191,7 +178,7 @@ class QtExtraFrameworkDependency(ExtraFrameworkDependency):
 
 class QtBaseDependency(ExternalDependency):
     def __init__(self, name, env, kwargs):
-        super().__init__(name, env, 'cpp', kwargs)
+        super().__init__(name, env, kwargs, language='cpp')
         self.qtname = name.capitalize()
         self.qtver = name[-1]
         if self.qtver == "4":
@@ -443,12 +430,12 @@ class QtBaseDependency(ExternalDependency):
         # ExtraFrameworkDependency doesn't support any methods
         fw_kwargs = kwargs.copy()
         fw_kwargs.pop('method', None)
+        fw_kwargs['paths'] = [libdir]
 
         for m in modules:
             fname = 'Qt' + m
             mlog.debug('Looking for qt framework ' + fname)
-            fwdep = QtExtraFrameworkDependency(fname, False, [libdir], self.env,
-                                               self.language, fw_kwargs)
+            fwdep = QtExtraFrameworkDependency(fname, self.env, fw_kwargs, language=self.language)
             self.compile_args.append('-F' + libdir)
             if fwdep.found():
                 self.compile_args += fwdep.get_compile_args(with_private_headers=self.private_headers,
@@ -524,36 +511,13 @@ class Qt5Dependency(QtBaseDependency):
         return _qt_get_private_includes(mod_inc_dir, module, self.version)
 
 
-# There are three different ways of depending on SDL2:
-# sdl2-config, pkg-config and OSX framework
-class SDL2Dependency(ExternalDependency):
-    def __init__(self, environment, kwargs):
-        super().__init__('sdl2', environment, None, kwargs)
+class SDL2DependencyConfigTool(ConfigToolDependency):
 
-    @classmethod
-    def _factory(cls, environment, kwargs):
-        methods = cls._process_method_kw(kwargs)
-        candidates = []
-
-        if DependencyMethods.PKGCONFIG in methods:
-            candidates.append(functools.partial(PkgConfigDependency, 'sdl2', environment, kwargs))
-
-        if DependencyMethods.CONFIG_TOOL in methods:
-            candidates.append(functools.partial(ConfigToolDependency.factory,
-                                                'sdl2', environment, None,
-                                                kwargs, ['sdl2-config'],
-                                                'sdl2-config', SDL2Dependency.tool_finish_init))
-
-        if DependencyMethods.EXTRAFRAMEWORK in methods:
-            if mesonlib.is_osx():
-                candidates.append(functools.partial(ExtraFrameworkDependency,
-                                                    'sdl2', False, None, environment,
-                                                    kwargs.get('language', None), kwargs))
-                # fwdep.version = '2'  # FIXME
-        return candidates
+    tools = ['sdl2-config']
+    tool_name = 'sdl2-config'
 
     @staticmethod
-    def tool_finish_init(ctdep):
+    def finish_init(ctdep):
         ctdep.compile_args = ctdep.get_config_value(['--cflags'], 'compile_args')
         ctdep.link_args = ctdep.get_config_value(['--libs'], 'link_args')
 
@@ -571,7 +535,7 @@ class WxDependency(ConfigToolDependency):
     tool_name = 'wx-config'
 
     def __init__(self, environment, kwargs):
-        super().__init__('WxWidgets', environment, None, kwargs)
+        super().__init__('WxWidgets', environment, kwargs)
         if not self.is_found:
             return
         self.requested_modules = self.get_requested(kwargs)
@@ -590,10 +554,10 @@ class WxDependency(ConfigToolDependency):
         return candidates
 
 
-class VulkanDependency(ExternalDependency):
+class VulkanDependencySystem(ExternalDependency):
 
-    def __init__(self, environment, kwargs):
-        super().__init__('vulkan', environment, None, kwargs)
+    def __init__(self, name: str, environment, kwargs, language: T.Optional[str] = None):
+        super().__init__(name, environment, kwargs, language=language)
 
         try:
             self.vulkan_sdk = os.environ['VULKAN_SDK']
@@ -646,22 +610,27 @@ class VulkanDependency(ExternalDependency):
                     self.link_args.append(lib)
                 return
 
-    @classmethod
-    def _factory(cls, environment, kwargs):
-        methods = cls._process_method_kw(kwargs)
-        candidates = []
-
-        if DependencyMethods.PKGCONFIG in methods:
-            candidates.append(functools.partial(PkgConfigDependency, 'vulkan', environment, kwargs))
-
-        if DependencyMethods.SYSTEM in methods:
-            candidates.append(functools.partial(VulkanDependency, environment, kwargs))
-
-        return candidates
-
     @staticmethod
     def get_methods():
-        return [DependencyMethods.PKGCONFIG, DependencyMethods.SYSTEM]
+        return [DependencyMethods.SYSTEM]
 
     def log_tried(self):
         return 'system'
+
+gl_factory = DependencyFactory(
+    'gl',
+    [DependencyMethods.PKGCONFIG, DependencyMethods.SYSTEM],
+    system_class=GLDependencySystem,
+)
+
+sdl2_factory = DependencyFactory(
+    'sdl2',
+    [DependencyMethods.PKGCONFIG, DependencyMethods.CONFIG_TOOL, DependencyMethods.EXTRAFRAMEWORK],
+    configtool_class=SDL2DependencyConfigTool,
+)
+
+vulkan_factory = DependencyFactory(
+    'vulkan',
+    [DependencyMethods.PKGCONFIG, DependencyMethods.SYSTEM],
+    system_class=VulkanDependencySystem,
+)
