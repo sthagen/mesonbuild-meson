@@ -32,6 +32,9 @@ from .base import ExternalDependency, NonExistingExternalProgram
 from .base import ExtraFrameworkDependency, PkgConfigDependency
 from .base import ConfigToolDependency, DependencyFactory
 
+if T.TYPE_CHECKING:
+    from ..environment import Environment
+
 
 class GLDependencySystem(ExternalDependency):
     def __init__(self, name: str, environment, kwargs):
@@ -360,7 +363,12 @@ class QtBaseDependency(ExternalDependency):
         if self.env.machines.host.is_darwin() and not any(s in xspec for s in ['ios', 'tvos']):
             mlog.debug("Building for macOS, looking for framework")
             self._framework_detect(qvars, mods, kwargs)
-            return self.qmake.name
+            # Sometimes Qt is built not as a framework (for instance, when using conan pkg manager)
+            # skip and fall back to normal procedure then
+            if self.is_found:
+                return self.qmake.name
+            else:
+                mlog.debug("Building for macOS, couldn't find framework, falling back to library search")
         incdir = qvars['QT_INSTALL_HEADERS']
         self.compile_args.append('-I' + incdir)
         libdir = qvars['QT_INSTALL_LIBS']
@@ -410,6 +418,9 @@ class QtBaseDependency(ExternalDependency):
                 suffix += 'd'
             if self.qtver == '4':
                 suffix += '4'
+        if self.env.machines[self.for_machine].is_darwin():
+            if is_debug:
+                suffix += '_debug'
         return suffix
 
     def _link_with_qtmain(self, is_debug, libdir):
@@ -432,8 +443,8 @@ class QtBaseDependency(ExternalDependency):
             fname = 'Qt' + m
             mlog.debug('Looking for qt framework ' + fname)
             fwdep = QtExtraFrameworkDependency(fname, self.env, fw_kwargs, language=self.language)
-            self.compile_args.append('-F' + libdir)
             if fwdep.found():
+                self.compile_args.append('-F' + libdir)
                 self.compile_args += fwdep.get_compile_args(with_private_headers=self.private_headers,
                                                             qt_version=self.version)
                 self.link_args += fwdep.get_link_args()
@@ -441,8 +452,8 @@ class QtBaseDependency(ExternalDependency):
                 break
         else:
             self.is_found = True
-        # Used by self.compilers_detect()
-        self.bindir = self.get_qmake_host_bins(qvars)
+            # Used by self.compilers_detect()
+            self.bindir = self.get_qmake_host_bins(qvars)
 
     def get_qmake_host_bins(self, qvars):
         # Prefer QT_HOST_BINS (qt5, correct for cross and native compiling)
@@ -530,17 +541,30 @@ class WxDependency(ConfigToolDependency):
     tools = ['wx-config-3.0', 'wx-config', 'wx-config-gtk3']
     tool_name = 'wx-config'
 
-    def __init__(self, environment, kwargs):
-        super().__init__('WxWidgets', environment, kwargs)
+    def __init__(self, environment: 'Environment', kwargs: T.Dict[str, T.Any]):
+        super().__init__('WxWidgets', environment, kwargs, language='cpp')
         if not self.is_found:
             return
         self.requested_modules = self.get_requested(kwargs)
+
+        extra_args = []
+        if self.static:
+            extra_args.append('--static=yes')
+
+            # Check to make sure static is going to work
+            err = Popen_safe(self.config + extra_args)[2]
+            if 'No config found to match' in err:
+                mlog.debug('WxWidgets is missing static libraries.')
+                self.is_found = False
+                return
+
         # wx-config seems to have a cflags as well but since it requires C++,
         # this should be good, at least for now.
-        self.compile_args = self.get_config_value(['--cxxflags'] + self.requested_modules, 'compile_args')
-        self.link_args = self.get_config_value(['--libs'] + self.requested_modules, 'link_args')
+        self.compile_args = self.get_config_value(['--cxxflags'] + extra_args + self.requested_modules, 'compile_args')
+        self.link_args = self.get_config_value(['--libs'] + extra_args + self.requested_modules, 'link_args')
 
-    def get_requested(self, kwargs):
+    @staticmethod
+    def get_requested(kwargs: T.Dict[str, T.Any]) -> T.List[str]:
         if 'modules' not in kwargs:
             return []
         candidates = extract_as_list(kwargs, 'modules')

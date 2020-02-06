@@ -3125,20 +3125,38 @@ int main(int argc, char **argv) {
         except EnvironmentException:
             pass
         try:
+            env.detect_cs_compiler(MachineChoice.HOST)
+            langs.append('cs')
+        except EnvironmentException:
+            pass
+        try:
             env.detect_d_compiler(MachineChoice.HOST)
             langs.append('d')
         except EnvironmentException:
             pass
         try:
+            env.detect_java_compiler(MachineChoice.HOST)
+            langs.append('java')
+        except EnvironmentException:
+            pass
+        try:
+            env.detect_cuda_compiler(MachineChoice.HOST)
+            langs.append('cuda')
+        except EnvironmentException:
+            pass
+        try:
             env.detect_fortran_compiler(MachineChoice.HOST)
-            if is_windows() or platform.machine().lower() != 'e2k':
-                # Elbrus Fortran compiler can't generate debug information
-                langs.append('fortran')
+            langs.append('fortran')
         except EnvironmentException:
             pass
         try:
             env.detect_objc_compiler(MachineChoice.HOST)
             langs.append('objc')
+        except EnvironmentException:
+            pass
+        try:
+            env.detect_objcpp_compiler(MachineChoice.HOST)
+            langs.append('objcpp')
         except EnvironmentException:
             pass
         # FIXME: omitting rust as Windows AppVeyor CI finds Rust but doesn't link correctly
@@ -5010,6 +5028,21 @@ class LinuxlikeTests(BasePlatformTests):
         cmd = ['pkg-config', 'pub-lib-order']
         out = self._run(cmd + ['--libs'], override_envvars=env).strip().split()
         self.assertEqual(out, ['-llibmain2', '-llibinternal'])
+
+    def test_pkgconfig_uninstalled(self):
+        testdir = os.path.join(self.common_test_dir, '47 pkgconfig-gen')
+        self.init(testdir)
+        self.build()
+
+        os.environ['PKG_CONFIG_LIBDIR'] = os.path.join(self.builddir, 'meson-uninstalled')
+        if is_cygwin():
+            os.environ['PATH'] += os.pathsep + self.builddir
+
+        self.new_builddir()
+        testdir = os.path.join(self.common_test_dir, '47 pkgconfig-gen', 'dependencies')
+        self.init(testdir)
+        self.build()
+        self.run_tests()
 
     def test_pkg_unfound(self):
         testdir = os.path.join(self.unit_test_dir, '23 unfound pkgconfig')

@@ -30,8 +30,34 @@ assert(fs.is_dir('subprojects'), 'Dir not detected correctly.')
 assert(not fs.is_dir('meson.build'), 'File detected as a dir.')
 assert(not fs.is_dir('nonexisting'), 'Bad path detected as a dir.')
 
-assert(fs.is_dir('~'), 'expanduser not working')
-assert(not fs.is_file('~'), 'expanduser not working')
+assert(fs.is_dir('~'), 'home directory not detected')
+assert(not fs.is_file('~'), 'home directory detected as file')
+
+# -- expanduser
+assert(fs.expanduser('~') != '~','expanduser failed')
+assert(fs.expanduser('~/foo').endswith('foo'), 'expanduser with tail failed')
+
+# -- as_posix
+assert(fs.as_posix('/') == '/', 'as_posix idempotent')
+assert(fs.as_posix('\\') == '/', 'as_posix simple')
+assert(fs.as_posix('\\\\') == '/', 'as_posix simple')
+assert(fs.as_posix('foo\\bar/baz') == 'foo/bar/baz', 'as_posix mixed slash')
+
+# -- is_absolute
+winabs = 'q:/foo'
+unixabs = '/foo'
+if is_windows
+  assert(fs.is_absolute(winabs), 'is_absolute windows not detected')
+  assert(not fs.is_absolute(unixabs), 'is_absolute unix false positive')
+else
+  assert(fs.is_absolute(unixabs), 'is_absolute unix not detected')
+  assert(not fs.is_absolute(winabs), 'is_absolute windows false positive')
+endif
+
+# -- replace_suffix
+
+original = 'foo'
+assert(fs.replace_suffix(original, '') == original, 'replace_suffix idempotent')
 
 original = 'foo.txt'
 new = fs.replace_suffix(original, '.ini')
@@ -81,7 +107,11 @@ if not is_windows and build_machine.system() != 'cygwin' and is_git_checkout
   assert(fs.is_samepath('a_symlink', 'meson.build'), 'symlink is_samepath fail')
 endif
 
+# parts of path
 assert(fs.parent('foo/bar') == 'foo', 'failed to get dirname')
 assert(fs.name('foo/bar') == 'bar', 'failed to get basename')
+assert(fs.name('foo/bar/baz.dll.a') == 'baz.dll.a', 'failed to get basename with compound suffix')
+assert(fs.stem('foo/bar/baz.dll') == 'baz', 'failed to get stem with suffix')
+assert(fs.stem('foo/bar/baz.dll.a') == 'baz.dll', 'failed to get stem with compound suffix')
 
 subdir('subdir')
