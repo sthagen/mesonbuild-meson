@@ -65,8 +65,7 @@ def git(cmd: T.List[str], workingdir: str, **kwargs) -> subprocess.CompletedProc
     # Sometimes git calls git recursively, such as `git submodule update
     # --recursive` which will be without the above workaround, so set the
     # console mode again just in case.
-    if platform.system().lower() == 'windows':
-        mlog._windows_ansi()
+    mlog.setup_console()
     return pc
 
 
@@ -1080,11 +1079,20 @@ def Popen_safe(args: T.List[str], write: T.Optional[str] = None,
                **kwargs: T.Any) -> T.Tuple[subprocess.Popen, str, str]:
     import locale
     encoding = locale.getpreferredencoding()
+    # Redirect stdin to DEVNULL otherwise the command run by us here might mess
+    # up the console and ANSI colors will stop working on Windows.
+    if 'stdin' not in kwargs:
+        kwargs['stdin'] = subprocess.DEVNULL
     if sys.version_info < (3, 6) or not sys.stdout.encoding or encoding.upper() != 'UTF-8':
-        return Popen_safe_legacy(args, write=write, stdout=stdout, stderr=stderr, **kwargs)
-    p = subprocess.Popen(args, universal_newlines=True, close_fds=False,
-                         stdout=stdout, stderr=stderr, **kwargs)
-    o, e = p.communicate(write)
+        p, o, e = Popen_safe_legacy(args, write=write, stdout=stdout, stderr=stderr, **kwargs)
+    else:
+        p = subprocess.Popen(args, universal_newlines=True, close_fds=False,
+                             stdout=stdout, stderr=stderr, **kwargs)
+        o, e = p.communicate(write)
+    # Sometimes the command that we run will call another command which will be
+    # without the above stdin workaround, so set the console mode again just in
+    # case.
+    mlog.setup_console()
     return p, o, e
 
 def Popen_safe_legacy(args: T.List[str], write: T.Optional[str] = None,
