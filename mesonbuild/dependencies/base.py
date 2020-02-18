@@ -388,7 +388,7 @@ class ConfigToolDependency(ExternalDependency):
 
     tools = None
     tool_name = None
-    __strip_version = re.compile(r'^[0-9.]*')
+    __strip_version = re.compile(r'^[0-9][0-9.]+')
 
     def __init__(self, name, environment, kwargs, language: T.Optional[str] = None):
         super().__init__('config-tool', environment, kwargs, language=language)
@@ -1661,8 +1661,8 @@ class DubDependency(ExternalDependency):
             lib_file_name = os.path.basename(default_path)
         module_build_path = os.path.join(module_path, '.dub', 'build')
 
-        # If default_path is a path to lib file and 
-        # directory of lib don't have subdir '.dub/build' 
+        # If default_path is a path to lib file and
+        # directory of lib don't have subdir '.dub/build'
         if not os.path.isdir(module_build_path) and os.path.isfile(default_path):
             if folder_only:
                 return module_path

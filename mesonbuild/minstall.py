@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import sys, pickle, os, shutil, subprocess, errno
+import argparse
 import shlex
 from glob import glob
 from .scripts import depfixer
@@ -35,10 +36,14 @@ selinux_updates = []
 def add_arguments(parser):
     parser.add_argument('-C', default='.', dest='wd',
                         help='directory to cd into before running')
+    parser.add_argument('--profile-self', action='store_true', dest='profile',
+                        help=argparse.SUPPRESS)
     parser.add_argument('--no-rebuild', default=False, action='store_true',
                         help='Do not rebuild before installing.')
     parser.add_argument('--only-changed', default=False, action='store_true',
                         help='Only overwrite files that are older than the copied file.')
+    parser.add_argument('--quiet', default=False, action='store_true',
+                        help='Do not print every file that was installed.')
 
 class DirMaker:
     def __init__(self, lf):
@@ -216,6 +221,10 @@ class Installer:
         self.lf = lf
         self.preserved_file_count = 0
 
+    def log(self, msg):
+        if not self.options.quiet:
+            print(msg)
+
     def should_preserve_existing_file(self, from_file, to_file):
         if not self.options.only_changed:
             return False
@@ -226,7 +235,7 @@ class Installer:
         to_time = os.stat(to_file).st_mtime
         return from_time <= to_time
 
-    def do_copyfile(self, from_file, to_file):
+    def do_copyfile(self, from_file, to_file, makedirs=None):
         outdir = os.path.split(to_file)[0]
         if not os.path.isfile(from_file) and not os.path.islink(from_file):
             raise RuntimeError('Tried to install something that isn\'t a file:'
@@ -243,7 +252,12 @@ class Installer:
                 self.preserved_file_count += 1
                 return False
             os.remove(to_file)
-        print('Installing %s to %s' % (from_file, outdir))
+        elif makedirs:
+            # Unpack tuple
+            dirmaker, outdir = makedirs
+            # Create dirs if needed
+            dirmaker.makedirs(outdir, exist_ok=True)
+        self.log('Installing %s to %s' % (from_file, outdir))
         if os.path.islink(from_file):
             if not os.path.exists(from_file):
                 # Dangling symlink. Replicate as is.
@@ -318,6 +332,7 @@ class Installer:
                 abs_dst = os.path.join(dst_dir, filepart)
                 if os.path.isdir(abs_dst):
                     print('Tried to copy file %s but a directory of that name already exists.' % abs_dst)
+                    sys.exit(1)
                 parent_dir = os.path.dirname(abs_dst)
                 if not os.path.isdir(parent_dir):
                     os.mkdir(parent_dir)
@@ -347,10 +362,10 @@ class Installer:
                 restore_selinux_contexts()
                 self.run_install_script(d)
                 if not self.did_install_something:
-                    print('Nothing to install.')
-                if self.preserved_file_count > 0:
-                    print('Preserved {} unchanged files, see {} for the full list'
-                          .format(self.preserved_file_count, os.path.normpath(self.lf.name)))
+                    self.log('Nothing to install.')
+                if not self.options.quiet and self.preserved_file_count > 0:
+                    self.log('Preserved {} unchanged files, see {} for the full list'
+                             .format(self.preserved_file_count, os.path.normpath(self.lf.name)))
         except PermissionError:
             if shutil.which('pkexec') is not None and 'PKEXEC_UID' not in os.environ:
                 print('Installation failed due to insufficient permissions.')
@@ -364,42 +379,39 @@ class Installer:
         for (src_dir, dst_dir, mode, exclude) in d.install_subdirs:
             self.did_install_something = True
             full_dst_dir = get_destdir_path(d, dst_dir)
-            print('Installing subdir %s to %s' % (src_dir, full_dst_dir))
+            self.log('Installing subdir %s to %s' % (src_dir, full_dst_dir))
             d.dirmaker.makedirs(full_dst_dir, exist_ok=True)
             self.do_copydir(d, src_dir, full_dst_dir, exclude, mode)
 
     def install_data(self, d):
         for i in d.data:
-            self.did_install_something = True
             fullfilename = i[0]
             outfilename = get_destdir_path(d, i[1])
             mode = i[2]
             outdir = os.path.dirname(outfilename)
-            d.dirmaker.makedirs(outdir, exist_ok=True)
-            self.do_copyfile(fullfilename, outfilename)
+            if self.do_copyfile(fullfilename, outfilename, makedirs=(d.dirmaker, outdir)):
+                self.did_install_something = True
             set_mode(outfilename, mode, d.install_umask)
 
     def install_man(self, d):
         for m in d.man:
-            self.did_install_something = True
             full_source_filename = m[0]
             outfilename = get_destdir_path(d, m[1])
             outdir = os.path.dirname(outfilename)
-            d.dirmaker.makedirs(outdir, exist_ok=True)
             install_mode = m[2]
-            self.do_copyfile(full_source_filename, outfilename)
+            if self.do_copyfile(full_source_filename, outfilename, makedirs=(d.dirmaker, outdir)):
+                self.did_install_something = True
             set_mode(outfilename, install_mode, d.install_umask)
 
     def install_headers(self, d):
         for t in d.headers:
-            self.did_install_something = True
             fullfilename = t[0]
             fname = os.path.basename(fullfilename)
             outdir = get_destdir_path(d, t[1])
             outfilename = os.path.join(outdir, fname)
             install_mode = t[2]
-            d.dirmaker.makedirs(outdir, exist_ok=True)
-            self.do_copyfile(fullfilename, outfilename)
+            if self.do_copyfile(fullfilename, outfilename, makedirs=(d.dirmaker, outdir)):
+                self.did_install_something = True
             set_mode(outfilename, install_mode, d.install_umask)
 
     def run_install_script(self, d):
@@ -409,6 +421,8 @@ class Installer:
                'MESON_INSTALL_DESTDIR_PREFIX': d.fullprefix,
                'MESONINTROSPECT': ' '.join([shlex.quote(x) for x in d.mesonintrospect]),
                }
+        if self.options.quiet:
+            env['MESON_INSTALL_QUIET'] = '1'
 
         child_env = os.environ.copy()
         child_env.update(env)
@@ -418,7 +432,7 @@ class Installer:
             script = i['exe']
             args = i['args']
             name = ' '.join(script + args)
-            print('Running custom install script {!r}'.format(name))
+            self.log('Running custom install script {!r}'.format(name))
             try:
                 rc = subprocess.call(script + args, env=child_env)
                 if rc != 0:
@@ -429,14 +443,14 @@ class Installer:
 
     def install_targets(self, d):
         for t in d.targets:
-            self.did_install_something = True
             if not os.path.exists(t.fname):
                 # For example, import libraries of shared modules are optional
                 if t.optional:
-                    print('File {!r} not found, skipping'.format(t.fname))
+                    self.log('File {!r} not found, skipping'.format(t.fname))
                     continue
                 else:
                     raise RuntimeError('File {!r} could not be found'.format(t.fname))
+            file_copied = False # not set when a directory is copied
             fname = check_for_stampfile(t.fname)
             outdir = get_destdir_path(d, t.outdir)
             outname = os.path.join(outdir, os.path.basename(fname))
@@ -446,17 +460,16 @@ class Installer:
             install_rpath = t.install_rpath
             install_name_mappings = t.install_name_mappings
             install_mode = t.install_mode
-            d.dirmaker.makedirs(outdir, exist_ok=True)
             if not os.path.exists(fname):
                 raise RuntimeError('File {!r} could not be found'.format(fname))
             elif os.path.isfile(fname):
-                self.do_copyfile(fname, outname)
+                file_copied = self.do_copyfile(fname, outname, makedirs=(d.dirmaker, outdir))
                 set_mode(outname, install_mode, d.install_umask)
                 if should_strip and d.strip_bin is not None:
                     if fname.endswith('.jar'):
-                        print('Not stripping jar target:', os.path.basename(fname))
+                        self.log('Not stripping jar target:', os.path.basename(fname))
                         continue
-                    print('Stripping target {!r} using {}.'.format(fname, d.strip_bin[0]))
+                    self.log('Stripping target {!r} using {}.'.format(fname, d.strip_bin[0]))
                     ps, stdo, stde = Popen_safe(d.strip_bin + [outname])
                     if ps.returncode != 0:
                         print('Could not strip file.\n')
@@ -469,10 +482,11 @@ class Installer:
                     wasm_source = os.path.splitext(fname)[0] + '.wasm'
                     if os.path.exists(wasm_source):
                         wasm_output = os.path.splitext(outname)[0] + '.wasm'
-                        self.do_copyfile(wasm_source, wasm_output)
+                        file_copied = self.do_copyfile(wasm_source, wasm_output)
             elif os.path.isdir(fname):
                 fname = os.path.join(d.build_dir, fname.rstrip('/'))
                 outname = os.path.join(outdir, os.path.basename(fname))
+                d.dirmaker.makedirs(outdir, exist_ok=True)
                 self.do_copydir(d, fname, outname, None, install_mode)
             else:
                 raise RuntimeError('Unknown file type for {!r}'.format(fname))
@@ -491,7 +505,8 @@ class Installer:
                         print("Symlink creation does not work on this platform. "
                               "Skipping all symlinking.")
                         printed_symlink_error = True
-            if os.path.isfile(outname):
+            if file_copied:
+                self.did_install_something = True
                 try:
                     depfixer.fix_rpath(outname, install_rpath, final_path,
                                        install_name_mappings, verbose=False)
@@ -515,5 +530,10 @@ def run(opts):
         installer = Installer(opts, lf)
         append_to_log(lf, '# List of files installed by Meson')
         append_to_log(lf, '# Does not contain files installed by custom scripts.')
-        installer.do_install(datafilename)
+        if opts.profile:
+            import cProfile as profile
+            fname = os.path.join(private_dir, 'profile-installer.log')
+            profile.runctx('installer.do_install(datafilename)', globals(), locals(), filename=fname)
+        else:
+            installer.do_install(datafilename)
     return 0
