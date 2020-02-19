@@ -18,7 +18,7 @@ import shutil
 from . import ExtensionModule, ModuleReturnValue
 
 from .. import build, dependencies, mesonlib, mlog
-from ..interpreterbase import permittedKwargs, FeatureNew, stringArgs, InterpreterObject, ObjectHolder
+from ..interpreterbase import permittedKwargs, FeatureNew, stringArgs, InterpreterObject, ObjectHolder, noPosargs
 from ..interpreter import ConfigurationDataHolder, InterpreterException, SubprojectHolder
 
 
@@ -66,6 +66,7 @@ class CMakeSubprojectHolder(InterpreterObject, ObjectHolder):
                              'target': self.target,
                              'target_type': self.target_type,
                              'target_list': self.target_list,
+                             'found': self.found_method,
                              })
 
     def _args_to_info(self, args):
@@ -105,11 +106,17 @@ class CMakeSubprojectHolder(InterpreterObject, ObjectHolder):
         info = self._args_to_info(args)
         return info['func']
 
+    @noPosargs
     @permittedKwargs({})
     def target_list(self, args, kwargs):
-        if len(args) > 0:
-            raise InterpreterException('target_list does not take any parameters.')
         return self.held_object.cm_interpreter.target_list()
+
+    @noPosargs
+    @permittedKwargs({})
+    @FeatureNew('CMakeSubproject.found()', '0.53.2')
+    def found_method(self, args, kwargs):
+        return self.held_object is not None
+
 
 class CmakeModule(ExtensionModule):
     cmake_detected = False
