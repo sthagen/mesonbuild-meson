@@ -33,16 +33,27 @@ These are return values of the `get_id` (Compiler family) and
 
 ## Linker ids
 
-These are return values of the `get_linker_id` (Linker family) method in a compiler object.
+These are return values of the `get_linker_id` method in a compiler object.
 
-| Value     | Linker family                              |
-| -----     | ---------------                            |
-| ld.bfd    | GNU Compiler Collection                    |
-| {ld.bfd,lld} | Clang non-Windows                       |
-| link      | MSVC, Clang-cl, clang Windows              |
-| pgi       | Portland/Nvidia PGI                        |
-| {ld.bfd,gold,xild}  | Intel compiler non-Windows       |
-| xilink    | Intel-cl Windows                           |
+| Value      | Linker family                               |
+| -----      | ---------------                             |
+| ld.bfd     | The GNU linker                              | 
+| ld.gold    | The GNU gold linker                         |
+| ld.lld     | The LLVM linker, with the GNU interface     |
+| ld.solaris | Solaris and illumos                         |
+| ld64       | Apple ld64                                  |
+| link       | MSVC linker                                 |
+| lld-link   | The LLVM linker, with the MSVC interface    |
+| xilink     | Used with Intel-cl only, MSVC like          |
+| optlink    | optlink (used with DMD)                     |
+| rlink      | The Renesas linker, used with CCrx only     |
+| armlink    | The ARM linker (arm and armclang compilers) |
+| pgi        | Portland/Nvidia PGI                         |
+| nvlink     | Nvidia Linker used with cuda                |
+
+For languages that don't have separate dynamic linkers such as C# and Java, the
+`get_linker_id` will return the compiler name.
+
 
 ## Script environment variables
 
