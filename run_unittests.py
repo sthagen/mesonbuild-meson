@@ -1274,60 +1274,95 @@ class DataTests(unittest.TestCase):
                 self.assertIn(opt, md)
         self.assertNotIn('b_unknown', md)
 
+    @staticmethod
+    def _get_section_content(name, sections, md):
+        for section in sections:
+            if section and section.group(1) == name:
+                try:
+                    next_section = next(sections)
+                    end = next_section.start()
+                except StopIteration:
+                    end = len(md)
+                # Extract the content for this section
+                return md[section.end():end]
+        raise RuntimeError('Could not find "{}" heading'.format(name))
+
     def test_builtin_options_documented(self):
         '''
         Test that universal options and base options are documented in
         Builtin-Options.md.
         '''
+        from itertools import tee
         md = None
         with open('docs/markdown/Builtin-options.md', encoding='utf-8') as f:
             md = f.read()
         self.assertIsNotNone(md)
 
         found_entries = set()
-        sections = list(re.finditer(r"^## (.+)$", md, re.MULTILINE)) + [None]
-
-        for s1, s2 in zip(sections[:], sections[1:]):
-            if s1.group(1) == "Universal options":
-                # Extract the content for this section
-                end = s2.start() if s2 is not None else len(md)
-                content = md[s1.end():end]
-                subsections = list(re.finditer(r"^### (.+)$", content, re.MULTILINE)) + [None]
-
-                for sub1, sub2 in zip(subsections[:], subsections[1:]):
-                    if sub1.group(1) == "Directories" or sub1.group(1) == "Core options":
-                        # Extract the content for this subsection
-                        sub_end = sub2.start() if sub2 is not None else len(content)
-                        subcontent = content[sub1.end():sub_end]
-                        # Find the list entries
-                        arches = [m.group(1) for m in re.finditer(r"^\| (\w+) .* \|", subcontent, re.MULTILINE)]
-                        # Drop the header
-                        arches = set(arches[1:])
-
-                        self.assertEqual(len(found_entries & arches), 0)
-                        found_entries |= arches
-            break
+        sections = re.finditer(r"^## (.+)$", md, re.MULTILINE)
+        # Extract the content for this section
+        content = self._get_section_content("Universal options", sections, md)
+        subsections = tee(re.finditer(r"^### (.+)$", content, re.MULTILINE))
+        subcontent1 = self._get_section_content("Directories", subsections[0], content)
+        subcontent2 = self._get_section_content("Core options", subsections[1], content)
+        for subcontent in (subcontent1, subcontent2):
+            # Find the option names
+            options = set()
+            # Match either a table row or a table heading separator: | ------ |
+            rows = re.finditer(r"^\|(?: (\w+) .* | *-+ *)\|", subcontent, re.MULTILINE)
+            # Skip the header of the first table
+            next(rows)
+            # Skip the heading separator of the first table
+            next(rows)
+            for m in rows:
+                value = m.group(1)
+                # End when the `buildtype` table starts
+                if value is None:
+                    break
+                options.add(value)
+            self.assertEqual(len(found_entries & options), 0)
+            found_entries |= options
 
         self.assertEqual(found_entries, set([
             *mesonbuild.coredata.builtin_options.keys(),
             *mesonbuild.coredata.builtin_options_per_machine.keys()
         ]))
 
+        # Check that `buildtype` table inside `Core options` matches how
+        # setting of builtin options behaves
+        #
+        # Find all tables inside this subsection
+        tables = re.finditer(r"^\| (\w+) .* \|\n\| *[-|\s]+ *\|$", subcontent2, re.MULTILINE)
+        # Get the table we want using the header of the first column
+        table = self._get_section_content('buildtype', tables, subcontent2)
+        # Get table row data
+        rows = re.finditer(r"^\|(?: (\w+)\s+\| (\w+)\s+\| (\w+) .* | *-+ *)\|", table, re.MULTILINE)
+        env = get_fake_env()
+        for m in rows:
+            buildtype, debug, opt = m.groups()
+            if debug == 'true':
+                debug = True
+            elif debug == 'false':
+                debug = False
+            else:
+                raise RuntimeError('Invalid debug value {!r} in row:\n{}'.format(debug, m.group()))
+            env.coredata.set_builtin_option('buildtype', buildtype)
+            self.assertEqual(env.coredata.builtins['buildtype'].value, buildtype)
+            self.assertEqual(env.coredata.builtins['optimization'].value, opt)
+            self.assertEqual(env.coredata.builtins['debug'].value, debug)
+
     def test_cpu_families_documented(self):
         with open("docs/markdown/Reference-tables.md", encoding='utf-8') as f:
             md = f.read()
         self.assertIsNotNone(md)
 
-        sections = list(re.finditer(r"^## (.+)$", md, re.MULTILINE))
-        for s1, s2 in zip(sections[::2], sections[1::2]):
-            if s1.group(1) == "CPU families":
-                # Extract the content for this section
-                content = md[s1.end():s2.start()]
-                # Find the list entries
-                arches = [m.group(1) for m in re.finditer(r"^\| (\w+) +\|", content, re.MULTILINE)]
-                # Drop the header
-                arches = set(arches[1:])
-                self.assertEqual(arches, set(mesonbuild.environment.known_cpu_families))
+        sections = re.finditer(r"^## (.+)$", md, re.MULTILINE)
+        content = self._get_section_content("CPU families", sections, md)
+        # Find the list entries
+        arches = [m.group(1) for m in re.finditer(r"^\| (\w+) +\|", content, re.MULTILINE)]
+        # Drop the header
+        arches = set(arches[1:])
+        self.assertEqual(arches, set(mesonbuild.environment.known_cpu_families))
 
     def test_markdown_files_in_sitemap(self):
         '''
@@ -4411,6 +4446,21 @@ recommended as it is not supported on some platforms''')
             self.assertEqual(sorted(expected_lines), sorted(out_lines))
         else:
             self.assertEqual(expected_lines, out_lines)
+
+    def test_meson_compile(self):
+        """Test the meson compile command."""
+        prog = 'trivialprog'
+        if is_windows():
+            prog = '{}.exe'.format(prog)
+
+        testdir = os.path.join(self.common_test_dir, '1 trivial')
+        self.init(testdir)
+        self._run([*self.meson_command, 'compile', '-C', self.builddir])
+        # If compile worked then we should get a program
+        self.assertPathExists(os.path.join(self.builddir, prog))
+
+        self._run([*self.meson_command, 'compile', '-C', self.builddir, '--clean'])
+        self.assertPathDoesNotExist(os.path.join(self.builddir, prog))
 
 
 class FailureTests(BasePlatformTests):
