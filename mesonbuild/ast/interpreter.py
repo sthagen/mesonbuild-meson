@@ -35,6 +35,7 @@ from ..mparser import (
     IfClauseNode,
     IndexNode,
     MethodNode,
+    NotNode,
     OrNode,
     PlusAssignmentNode,
     StringNode,
@@ -209,7 +210,7 @@ class AstInterpreter(interpreterbase.InterpreterBase):
         if isinstance(args, ArgumentNode):
             kwargs = {}  # type: T.Dict[T.Union[str, BaseNode], TYPE_nvar]
             for key, val in args.kwargs.items():
-                if isinstance(key, (StringNode, IdNode)):
+                if resolve_key_nodes and isinstance(key, (StringNode, IdNode)):
                     assert isinstance(key.value, str)
                     kwargs[key.value] = val
                 else:
@@ -233,6 +234,10 @@ class AstInterpreter(interpreterbase.InterpreterBase):
     def evaluate_orstatement(self, cur: OrNode) -> bool:
         self.evaluate_statement(cur.left)
         self.evaluate_statement(cur.right)
+        return False
+
+    def evaluate_notstatement(self, cur: NotNode) -> bool:
+        self.evaluate_statement(cur.value)
         return False
 
     def evaluate_foreach(self, node: ForeachClauseNode) -> None:
