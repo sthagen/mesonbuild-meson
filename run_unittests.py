@@ -1466,6 +1466,7 @@ class BasePlatformTests(unittest.TestCase):
         self.framework_test_dir = os.path.join(src_root, 'test cases/frameworks')
         self.unit_test_dir = os.path.join(src_root, 'test cases/unit')
         self.rewrite_test_dir = os.path.join(src_root, 'test cases/rewrite')
+        self.linuxlike_test_dir = os.path.join(src_root, 'test cases/linuxlike')
         # Misc stuff
         self.orig_env = os.environ.copy()
         if self.backend is Backend.ninja:
@@ -3308,6 +3309,12 @@ int main(int argc, char **argv) {
         except EnvironmentException:
             pass
         # FIXME: omitting rust as Windows AppVeyor CI finds Rust but doesn't link correctly
+        if not is_windows():
+            try:
+                env.detect_rust_compiler(MachineChoice.HOST)
+                langs.append('rust')
+            except EnvironmentException:
+                pass
 
         for lang in langs:
             for target_type in ('executable', 'library'):
@@ -3320,10 +3327,15 @@ int main(int argc, char **argv) {
                     self._run(ninja,
                               workdir=os.path.join(tmpdir, 'builddir'))
             # test directory with existing code file
-            if lang in ('c', 'cpp'):
+            if lang in ('c', 'cpp', 'd'):
                 with tempfile.TemporaryDirectory() as tmpdir:
                     with open(os.path.join(tmpdir, 'foo.' + lang), 'w') as f:
                         f.write('int main(void) {}')
+                    self._run(self.meson_command + ['init', '-b'], workdir=tmpdir)
+            elif lang in ('java'):
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    with open(os.path.join(tmpdir, 'Foo.' + lang), 'w') as f:
+                        f.write('public class Foo { public static void main() {} }')
                     self._run(self.meson_command + ['init', '-b'], workdir=tmpdir)
 
     # The test uses mocking and thus requires that
@@ -5769,6 +5781,31 @@ class LinuxlikeTests(BasePlatformTests):
                 break
         self.assertIsInstance(docbook_target, dict)
         self.assertEqual(os.path.basename(t['filename'][0]), 'generated-gdbus-doc-' + os.path.basename(t['target_sources'][0]['sources'][0]))
+
+    def test_introspect_installed(self):
+        testdir = os.path.join(self.linuxlike_test_dir, '7 library versions')
+        self.init(testdir)
+
+        install = self.introspect('--installed')
+        install = {os.path.basename(k): v for k, v in install.items()}
+        self.assertDictEqual(install, {
+            'libmodule.so': '/usr/lib/libmodule.so',
+            'libnoversion.so': '/usr/lib/libnoversion.so',
+            'libonlysoversion.so': '/usr/lib/libonlysoversion.so',
+            'libonlysoversion.so.5': '/usr/lib/libonlysoversion.so.5',
+            'libonlyversion.so': '/usr/lib/libonlyversion.so',
+            'libonlyversion.so.1': '/usr/lib/libonlyversion.so.1',
+            'libonlyversion.so.1.4.5': '/usr/lib/libonlyversion.so.1.4.5',
+            'libsome.so': '/usr/lib/libsome.so',
+            'libsome.so.0': '/usr/lib/libsome.so.0',
+            'libsome.so.1.2.3': '/usr/lib/libsome.so.1.2.3',
+        })
+
+        targets = self.introspect('--targets')
+        for t in targets:
+            if t['name'] != 'some':
+                continue
+            self.assertSetEqual({'/usr/lib/libsome.so', '/usr/lib/libsome.so.0', '/usr/lib/libsome.so.1.2.3'}, set(t['install_filename']))
 
     def test_build_rpath(self):
         if is_cygwin():
