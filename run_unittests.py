@@ -3825,6 +3825,33 @@ recommended as it is not supported on some platforms''')
         self.assertEqual(opts['debug'], True)
         self.assertEqual(opts['optimization'], '0')
 
+        # Command-line parsing of buildtype settings should be the same as
+        # setting with `meson configure`.
+        #
+        # Setting buildtype should set optimization/debug
+        self.new_builddir()
+        self.init(testdir, extra_args=['-Dbuildtype=debugoptimized'])
+        opts = self.get_opts_as_dict()
+        self.assertEqual(opts['debug'], True)
+        self.assertEqual(opts['optimization'], '2')
+        self.assertEqual(opts['buildtype'], 'debugoptimized')
+        # Setting optimization/debug should set buildtype
+        self.new_builddir()
+        self.init(testdir, extra_args=['-Doptimization=2', '-Ddebug=true'])
+        opts = self.get_opts_as_dict()
+        self.assertEqual(opts['debug'], True)
+        self.assertEqual(opts['optimization'], '2')
+        self.assertEqual(opts['buildtype'], 'debugoptimized')
+        # Setting both buildtype and debug on the command-line should work, and
+        # should warn not to do that. Also test that --debug is parsed as -Ddebug=true
+        self.new_builddir()
+        out = self.init(testdir, extra_args=['-Dbuildtype=debugoptimized', '--debug'])
+        self.assertRegex(out, 'Recommend using either.*buildtype.*debug.*redundant')
+        opts = self.get_opts_as_dict()
+        self.assertEqual(opts['debug'], True)
+        self.assertEqual(opts['optimization'], '2')
+        self.assertEqual(opts['buildtype'], 'debugoptimized')
+
     @skipIfNoPkgconfig
     @unittest.skipIf(is_windows(), 'Help needed with fixing this test on windows')
     def test_native_dep_pkgconfig(self):

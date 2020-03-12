@@ -668,7 +668,7 @@ class CoreData:
         return len(self.cross_files) > 0
 
     def strip_build_option_names(self, options):
-        res = {}
+        res = OrderedDict()
         for k, v in options.items():
             if k.startswith('build.'):
                 k = k.split('.', 1)[1]
@@ -718,13 +718,15 @@ class CoreData:
             self.copy_build_options_from_regular_ones()
 
     def set_default_options(self, default_options, subproject, env):
-        # Set defaults first from conf files (cross or native), then
-        # override them as nec as necessary.
-        for k, v in env.paths.host:
-            if v is not None:
-                env.cmd_line_options.setdefault(k, v)
-
-        # Set default options as if they were passed to the command line.
+        # Warn if the user is using two different ways of setting build-type
+        # options that override each other
+        if 'buildtype' in env.cmd_line_options and \
+           ('optimization' in env.cmd_line_options or 'debug' in env.cmd_line_options):
+            mlog.warning('Recommend using either -Dbuildtype or -Doptimization + -Ddebug. '
+                         'Using both is redundant since they override each other. '
+                         'See: https://mesonbuild.com/Builtin-options.html#build-type-options')
+        cmd_line_options = OrderedDict()
+        # Set project default_options as if they were passed to the cmdline.
         # Subprojects can only define default for user options and not yielding
         # builtin option.
         from . import optinterpreter
@@ -734,14 +736,24 @@ class CoreData:
                         and optinterpreter.is_invalid_name(k, log=False):
                     continue
                 k = subproject + ':' + k
-            env.cmd_line_options.setdefault(k, v)
+            cmd_line_options[k] = v
+
+        # Override project default_options using conf files (cross or native)
+        for k, v in env.paths.host:
+            if v is not None:
+                cmd_line_options[k] = v
+
+        # Override all the above defaults using the command-line arguments
+        # actually passed to us
+        cmd_line_options.update(env.cmd_line_options)
+        env.cmd_line_options = cmd_line_options
 
         # Create a subset of cmd_line_options, keeping only options for this
         # subproject. Also take builtin options if it's the main project.
         # Language and backend specific options will be set later when adding
         # languages and setting the backend (builtin options must be set first
         # to know which backend we'll use).
-        options = {}
+        options = OrderedDict()
 
         # Some options default to environment variables if they are
         # unset, set those now. These will either be overwritten
@@ -861,7 +873,7 @@ def write_cmd_line_file(build_dir, options):
     filename = get_cmd_line_file(build_dir)
     config = CmdLineFileParser()
 
-    properties = {}
+    properties = OrderedDict()
     if options.cross_file:
         properties['cross_file'] = options.cross_file
     if options.native_file:
@@ -941,7 +953,7 @@ def register_builtin_arguments(parser):
                         help='Set the value of an option, can be used several times to set multiple options.')
 
 def create_options_dict(options):
-    result = {}
+    result = OrderedDict()
     for o in options:
         try:
             (key, value) = o.split('=', 1)
@@ -996,9 +1008,10 @@ class BuiltinOption(T.Generic[_T, _U]):
         return self.opt_type(self.description, **keywords)
 
     def _argparse_action(self) -> T.Optional[str]:
-        if self.default is True:
-            return 'store_false'
-        elif self.default is False:
+        # If the type is a boolean, the presence of the argument in --foo form
+        # is to enable it. Disabling happens by using -Dfoo=false, which is
+        # parsed under `args.projectoptions` and does not hit this codepath.
+        if isinstance(self.default, bool):
             return 'store_true'
         return None
 
@@ -1026,7 +1039,7 @@ class BuiltinOption(T.Generic[_T, _U]):
         return self.default
 
     def add_to_argparse(self, name: str, parser: argparse.ArgumentParser, prefix: str, help_suffix: str) -> None:
-        kwargs = {}
+        kwargs = OrderedDict()
 
         c = self._argparse_choices()
         b = self._argparse_action()
