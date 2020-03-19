@@ -2013,7 +2013,7 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
             # own target build dir.
             if not isinstance(i, (build.CustomTarget, build.CustomTargetIndex)):
                 continue
-            idir = self.get_target_dir(i)
+            idir = os.path.normpath(self.get_target_dir(i))
             if not idir:
                 idir = '.'
             if idir not in custom_target_include_dirs:
@@ -2027,10 +2027,10 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
     def generate_inc_dir(self, compiler, d, basedir, is_system):
         # Avoid superfluous '/.' at the end of paths when d is '.'
         if d not in ('', '.'):
-            expdir = os.path.join(basedir, d)
+            expdir = os.path.normpath(os.path.join(basedir, d))
         else:
             expdir = basedir
-        srctreedir = os.path.join(self.build_to_src, expdir)
+        srctreedir = os.path.normpath(os.path.join(self.build_to_src, expdir))
         sargs = compiler.get_include_args(srctreedir, is_system)
         # There may be include dirs where a build directory has not been
         # created for some source dir. For example if someone does this:
