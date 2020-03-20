@@ -173,6 +173,10 @@ it automatically.
     cmake_dep = dependency('ZLIB', method : 'cmake', modules : ['ZLIB::ZLIB'])
 ```
 
+Support for adding additional `COMPONENTS` for the CMake `find_package` lookup
+is provided with the `components` kwarg (*introduced in 0.54.0*). All specified
+componets will be passed directly to `find_package(COMPONENTS)`.
+
 It is also possible to reuse existing `Find<name>.cmake` files with the
 `cmake_module_path` property. Using this property is equivalent to setting the
 `CMAKE_MODULE_PATH` variable in CMake. The path(s) given to `cmake_module_path`
@@ -407,7 +411,13 @@ not provide them, it will search for the standard wrapper executables,
 `mpic`, `mpicxx`, `mpic++`, `mpifort`, `mpif90`, `mpif77`. If these
 are not in your path, they can be specified by setting the standard
 environment variables `MPICC`, `MPICXX`, `MPIFC`, `MPIF90`, or
-`MPIF77`, during configuration.
+`MPIF77`, during configuration. It will also try to use the Microsoft
+implementation on windows via the `system` method.
+
+`method` may be `auto`, `config-tool`, `pkg-config` or `system`.
+
+*New in 0.54.0* The `config-tool` and `system` method values. Previous
+versions would always try `pkg-config`, then `config-tool`, then `system`.
 
 ## NetCDF
 

@@ -384,19 +384,32 @@ class NotFoundDependency(Dependency):
 
 class ConfigToolDependency(ExternalDependency):
 
-    """Class representing dependencies found using a config tool."""
+    """Class representing dependencies found using a config tool.
+
+    Takes the following extra keys in kwargs that it uses internally:
+    :tools List[str]: A list of tool names to use
+    :version_arg str: The argument to pass to the tool to get it's version
+    :returncode_value int: The value of the correct returncode
+        Because some tools are stupid and don't return 0
+    """
 
     tools = None
     tool_name = None
+    version_arg = '--version'
     __strip_version = re.compile(r'^[0-9][0-9.]+')
 
     def __init__(self, name, environment, kwargs, language: T.Optional[str] = None):
         super().__init__('config-tool', environment, kwargs, language=language)
         self.name = name
+        # You may want to overwrite the class version in some cases
         self.tools = listify(kwargs.get('tools', self.tools))
+        if not self.tool_name:
+            self.tool_name = self.tools[0]
+        if 'version_arg' in kwargs:
+            self.version_arg = kwargs['version_arg']
 
         req_version = kwargs.get('version', None)
-        tool, version = self.find_config(req_version)
+        tool, version = self.find_config(req_version, kwargs.get('returncode_value', 0))
         self.config = tool
         self.is_found = self.report_config(version, req_version)
         if not self.is_found:
@@ -415,7 +428,7 @@ class ConfigToolDependency(ExternalDependency):
             return m.group(0).rstrip('.')
         return version
 
-    def find_config(self, versions=None):
+    def find_config(self, versions=None, returncode: int = 0):
         """Helper method that searches for config tool binaries in PATH and
         returns the one that best matches the given version requirements.
         """
@@ -444,10 +457,10 @@ class ConfigToolDependency(ExternalDependency):
                     continue
                 tool = potential_bin.get_command()
             try:
-                p, out = Popen_safe(tool + ['--version'])[:2]
+                p, out = Popen_safe(tool + [self.version_arg])[:2]
             except (FileNotFoundError, PermissionError):
                 continue
-            if p.returncode != 0:
+            if p.returncode != returncode:
                 continue
 
             out = self._sanitize_version(out.strip())
@@ -995,12 +1008,22 @@ class CMakeDependency(ExternalDependency):
     def _extra_cmake_opts(self) -> T.List[str]:
         return []
 
-    def _map_module_list(self, modules: T.List[T.Tuple[str, bool]]) -> T.List[T.Tuple[str, bool]]:
+    def _map_module_list(self, modules: T.List[T.Tuple[str, bool]], components: T.List[T.Tuple[str, bool]]) -> T.List[T.Tuple[str, bool]]:
         # Map the input module list to something else
         # This function will only be executed AFTER the initial CMake
         # interpreter pass has completed. Thus variables defined in the
         # CMakeLists.txt can be accessed here.
+        #
+        # Both the modules and components inputs contain the original lists.
         return modules
+
+    def _map_component_list(self, modules: T.List[T.Tuple[str, bool]], components: T.List[T.Tuple[str, bool]]) -> T.List[T.Tuple[str, bool]]:
+        # Map the input components list to something else. This
+        # function will be executed BEFORE the initial CMake interpreter
+        # pass. Thus variables from the CMakeLists.txt can NOT be accessed.
+        #
+        # Both the modules and components inputs contain the original lists.
+        return components
 
     def _original_module_name(self, module: str) -> str:
         # Reverse the module mapping done by _map_module_list for
@@ -1065,6 +1088,7 @@ class CMakeDependency(ExternalDependency):
         if self.cmakeinfo is None:
             raise self._gen_exception('Unable to obtain CMake system information')
 
+        components = [(x, True) for x in stringlistify(extract_as_list(kwargs, 'components'))]
         modules = [(x, True) for x in stringlistify(extract_as_list(kwargs, 'modules'))]
         modules += [(x, False) for x in stringlistify(extract_as_list(kwargs, 'optional_modules'))]
         cm_path = stringlistify(extract_as_list(kwargs, 'cmake_module_path'))
@@ -1086,7 +1110,7 @@ class CMakeDependency(ExternalDependency):
         if not self._preliminary_find_check(name, cm_path, pref_path, environment.machines[self.for_machine]):
             mlog.debug('Preliminary CMake check failed. Aborting.')
             return
-        self._detect_dep(name, modules, cm_args)
+        self._detect_dep(name, modules, components, cm_args)
 
     def __repr__(self):
         s = '<{0} {1}: {2} {3}>'
@@ -1264,7 +1288,7 @@ class CMakeDependency(ExternalDependency):
 
         return False
 
-    def _detect_dep(self, name: str, modules: T.List[T.Tuple[str, bool]], args: T.List[str]):
+    def _detect_dep(self, name: str, modules: T.List[T.Tuple[str, bool]], components: T.List[T.Tuple[str, bool]], args: T.List[str]):
         # Detect a dependency with CMake using the '--find-package' mode
         # and the trace output (stderr)
         #
@@ -1282,13 +1306,21 @@ class CMakeDependency(ExternalDependency):
             gen_list += [CMakeDependency.class_working_generator]
         gen_list += CMakeDependency.class_cmake_generators
 
+        # Map the components
+        comp_mapped = self._map_component_list(modules, components)
+
         for i in gen_list:
             mlog.debug('Try CMake generator: {}'.format(i if len(i) > 0 else 'auto'))
 
             # Prepare options
-            cmake_opts = ['-DNAME={}'.format(name), '-DARCHS={}'.format(';'.join(self.cmakeinfo['archs']))] + args + ['.']
+            cmake_opts = []
+            cmake_opts += ['-DNAME={}'.format(name)]
+            cmake_opts += ['-DARCHS={}'.format(';'.join(self.cmakeinfo['archs']))]
+            cmake_opts += ['-DCOMPS={}'.format(';'.join([x[0] for x in comp_mapped]))]
+            cmake_opts += args
             cmake_opts += self.traceparser.trace_args()
             cmake_opts += self._extra_cmake_opts()
+            cmake_opts += ['.']
             if len(i) > 0:
                 cmake_opts = ['-G', i] + cmake_opts
 
@@ -1334,7 +1366,7 @@ class CMakeDependency(ExternalDependency):
 
         # Post-process module list. Used in derived classes to modify the
         # module list (append prepend a string, etc.).
-        modules = self._map_module_list(modules)
+        modules = self._map_module_list(modules, components)
         autodetected_module_list = False
 
         # Try guessing a CMake target if none is provided

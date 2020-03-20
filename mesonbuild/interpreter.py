@@ -2159,6 +2159,7 @@ permitted_kwargs = {'add_global_arguments': {'language', 'native'},
                                    'main',
                                    'method',
                                    'modules',
+                                   'components',
                                    'cmake_module_path',
                                    'optional_modules',
                                    'native',
@@ -2254,7 +2255,9 @@ class Interpreter(InterpreterBase):
         self.build_def_files = [os.path.join(self.subdir, environment.build_filename)]
         if not mock:
             self.parse_project()
+        self._redetect_machines()
 
+    def _redetect_machines(self):
         # Re-initialize machine descriptions. We can do a better job now because we
         # have the compilers needed to gain more knowledge, so wipe out old
         # inference and start over.
@@ -3074,6 +3077,7 @@ external dependencies (including libraries) must go to "dependencies".''')
         success = self.add_languages_for(args, required, for_machine)
         if not self.coredata.is_cross_build():
             self.coredata.copy_build_options_from_regular_ones()
+        self._redetect_machines()
         return success
 
     def add_languages_for(self, args, required, for_machine: MachineChoice):
@@ -3376,6 +3380,7 @@ external dependencies (including libraries) must go to "dependencies".''')
         elif name == 'openmp':
             FeatureNew('OpenMP Dependency', '0.46.0').use(self.subproject)
 
+    @FeatureNewKwargs('dependency', '0.54.0', ['components'])
     @FeatureNewKwargs('dependency', '0.52.0', ['include_type'])
     @FeatureNewKwargs('dependency', '0.50.0', ['not_found_message', 'cmake_module_path', 'cmake_args'])
     @FeatureNewKwargs('dependency', '0.49.0', ['disabler'])

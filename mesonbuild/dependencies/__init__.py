@@ -22,8 +22,8 @@ from .base import (  # noqa: F401
     DependencyFactory)
 from .dev import ValgrindDependency, gmock_factory, gtest_factory, llvm_factory, zlib_factory
 from .coarrays import coarray_factory
-from .mpi import MPIDependency
-from .scalapack import ScalapackDependency
+from .mpi import mpi_factory
+from .scalapack import scalapack_factory
 from .misc import (
     BlocksDependency, OpenMPDependency, cups_factory, curses_factory, gpgme_factory,
     libgcrypt_factory, libwmf_factory, netcdf_factory, pcap_factory, python3_factory,
@@ -52,8 +52,8 @@ packages.update({
     # per-file
     'coarray': coarray_factory,
     'hdf5': HDF5Dependency,
-    'mpi': MPIDependency,
-    'scalapack': ScalapackDependency,
+    'mpi': mpi_factory,
+    'scalapack': scalapack_factory,
 
     # From misc:
     'blocks': BlocksDependency,
