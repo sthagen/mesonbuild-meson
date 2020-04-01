@@ -18,7 +18,10 @@ import itertools
 import typing as T
 from functools import lru_cache
 
-from ..linkers import StaticLinker, GnuLikeDynamicLinkerMixin, SolarisDynamicLinker
+from ..linkers import (
+    GnuLikeDynamicLinkerMixin, LinkerEnvVarsMixin, SolarisDynamicLinker,
+    StaticLinker,
+)
 from .. import coredata
 from .. import mlog
 from .. import mesonlib
@@ -27,7 +30,7 @@ from ..mesonlib import (
     Popen_safe, split_args
 )
 from ..envconfig import (
-    Properties,
+    Properties, get_env_var
 )
 
 if T.TYPE_CHECKING:
@@ -79,7 +82,9 @@ clink_suffixes += ('h', 'll', 's')
 all_suffixes = set(itertools.chain(*lang_suffixes.values(), clink_suffixes))
 
 # Languages that should use LDFLAGS arguments when linking.
-languages_using_ldflags = ('objcpp', 'cpp', 'objc', 'c', 'fortran', 'd', 'cuda')
+languages_using_ldflags = {'objcpp', 'cpp', 'objc', 'c', 'fortran', 'd', 'cuda'}
+# Languages that should use CPPFLAGS arguments when linking.
+languages_using_cppflags = {'c', 'cpp', 'objc', 'objcpp'}
 soregex = re.compile(r'.*\.so(\.[0-9]+)?(\.[0-9]+)?(\.[0-9]+)?$')
 
 # Environment variables that each lang uses.
@@ -563,6 +568,9 @@ class CompilerArgs(collections.abc.MutableSequence):
             return True
         return False
 
+    def need_to_split_linker_args(self):
+        return isinstance(self.compiler, Compiler) and self.compiler.get_language() == 'd'
+
     def to_native(self, copy: bool = False) -> T.List[str]:
         # Check if we need to add --start/end-group for circular dependencies
         # between static libraries, and for recursively searching for symbols
@@ -572,6 +580,10 @@ class CompilerArgs(collections.abc.MutableSequence):
             new = self.copy()
         else:
             new = self
+        # To proxy these arguments with D you need to split the
+        # arguments, thus you get `-L=-soname -L=lib.so` we don't
+        # want to put the lib in a link -roup
+        split_linker_args = self.need_to_split_linker_args()
         # This covers all ld.bfd, ld.gold, ld.gold, and xild on Linux, which
         # all act like (or are) gnu ld
         # TODO: this could probably be added to the DynamicLinker instead
@@ -585,10 +597,7 @@ class CompilerArgs(collections.abc.MutableSequence):
                 if is_soname:
                     is_soname = False
                     continue
-                elif '-soname' in each:
-                    # To proxy these arguments with D you need to split the
-                    # arguments, thus you get `-L=-soname -L=lib.so` we don't
-                    # want to put the lib in a link -roup
+                elif split_linker_args and '-soname' in each:
                     is_soname = True
                     continue
                 if not each.startswith(('-Wl,-l', '-l')) and not each.endswith('.a') and \
@@ -855,8 +864,10 @@ class Compiler:
         """
         return []
 
-    def get_linker_args_from_envvars(self) -> T.List[str]:
-        return self.linker.get_args_from_envvars()
+    def get_linker_args_from_envvars(self,
+                                     for_machine: MachineChoice,
+                                     is_cross: bool) -> T.List[str]:
+        return self.linker.get_args_from_envvars(for_machine, is_cross)
 
     def get_options(self) -> T.Dict[str, coredata.UserOption]:
         return {}
@@ -948,11 +959,14 @@ class Compiler:
             extra_args = []
         try:
             with tempfile.TemporaryDirectory(dir=temp_dir) as tmpdirname:
+                no_ccache = False
                 if isinstance(code, str):
                     srcname = os.path.join(tmpdirname,
                                            'testfile.' + self.default_suffix)
                     with open(srcname, 'w') as ofile:
                         ofile.write(code)
+                    # ccache would result in a cache miss
+                    no_ccache = True
                 elif isinstance(code, mesonlib.File):
                     srcname = code.fname
 
@@ -976,6 +990,8 @@ class Compiler:
                 mlog.debug('Code:\n', code)
                 os_env = os.environ.copy()
                 os_env['LC_ALL'] = 'C'
+                if no_ccache:
+                    os_env['CCACHE_DISABLE'] = '1'
                 p, p.stdo, p.stde = Popen_safe(commands, cwd=tmpdirname, env=os_env)
                 mlog.debug('Compiler stdout:\n', p.stdo)
                 mlog.debug('Compiler stderr:\n', p.stde)
@@ -1208,37 +1224,27 @@ def get_largefile_args(compiler):
     return []
 
 
-def get_args_from_envvars(lang: str, use_linker_args: bool) -> T.Tuple[T.List[str], T.List[str]]:
+def get_args_from_envvars(lang: str,
+                          for_machine: MachineChoice,
+                          is_cross: bool,
+                          use_linker_args: bool) -> T.Tuple[T.List[str], T.List[str]]:
     """
     Returns a tuple of (compile_flags, link_flags) for the specified language
     from the inherited environment
     """
-    def log_var(var, val: T.Optional[str]):
-        if val:
-            mlog.log('Appending {} from environment: {!r}'.format(var, val))
-        else:
-            mlog.debug('No {} in the environment, not changing global flags.'.format(var))
-
     if lang not in cflags_mapping:
         return [], []
 
     compile_flags = []  # type: T.List[str]
     link_flags = []     # type: T.List[str]
 
-    env_compile_flags = os.environ.get(cflags_mapping[lang])
-    log_var(cflags_mapping[lang], env_compile_flags)
+    env_compile_flags = get_env_var(for_machine, is_cross, cflags_mapping[lang])
     if env_compile_flags is not None:
         compile_flags += split_args(env_compile_flags)
 
     # Link flags (same for all languages)
     if lang in languages_using_ldflags:
-        # This is duplicated between the linkers, but I'm not sure how else
-        # to handle this
-        env_link_flags = split_args(os.environ.get('LDFLAGS', ''))
-    else:
-        env_link_flags = []
-    log_var('LDFLAGS', env_link_flags)
-    link_flags += env_link_flags
+        link_flags += LinkerEnvVarsMixin.get_args_from_envvars(for_machine, is_cross)
     if use_linker_args:
         # When the compiler is used as a wrapper around the linker (such as
         # with GCC and Clang), the compile flags can be needed while linking
@@ -1247,16 +1253,18 @@ def get_args_from_envvars(lang: str, use_linker_args: bool) -> T.Tuple[T.List[st
         link_flags = compile_flags + link_flags
 
     # Pre-processor flags for certain languages
-    if lang in {'c', 'cpp', 'objc', 'objcpp'}:
-        env_preproc_flags = os.environ.get('CPPFLAGS')
-        log_var('CPPFLAGS', env_preproc_flags)
+    if lang in languages_using_cppflags:
+        env_preproc_flags = get_env_var(for_machine, is_cross, 'CPPFLAGS')
         if env_preproc_flags is not None:
             compile_flags += split_args(env_preproc_flags)
 
     return compile_flags, link_flags
 
 
-def get_global_options(lang: str, comp: T.Type[Compiler],
+def get_global_options(lang: str,
+                       comp: T.Type[Compiler],
+                       for_machine: MachineChoice,
+                       is_cross: bool,
                        properties: Properties) -> T.Dict[str, coredata.UserOption]:
     """Retreive options that apply to all compilers for a given language."""
     description = 'Extra arguments passed to the {}'.format(lang)
@@ -1269,13 +1277,12 @@ def get_global_options(lang: str, comp: T.Type[Compiler],
             [], split_args=True, user_input=True, allow_dups=True),
     }
 
-    if properties.fallback:
-        # Get from env vars.
-        # XXX: True here is a hack
-        compile_args, link_args = get_args_from_envvars(lang, comp.INVOKES_LINKER)
-    else:
-        compile_args = []
-        link_args = []
+    # Get from env vars.
+    compile_args, link_args = get_args_from_envvars(
+        lang,
+        for_machine,
+        is_cross,
+        comp.INVOKES_LINKER)
 
     for k, o in opts.items():
         if k in properties:

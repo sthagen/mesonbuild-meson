@@ -101,6 +101,11 @@ class BoostIncludeDir():
 
 @functools.total_ordering
 class BoostLibraryFile():
+    # Python libraries are special because of the included
+    # minor version in the module name.
+    boost_python_libs = ['boost_python', 'boost_numpy']
+    reg_python_mod_split = re.compile(r'(boost_[a-zA-Z]+)([0-9]*)')
+
     reg_abi_tag = re.compile(r'^s?g?y?d?p?n?$')
     reg_ver_tag = re.compile(r'^[0-9_]+$')
 
@@ -218,6 +223,33 @@ class BoostLibraryFile():
     def is_boost(self) -> bool:
         return any([self.name.startswith(x) for x in ['libboost_', 'boost_']])
 
+    def is_python_lib(self) -> bool:
+        return any([self.mod_name.startswith(x) for x in BoostLibraryFile.boost_python_libs])
+
+    def mod_name_matches(self, mod_name: str) -> bool:
+        if self.mod_name == mod_name:
+            return True
+        if not self.is_python_lib():
+            return False
+
+        m_cur = BoostLibraryFile.reg_python_mod_split.match(self.mod_name)
+        m_arg = BoostLibraryFile.reg_python_mod_split.match(mod_name)
+
+        if not m_cur or not m_arg:
+            return False
+
+        if m_cur.group(1) != m_arg.group(1):
+            return False
+
+        cur_vers = m_cur.group(2)
+        arg_vers = m_arg.group(2)
+
+        # Always assume python 2 if nothing is specified
+        if not arg_vers:
+            arg_vers = '2'
+
+        return cur_vers.startswith(arg_vers)
+
     def version_matches(self, version_lib: str) -> bool:
         # If no version tag is present, assume that it fits
         if not self.version_lib or not version_lib:
@@ -278,6 +310,9 @@ class BoostDependency(ExternalDependency):
                 raise DependencyException('Boost module argument is not a string.')
             if i.startswith('boost_'):
                 raise DependencyException('Boost modules must be passed without the boost_ prefix')
+
+        self.modules_found = []    # type: T.List[str]
+        self.modules_missing = []  # type: T.List[str]
 
         # Do we need threads?
         if 'thread' in self.modules:
@@ -358,7 +393,7 @@ class BoostDependency(ExternalDependency):
             for mod in modules:
                 found = False
                 for l in f_libs:
-                    if l.mod_name == mod:
+                    if l.mod_name_matches(mod):
                         selected_modules += [l]
                         found = True
                         break
@@ -378,6 +413,13 @@ class BoostDependency(ExternalDependency):
 
             comp_args = list(set(comp_args))
             link_args = list(set(link_args))
+
+            self.modules_found = [x.mod_name for x in selected_modules]
+            self.modules_found = [x[6:] for x in self.modules_found]
+            self.modules_found = sorted(set(self.modules_found))
+            self.modules_missing = not_found
+            self.modules_missing = [x[6:] for x in self.modules_missing]
+            self.modules_missing = sorted(set(self.modules_missing))
 
             # if we found all modules we are done
             if not not_found:
@@ -526,10 +568,14 @@ class BoostDependency(ExternalDependency):
         return roots
 
     def log_details(self) -> str:
-        modules = sorted(set(self.modules))
-        if modules:
-            return 'modules: ' + ', '.join(modules)
-        return ''
+        res = ''
+        if self.modules_found:
+            res += 'found: ' + ', '.join(self.modules_found)
+        if self.modules_missing:
+            if res:
+                res += ' | '
+            res += 'missing: ' + ', '.join(self.modules_missing)
+        return res
 
     def log_info(self) -> str:
         if self.boost_root:

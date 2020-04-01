@@ -1,4 +1,4 @@
-# Copyright 2012-2019 The Meson development team
+# Copyrighs 2012-2019 The Meson development team
 
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -22,6 +22,7 @@ from .mesonlib import (
     MesonException, MachineChoice, PerMachine, OrderedSet,
     default_libdir, default_libexecdir, default_prefix, split_args
 )
+from .envconfig import get_env_var_pair
 from .wrap import WrapMode
 import ast
 import argparse
@@ -37,7 +38,7 @@ if T.TYPE_CHECKING:
 
     OptionDictType = T.Dict[str, 'UserOption[T.Any]']
 
-version = '0.53.999'
+version = '0.54.999'
 backendlist = ['ninja', 'vs', 'vs2010', 'vs2015', 'vs2017', 'vs2019', 'xcode']
 
 default_yielding = False
@@ -758,20 +759,29 @@ class CoreData:
         # Some options default to environment variables if they are
         # unset, set those now. These will either be overwritten
         # below, or they won't. These should only be set on the first run.
-        p_env = os.environ.get('PKG_CONFIG_PATH')
-        if p_env:
-            # PKG_CONFIG_PATH may contain duplicates, which must be
-            # removed, else a duplicates-in-array-option warning arises.
-            p_list = list(OrderedSet(p_env.split(':')))
-            if env.first_invocation:
-                options['pkg_config_path'] = p_list
-            elif options.get('pkg_config_path', []) != p_list:
-                mlog.warning(
-                    'PKG_CONFIG_PATH environment variable has changed '
-                    'between configurations, meson ignores this. '
-                    'Use -Dpkg_config_path to change pkg-config search '
-                    'path instead.'
-                )
+        for for_machine in MachineChoice:
+            p_env_pair = get_env_var_pair(for_machine, self.is_cross_build(), 'PKG_CONFIG_PATH')
+            if p_env_pair is not None:
+                p_env_var, p_env = p_env_pair
+
+                # PKG_CONFIG_PATH may contain duplicates, which must be
+                # removed, else a duplicates-in-array-option warning arises.
+                p_list = list(OrderedSet(p_env.split(':')))
+
+                key = 'pkg_config_path'
+                if for_machine == MachineChoice.BUILD:
+                    key = 'build.' + key
+
+                if env.first_invocation:
+                    options[key] = p_list
+                elif options.get(key, []) != p_list:
+                    mlog.warning(
+                        p_env_var +
+                        ' environment variable has changed '
+                        'between configurations, meson ignores this. '
+                        'Use -Dpkg_config_path to change pkg-config search '
+                        'path instead.'
+                    )
 
         for k, v in env.cmd_line_options.items():
             if subproject:
@@ -794,7 +804,12 @@ class CoreData:
         from .compilers import compilers
 
         optprefix = lang + '_'
-        for k, o in compilers.get_global_options(lang, comp, env.properties[for_machine]).items():
+        for k, o in compilers.get_global_options(
+                lang,
+                comp,
+                for_machine,
+                env.is_cross_build(),
+                env.properties[for_machine]).items():
             if not k.startswith(optprefix):
                 raise MesonException('Internal error, %s has incorrect prefix.' % k)
             # prefixed compiler options affect just this machine
@@ -1089,7 +1104,7 @@ builtin_options = OrderedDict([
     ('unity',           BuiltinOption(UserComboOption, 'Unity build', 'off', choices=['on', 'off', 'subprojects'])),
     ('unity_size',      BuiltinOption(UserIntegerOption, 'Unity block size', (2, None, 4))),
     ('warning_level',   BuiltinOption(UserComboOption, 'Compiler warning level to use', '1', choices=['0', '1', '2', '3'])),
-    ('werror',          BuiltinOption(UserBooleanOption, 'Treat warnings as errors', False)),
+    ('werror',          BuiltinOption(UserBooleanOption, 'Treat warnings as errors', False, yielding=False)),
     ('wrap_mode',       BuiltinOption(UserComboOption, 'Wrap mode', 'default', choices=['default', 'nofallback', 'nodownload', 'forcefallback'])),
 ])
 

@@ -179,7 +179,7 @@ class Backend:
         if option_name in target.option_overrides:
             override = target.option_overrides[option_name]
             return self.environment.coredata.validate_option_value(option_name, override)
-        return self.environment.coredata.get_builtin_option(option_name)
+        return self.environment.coredata.get_builtin_option(option_name, target.subproject)
 
     def get_target_filename_for_linking(self, target):
         # On some platforms (msvc for instance), the file that is used for
@@ -1044,7 +1044,7 @@ class Backend:
             subprocess.check_call(cmd, env=child_env)
 
     def create_install_data(self):
-        strip_bin = self.environment.binaries.host.lookup_entry('strip')
+        strip_bin = self.environment.lookup_binary_entry(MachineChoice.HOST, 'strip')
         if strip_bin is None:
             if self.environment.is_cross_build():
                 mlog.warning('Cross file does not specify strip binary, result will not be stripped.')

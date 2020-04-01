@@ -39,6 +39,8 @@ def add_arguments(parser):
                         help='Comma separated list of archive types to create.')
     parser.add_argument('--include-subprojects', action='store_true',
                         help='Include source code of subprojects that have been used for the build.')
+    parser.add_argument('--no-tests', action='store_true',
+                        help='Do not build and test generated packages.')
 
 
 def create_hash(fname):
@@ -47,6 +49,7 @@ def create_hash(fname):
     m.update(open(fname, 'rb').read())
     with open(hashname, 'w') as f:
         f.write('{} {}\n'.format(m.hexdigest(), os.path.basename(fname)))
+    print(os.path.relpath(fname), m.hexdigest())
 
 
 def del_gitfiles(dirname):
@@ -272,8 +275,10 @@ def run(options):
         return 1
     if names is None:
         return 1
-    # Check only one.
-    rc = check_dist(names[0], meson_command, extra_meson_args, bld_root, priv_dir)
+    rc = 0
+    if not options.no_tests:
+        # Check only one.
+        rc = check_dist(names[0], meson_command, extra_meson_args, bld_root, priv_dir)
     if rc == 0:
         for name in names:
             create_hash(name)

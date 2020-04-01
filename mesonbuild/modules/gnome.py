@@ -227,7 +227,10 @@ class GnomeModule(ExtensionModule):
         for source_dir in source_dirs:
             cmd += ['--sourcedir', os.path.join(state.subdir, source_dir)]
 
-        pc, stdout, stderr = Popen_safe(cmd, cwd=state.environment.get_source_dir())
+        try:
+            pc, stdout, stderr = Popen_safe(cmd, cwd=state.environment.get_source_dir())
+        except (FileNotFoundError, PermissionError):
+            raise MesonException('Could not execute glib-compile-resources.')
         if pc.returncode != 0:
             m = 'glib-compile-resources failed to get dependencies for {}:\n{}'
             mlog.warning(m.format(cmd[1], stderr))
@@ -918,7 +921,7 @@ This will become a hard error in the future.''')
                       'fixxref_args', 'html_args', 'html_assets', 'content_files',
                       'mkdb_args', 'ignore_headers', 'include_directories',
                       'namespace', 'mode', 'expand_content_files', 'module_version',
-                      'c_args'})
+                      'c_args', 'check'})
     def gtkdoc(self, state, args, kwargs):
         if len(args) != 1:
             raise MesonException('Gtkdoc must have one positional argument.')
