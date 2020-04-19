@@ -62,7 +62,7 @@ from mesonbuild.environment import detect_ninja
 from mesonbuild.mesonlib import MesonException, EnvironmentException
 from mesonbuild.dependencies import PkgConfigDependency, ExternalProgram
 import mesonbuild.dependencies.base
-from mesonbuild.build import Target
+from mesonbuild.build import Target, ConfigurationData
 import mesonbuild.modules.pkgconfig
 
 from mesonbuild.mtest import TAPParser, TestResult
@@ -1870,6 +1870,54 @@ class AllPlatformTests(BasePlatformTests):
         self.assertEqual(conf_file('@VAR@\n@VAR@\n', confdata), 'foo\nfoo\n')
         self.assertEqual(conf_file('@VAR@\r\n@VAR@\r\n', confdata), 'foo\r\nfoo\r\n')
 
+    def test_do_conf_file_by_format(self):
+        def conf_str(in_data, confdata, vformat):
+            (result, missing_variables, confdata_useless) = mesonbuild.mesonlib.do_conf_str(in_data, confdata, variable_format = vformat)
+            return '\n'.join(result)
+
+        def check_formats (confdata, result):
+          self.assertEqual(conf_str(['#mesondefine VAR'], confdata, 'meson'),result)
+          self.assertEqual(conf_str(['#cmakedefine VAR ${VAR}'], confdata, 'cmake'),result)
+          self.assertEqual(conf_str(['#cmakedefine VAR @VAR@'], confdata, 'cmake@'),result)
+
+        confdata = ConfigurationData()
+        # Key error as they do not exists
+        check_formats(confdata, '/* #undef VAR */\n')
+
+        # Check boolean
+        confdata.values = {'VAR': (False,'description')}
+        check_formats(confdata, '#undef VAR\n')
+        confdata.values = {'VAR': (True,'description')}
+        check_formats(confdata, '#define VAR\n')
+
+        # Check string
+        confdata.values = {'VAR': ('value','description')}
+        check_formats(confdata, '#define VAR value\n')
+
+        # Check integer
+        confdata.values = {'VAR': (10,'description')}
+        check_formats(confdata, '#define VAR 10\n')
+
+        # Check multiple string with cmake formats
+        confdata.values = {'VAR': ('value','description')}
+        self.assertEqual(conf_str(['#cmakedefine VAR xxx @VAR@ yyy @VAR@'], confdata, 'cmake@'),'#define VAR xxx value yyy value\n')
+        self.assertEqual(conf_str(['#define VAR xxx @VAR@ yyy @VAR@'], confdata, 'cmake@'),'#define VAR xxx value yyy value')
+        self.assertEqual(conf_str(['#cmakedefine VAR xxx ${VAR} yyy ${VAR}'], confdata, 'cmake'),'#define VAR xxx value yyy value\n')
+        self.assertEqual(conf_str(['#define VAR xxx ${VAR} yyy ${VAR}'], confdata, 'cmake'),'#define VAR xxx value yyy value')
+
+        # Handles meson format exceptions
+        #   Unknown format
+        self.assertRaises(mesonbuild.mesonlib.MesonException, conf_str,['#mesondefine VAR xxx'], confdata, 'unknown_format')
+        #   More than 2 params in mesondefine
+        self.assertRaises(mesonbuild.mesonlib.MesonException, conf_str,['#mesondefine VAR xxx'], confdata, 'meson')
+        #   Mismatched line with format
+        self.assertRaises(mesonbuild.mesonlib.MesonException, conf_str,['#cmakedefine VAR'], confdata, 'meson')
+        self.assertRaises(mesonbuild.mesonlib.MesonException, conf_str,['#mesondefine VAR'], confdata, 'cmake')
+        self.assertRaises(mesonbuild.mesonlib.MesonException, conf_str,['#mesondefine VAR'], confdata, 'cmake@')
+        #   Dict value in confdata
+        confdata.values = {'VAR': (['value'],'description')}
+        self.assertRaises(mesonbuild.mesonlib.MesonException, conf_str,['#mesondefine VAR'], confdata, 'meson')
+
     def test_absolute_prefix_libdir(self):
         '''
         Tests that setting absolute paths for --prefix and --libdir work. Can't
@@ -3237,8 +3285,8 @@ int main(int argc, char **argv) {
             ('10 out of bounds', 'meson.build'),
             ('18 wrong plusassign', 'meson.build'),
             ('61 bad option argument', 'meson_options.txt'),
-            ('100 subdir parse error', os.path.join('subdir', 'meson.build')),
-            ('101 invalid option file', 'meson_options.txt'),
+            ('102 subdir parse error', os.path.join('subdir', 'meson.build')),
+            ('103 invalid option file', 'meson_options.txt'),
         ]:
             tdir = os.path.join(self.src_root, 'test cases', 'failing', t)
 
@@ -4514,6 +4562,34 @@ recommended as it is not supported on some platforms''')
         self._run([*self.meson_command, 'compile', '-C', self.builddir, '--clean'])
         self.assertPathDoesNotExist(os.path.join(self.builddir, prog))
 
+    def test_spurious_reconfigure_built_dep_file(self):
+        testdir = os.path.join(self.unit_test_dir, '74 dep files')
+
+        # Regression test: Spurious reconfigure was happening when build
+        # directory is inside source directory.
+        # See https://gitlab.freedesktop.org/gstreamer/gst-build/-/issues/85.
+        srcdir = os.path.join(self.builddir, 'srctree')
+        shutil.copytree(testdir, srcdir)
+        builddir = os.path.join(srcdir, '_build')
+        self.change_builddir(builddir)
+
+        self.init(srcdir)
+        self.build()
+
+        # During first configure the file did not exist so no dependency should
+        # have been set. A rebuild should not trigger a reconfigure.
+        self.clean()
+        out = self.build()
+        self.assertNotIn('Project configured', out)
+
+        self.init(srcdir, extra_args=['--reconfigure'])
+
+        # During the reconfigure the file did exist, but is inside build
+        # directory, so no dependency should have been set. A rebuild should not
+        # trigger a reconfigure.
+        self.clean()
+        out = self.build()
+        self.assertNotIn('Project configured', out)
 
 class FailureTests(BasePlatformTests):
     '''
@@ -5050,6 +5126,33 @@ class WindowsTests(BasePlatformTests):
             else:
                 # Verify that a valid checksum was written by all other compilers
                 self.assertTrue(pe.verify_checksum(), msg=msg)
+
+    def test_qt5dependency_vscrt(self):
+        '''
+        Test that qt5 dependencies use the debug module suffix when b_vscrt is
+        set to 'mdd'
+        '''
+        # Verify that the `b_vscrt` option is available
+        env = get_fake_env()
+        cc = env.detect_c_compiler(MachineChoice.HOST)
+        if 'b_vscrt' not in cc.base_options:
+            raise unittest.SkipTest('Compiler does not support setting the VS CRT')
+        # Verify that qmake is for Qt5
+        if not shutil.which('qmake-qt5'):
+            if not shutil.which('qmake') and not is_ci():
+                raise unittest.SkipTest('QMake not found')
+            output = subprocess.getoutput('qmake --version')
+            if 'Qt version 5' not in output and not is_ci():
+                raise unittest.SkipTest('Qmake found, but it is not for Qt 5.')
+        # Setup with /MDd
+        testdir = os.path.join(self.framework_test_dir, '4 qt')
+        self.init(testdir, extra_args=['-Db_vscrt=mdd'])
+        # Verify that we're linking to the debug versions of Qt DLLs
+        build_ninja = os.path.join(self.builddir, 'build.ninja')
+        with open(build_ninja, 'r', encoding='utf-8') as f:
+            contents = f.read()
+            m = re.search('build qt5core.exe: cpp_LINKER.*Qt5Cored.lib', contents)
+        self.assertIsNotNone(m, msg=contents)
 
 
 @unittest.skipUnless(is_osx(), "requires Darwin")
@@ -6442,11 +6545,13 @@ c = ['{0}']
             [wrap-file]
             directory = foo
 
-            source_url = file://{}
+            source_url = http://server.invalid/foo
+            source_fallback_url = file://{}
             source_filename = foo.tar.xz
             source_hash = {}
 
-            patch_url = file://{}
+            patch_url = http://server.invalid/foo
+            patch_fallback_url = file://{}
             patch_filename = foo-patch.tar.xz
             patch_hash = {}
             """.format(source_filename, source_hash, patch_filename, patch_hash))

@@ -26,6 +26,7 @@ class ImageDef:
         assert isinstance(data['env'],  dict)
 
         self.base_image: str = data['base_image']
+        self.args: T.List[str] = data.get('args', [])
         self.env: T.Dict[str, str] = data['env']
 
 class BuilderBase():
@@ -63,6 +64,9 @@ class Builder(BuilderBase):
     def gen_bashrc(self) -> None:
         out_file = self.temp_dir / 'env_vars.sh'
         out_data = ''
+
+        # run_tests.py parameters
+        self.image_def.env['CI_ARGS'] = ' '.join(self.image_def.args)
 
         for key, val in self.image_def.env.items():
             out_data += f'export {key}="{val}"\n'
@@ -109,7 +113,7 @@ class Builder(BuilderBase):
             self.temp_dir.as_posix(),
         ]
         if subprocess.run(cmd).returncode != 0:
-            raise RuntimeError('Failde to build the docker image')
+            raise RuntimeError('Failed to build the docker image')
 
 class ImageTester(BuilderBase):
     def __init__(self, data_dir: Path, temp_dir: Path, ci_root: Path) -> None:
@@ -149,11 +153,11 @@ class ImageTester(BuilderBase):
                 self.temp_dir.as_posix(),
             ]
             if subprocess.run(build_cmd).returncode != 0:
-                raise RuntimeError('Failde to build the test docker image')
+                raise RuntimeError('Failed to build the test docker image')
 
             test_cmd = [
                 self.docker, 'run', '--rm', '-t', 'meson_test_image',
-                '/usr/bin/bash', '-c', 'source /ci/env_vars.sh; cd meson; ./run_tests.py'
+                '/usr/bin/bash', '-c', 'source /ci/env_vars.sh; cd meson; ./run_tests.py $CI_ARGS'
             ]
             if subprocess.run(test_cmd).returncode != 0:
                 raise RuntimeError('Running tests failed')

@@ -1,4 +1,4 @@
-# Copyright 2012-2018 The Meson development team
+# Copyright 2012-2019 The Meson development team
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
@@ -1621,14 +1621,14 @@ class CompilerHolder(InterpreterObject):
         return ExternalLibraryHolder(lib, self.subproject)
 
     @permittedKwargs({})
-    def has_argument_method(self, args, kwargs):
+    def has_argument_method(self, args: T.Sequence[str], kwargs) -> bool:
         args = mesonlib.stringlistify(args)
         if len(args) != 1:
             raise InterpreterException('has_argument takes exactly one argument.')
         return self.has_multi_arguments_method(args, kwargs)
 
     @permittedKwargs({})
-    def has_multi_arguments_method(self, args, kwargs):
+    def has_multi_arguments_method(self, args: T.Sequence[str], kwargs: dict):
         args = mesonlib.stringlistify(args)
         result, cached = self.compiler.has_multi_arguments(args, self.environment)
         if result:
@@ -1653,11 +1653,11 @@ class CompilerHolder(InterpreterObject):
         return supported_args
 
     @permittedKwargs({})
-    def first_supported_argument_method(self, args, kwargs):
-        for i in mesonlib.stringlistify(args):
-            if self.has_argument_method(i, kwargs):
-                mlog.log('First supported argument:', mlog.bold(i))
-                return [i]
+    def first_supported_argument_method(self, args: T.Sequence[str], kwargs: dict) -> T.List[str]:
+        for arg in mesonlib.stringlistify(args):
+            if self.has_argument_method(arg, kwargs):
+                mlog.log('First supported argument:', mlog.bold(arg))
+                return [arg]
         mlog.log('First supported argument:', mlog.red('None'))
         return []
 
@@ -2014,7 +2014,7 @@ class MesonMain(InterpreterObject):
             raise InterpreterException('Second argument must be an external program or executable.')
         self.interpreter.add_find_program_override(name, exe)
 
-    @FeatureNew('meson.override_dependency', '0.53.0')
+    @FeatureNew('meson.override_dependency', '0.54.0')
     @permittedKwargs({'native'})
     def override_dependency_method(self, args, kwargs):
         if len(args) != 2:
@@ -2422,14 +2422,14 @@ class Interpreter(InterpreterBase):
                 return
             f = os.path.normpath(f.relative_name())
         elif os.path.isfile(f) and not f.startswith('/dev'):
-            srcdir = self.environment.get_source_dir()
-            builddir = self.environment.get_build_dir()
-            f = os.path.normpath(f)
-            rel_path = mesonlib.relpath(f, start=srcdir)
-            if not rel_path.startswith('..'):
-                f = rel_path
-            elif not mesonlib.relpath(f, start=builddir).startswith('..'):
+            srcdir = Path(self.environment.get_source_dir())
+            builddir = Path(self.environment.get_build_dir())
+            f = Path(f).resolve()
+            if builddir in f.parents:
                 return
+            if srcdir in f.parents:
+                f = f.relative_to(srcdir)
+            f = str(f)
         else:
             return
         if f not in self.build_def_files:
@@ -2581,7 +2581,7 @@ external dependencies (including libraries) must go to "dependencies".''')
                       ' and therefore cannot be used during configuration'
                 raise InterpreterException(msg.format(progname, cmd.description()))
             if not cmd.found():
-                raise InterpreterException('command {!r} not found or not executable'.format(cmd))
+                raise InterpreterException('command {!r} not found or not executable'.format(cmd.get_name()))
         elif isinstance(cmd, CompilerHolder):
             exelist = cmd.compiler.get_exelist()
             cmd = exelist[0]
@@ -3218,7 +3218,7 @@ external dependencies (including libraries) must go to "dependencies".''')
         if required and (progobj is None or not progobj.found()):
             raise InvalidArguments('Program(s) {!r} not found or not executable'.format(args))
         if progobj is None:
-            return ExternalProgramHolder(dependencies.NonExistingExternalProgram())
+            return ExternalProgramHolder(dependencies.NonExistingExternalProgram(' '.join(args)))
         # Only store successful lookups
         self.store_name_lookups(args)
         if wanted:
@@ -3231,7 +3231,7 @@ external dependencies (including libraries) must go to "dependencies".''')
                 if required:
                     m = 'Invalid version of program, need {!r} {!r} found {!r}.'
                     raise InvalidArguments(m.format(progobj.get_name(), not_found, version))
-                return ExternalProgramHolder(dependencies.NonExistingExternalProgram())
+                return ExternalProgramHolder(dependencies.NonExistingExternalProgram(' '.join(args)))
         return progobj
 
     @FeatureNewKwargs('find_program', '0.53.0', ['dirs'])
@@ -3246,7 +3246,7 @@ external dependencies (including libraries) must go to "dependencies".''')
         disabled, required, feature = extract_required_kwarg(kwargs, self.subproject)
         if disabled:
             mlog.log('Program', mlog.bold(' '.join(args)), 'skipped: feature', mlog.bold(feature), 'disabled')
-            return ExternalProgramHolder(dependencies.NonExistingExternalProgram())
+            return ExternalProgramHolder(dependencies.NonExistingExternalProgram(' '.join(args)))
 
         search_dirs = extract_search_dirs(kwargs)
         wanted = mesonlib.stringlistify(kwargs.get('version', []))
@@ -3601,7 +3601,7 @@ external dependencies (including libraries) must go to "dependencies".''')
         if 'input' not in kwargs or 'output' not in kwargs:
             raise InterpreterException('Keyword arguments input and output must exist')
         if 'fallback' not in kwargs:
-            FeatureNew('T.Optional fallback in vcs_tag', '0.41.0').use(self.subproject)
+            FeatureNew('Optional fallback in vcs_tag', '0.41.0').use(self.subproject)
         fallback = kwargs.pop('fallback', self.project_version)
         if not isinstance(fallback, str):
             raise InterpreterException('Keyword argument fallback must be a string.')
