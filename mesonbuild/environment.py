@@ -771,7 +771,7 @@ class Environment:
         elif isinstance(comp_class.LINKER_PREFIX, list):
             check_args = comp_class.LINKER_PREFIX + ['/logo'] + comp_class.LINKER_PREFIX + ['--version']
 
-        check_args += self.coredata.compiler_options[for_machine][comp_class.language + '_args'].value
+        check_args += self.coredata.compiler_options[for_machine][comp_class.language]['args'].value
 
         override = []  # type: T.List[str]
         value = self.lookup_binary_entry(for_machine, comp_class.language + '_ld')
@@ -833,7 +833,7 @@ class Environment:
         """
         self.coredata.add_lang_args(comp_class.language, comp_class, for_machine, self)
         extra_args = T.cast(T.List[str], extra_args or [])
-        extra_args += self.coredata.compiler_options[for_machine][comp_class.language + '_args'].value
+        extra_args += self.coredata.compiler_options[for_machine][comp_class.language]['args'].value
 
         if isinstance(comp_class.LINKER_PREFIX, str):
             check_args = [comp_class.LINKER_PREFIX + '--version'] + extra_args
@@ -1360,7 +1360,7 @@ class Environment:
         try:
             p, out, err = Popen_safe(exelist + ['-version'])
         except OSError:
-            raise EnvironmentException('Could not execute Java compiler "%s"' % ' '.join(exelist))
+            raise EnvironmentException('Could not execute Java compiler "{}"'.format(' '.join(exelist)))
         if 'javac' in out or 'javac' in err:
             version = search_version(err if 'javac' in err else out)
             if not version or version == 'unknown version':
@@ -1408,7 +1408,7 @@ class Environment:
         try:
             p, out = Popen_safe(exelist + ['--version'])[0:2]
         except OSError:
-            raise EnvironmentException('Could not execute Vala compiler "%s"' % ' '.join(exelist))
+            raise EnvironmentException('Could not execute Vala compiler "{}"'.format(' '.join(exelist)))
         version = search_version(out)
         if 'Vala' in out:
             comp_class = ValaCompiler
@@ -1610,7 +1610,7 @@ class Environment:
         try:
             p, _, err = Popen_safe(exelist + ['-v'])
         except OSError:
-            raise EnvironmentException('Could not execute Swift compiler "%s"' % ' '.join(exelist))
+            raise EnvironmentException('Could not execute Swift compiler "{}"'.format(' '.join(exelist)))
         version = search_version(err)
         if 'Swift' in err:
             # As for 5.0.1 swiftc *requires* a file to check the linker:
@@ -1730,7 +1730,7 @@ class Environment:
             if p.returncode == 1 and err.startswith('ar: bad option: --'): # Solaris
                 return ArLinker(linker)
         self._handle_exceptions(popen_exceptions, linkers, 'linker')
-        raise EnvironmentException('Unknown static linker "%s"' % ' '.join(linkers))
+        raise EnvironmentException('Unknown static linker "{}"'.format(' '.join(linkers)))
 
     def get_source_dir(self):
         return self.source_dir

@@ -591,10 +591,8 @@ class Vs2010Backend(backends.Backend):
         raise MesonException('Could not guess language from source file %s.' % src)
 
     def add_pch(self, pch_sources, lang, inc_cl):
-        if len(pch_sources) <= 1:
-            # We only need per file precompiled headers if we have more than 1 language.
-            return
-        self.use_pch(pch_sources, lang, inc_cl)
+        if lang in pch_sources:
+            self.use_pch(pch_sources, lang, inc_cl)
 
     def create_pch(self, pch_sources, lang, inc_cl):
         pch = ET.SubElement(inc_cl, 'PrecompiledHeader')
@@ -602,6 +600,8 @@ class Vs2010Backend(backends.Backend):
         self.add_pch_files(pch_sources, lang, inc_cl)
 
     def use_pch(self, pch_sources, lang, inc_cl):
+        pch = ET.SubElement(inc_cl, 'PrecompiledHeader')
+        pch.text = 'Use'
         header = self.add_pch_files(pch_sources, lang, inc_cl)
         pch_include = ET.SubElement(inc_cl, 'ForcedIncludeFiles')
         pch_include.text = header + ';%(ForcedIncludeFiles)'
@@ -891,8 +891,10 @@ class Vs2010Backend(backends.Backend):
         # generate_single_compile() and generate_basic_compiler_args()
         for l, comp in target.compilers.items():
             if l in file_args:
-                file_args[l] += compilers.get_base_compile_args(self.get_base_options_for_target(target), comp)
-                file_args[l] += comp.get_option_compile_args(self.environment.coredata.compiler_options[target.for_machine])
+                file_args[l] += compilers.get_base_compile_args(
+                        self.get_base_options_for_target(target), comp)
+                file_args[l] += comp.get_option_compile_args(
+                        self.environment.coredata.compiler_options[target.for_machine][comp.language])
 
         # Add compile args added using add_project_arguments()
         for l, args in self.build.projects_args[target.for_machine].get(target.subproject, {}).items():
@@ -905,10 +907,11 @@ class Vs2010Backend(backends.Backend):
                 file_args[l] += args
         # Compile args added from the env or cross file: CFLAGS/CXXFLAGS, etc. We want these
         # to override all the defaults, but not the per-target compile args.
-        for key, opt in self.environment.coredata.compiler_options[target.for_machine].items():
-            l, suffix = key.split('_', 1)
-            if suffix == 'args' and l in file_args:
-                file_args[l] += opt.value
+        for l in file_args.keys():
+            opts = self.environment.coredata.compiler_options[target.for_machine][l]
+            k = 'args'
+            if k in opts:
+                file_args[l] += opts[k].value
         for args in file_args.values():
             # This is where Visual Studio will insert target_args, target_defines,
             # etc, which are added later from external deps (see below).
@@ -1043,12 +1046,10 @@ class Vs2010Backend(backends.Backend):
         # Note: SuppressStartupBanner is /NOLOGO and is 'true' by default
         pch_sources = {}
         if self.environment.coredata.base_options.get('b_pch', False):
-            pch_node = ET.SubElement(clconf, 'PrecompiledHeader')
             for lang in ['c', 'cpp']:
                 pch = target.get_pch(lang)
                 if not pch:
                     continue
-                pch_node.text = 'Use'
                 if compiler.id == 'msvc':
                     if len(pch) == 1:
                         # Auto generate PCH.
@@ -1062,10 +1063,6 @@ class Vs2010Backend(backends.Backend):
                     # I don't know whether its relevant but let's handle other compilers
                     # used with a vs backend
                     pch_sources[lang] = [pch[0], None, lang, None]
-        if len(pch_sources) == 1:
-            # If there is only 1 language with precompiled headers, we can use it for the entire project, which
-            # is cleaner than specifying it for each source file.
-            self.use_pch(pch_sources, list(pch_sources)[0], clconf)
 
         resourcecompile = ET.SubElement(compiles, 'ResourceCompile')
         ET.SubElement(resourcecompile, 'PreprocessorDefinitions')
@@ -1115,7 +1112,8 @@ class Vs2010Backend(backends.Backend):
         # to be after all internal and external libraries so that unresolved
         # symbols from those can be found here. This is needed when the
         # *_winlibs that we want to link to are static mingw64 libraries.
-        extra_link_args += compiler.get_option_link_args(self.environment.coredata.compiler_options[compiler.for_machine])
+        extra_link_args += compiler.get_option_link_args(
+                self.environment.coredata.compiler_options[compiler.for_machine][comp.language])
         (additional_libpaths, additional_links, extra_link_args) = self.split_link_args(extra_link_args.to_native())
 
         # Add more libraries to be linked if needed

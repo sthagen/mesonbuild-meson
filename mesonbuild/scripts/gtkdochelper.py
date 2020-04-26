@@ -59,6 +59,7 @@ def gtkdoc_run_check(cmd, cwd, library_paths=None):
         if 'PATH' in env:
             library_paths.extend(env['PATH'].split(os.pathsep))
         env['PATH'] = os.pathsep.join(library_paths)
+        cmd.insert(0, sys.executable)
     else:
         if 'LD_LIBRARY_PATH' in env:
             library_paths.extend(env['LD_LIBRARY_PATH'].split(os.pathsep))
@@ -73,7 +74,14 @@ def gtkdoc_run_check(cmd, cwd, library_paths=None):
             err_msg.append(out)
         raise MesonException('\n'.join(err_msg))
     elif out:
-        print(out)
+        # Unfortunately Windows cmd.exe consoles may be using a codepage
+        # that might choke print() with a UnicodeEncodeError, so let's
+        # ignore such errors for now, as a compromise as we are outputting
+        # console output here...
+        try:
+            print(out)
+        except UnicodeEncodeError:
+            pass
 
 def build_gtkdoc(source_root, build_root, doc_subdir, src_subdirs,
                  main_file, module, module_version,
