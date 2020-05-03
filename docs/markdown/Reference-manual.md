@@ -600,8 +600,12 @@ be passed to [shared and static libraries](#library).
   depends on such as a symbol visibility map. The purpose is to
   automatically trigger a re-link (but not a re-compile) of the target
   when this file changes.
-- `link_language` since 0.51.0 makes the linker for this target
-  be for the specified language. This is helpful for multi-language targets.
+- `link_language` since 0.51.0 (broken until 0.55.0) makes the linker for this
+  target be for the specified language. It is generally unnecessary to set
+  this, as meson will detect the right linker to use in most cases. There are
+  only two cases where this is needed. One, your main function in an
+  executable is not in the language meson picked, or second you want to force
+  a library to use only one ABI.
 - `link_whole` links all contents of the given static libraries
   whether they are used by not, equivalent to the
   `-Wl,--whole-archive` argument flag of GCC, available since 0.40.0.
@@ -1846,7 +1850,9 @@ the following methods.
   specifies that whenever `find_program` is used to find a program
   named `progname`, Meson should not look it up on the system but
   instead return `program`, which may either be the result of
-  `find_program`, `configure_file` or `executable`.
+  `find_program`, `configure_file` or `executable`. *Since 0.55.0* if a version
+  check is passed to `find_program` for a program that has been overridden with
+  an executable, the current project version is used.
 
   If `program` is an `executable`, it cannot be used during configure.
 
@@ -2460,6 +2466,12 @@ and has the following methods:
 - `path()` which returns a string pointing to the script or executable
   **NOTE:** You should not need to use this method. Passing the object
   itself should work in all cases. For example: `run_command(obj, arg1, arg2)`
+  *Since 0.55.0* this method has been deprecated in favor of `full_path()` for
+  consistency with other returned objects.
+
+- `full_path()` *Since 0.55.0* which returns a string pointing to the script or
+  executable **NOTE:** You should not need to use this method. Passing the object
+  itself should work in all cases. For example: `run_command(obj, arg1, arg2)`.
 
 ### `environment` object
 

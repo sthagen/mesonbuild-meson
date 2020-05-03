@@ -4617,6 +4617,47 @@ recommended as it is not supported on some platforms''')
         out = self.build()
         self.assertNotIn('Project configured', out)
 
+    def _test_junit(self, case: str) -> None:
+        try:
+            import lxml.etree as et
+        except ImportError:
+            raise unittest.SkipTest('lxml required, but not found.')
+
+        schema = et.XMLSchema(et.parse(str(Path(__file__).parent / 'data' / 'schema.xsd')))
+
+        testdir = os.path.join(self.common_test_dir, case)
+        self.init(testdir)
+        self.run_tests()
+
+        junit = et.parse(str(Path(self.builddir) / 'meson-logs' / 'testlog.junit.xml'))
+        try:
+            schema.assertValid(junit)
+        except et.DocumentInvalid as e:
+            self.fail(e.error_log)
+
+    def test_junit_valid_tap(self):
+        self._test_junit('213 tap tests')
+
+    def test_junit_valid_exitcode(self):
+        self._test_junit('44 test args')
+
+    def test_link_language_linker(self):
+        # TODO: there should be some way to query how we're linking things
+        # without resorting to reading the ninja.build file
+        if self.backend is not Backend.ninja:
+            raise unittest.SkipTest('This test reads the ninja file')
+
+        testdir = os.path.join(self.common_test_dir, '232 link language')
+        self.init(testdir)
+
+        build_ninja = os.path.join(self.builddir, 'build.ninja')
+        with open(build_ninja, 'r', encoding='utf-8') as f:
+            contents = f.read()
+
+        self.assertRegex(contents, r'build main(\.exe)?.*: c_LINKER')
+        self.assertRegex(contents, r'build (lib|cyg)?mylib.*: c_LINKER')
+
+
 class FailureTests(BasePlatformTests):
     '''
     Tests that test failure conditions. Build files here should be dynamically
