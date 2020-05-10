@@ -4625,8 +4625,7 @@ recommended as it is not supported on some platforms''')
 
         schema = et.XMLSchema(et.parse(str(Path(__file__).parent / 'data' / 'schema.xsd')))
 
-        testdir = os.path.join(self.common_test_dir, case)
-        self.init(testdir)
+        self.init(case)
         self.run_tests()
 
         junit = et.parse(str(Path(self.builddir) / 'meson-logs' / 'testlog.junit.xml'))
@@ -4636,10 +4635,13 @@ recommended as it is not supported on some platforms''')
             self.fail(e.error_log)
 
     def test_junit_valid_tap(self):
-        self._test_junit('213 tap tests')
+        self._test_junit(os.path.join(self.common_test_dir, '213 tap tests'))
 
     def test_junit_valid_exitcode(self):
-        self._test_junit('44 test args')
+        self._test_junit(os.path.join(self.common_test_dir, '44 test args'))
+
+    def test_junit_valid_gtest(self):
+        self._test_junit(os.path.join(self.framework_test_dir, '2 gtest'))
 
     def test_link_language_linker(self):
         # TODO: there should be some way to query how we're linking things
@@ -5175,7 +5177,7 @@ class WindowsTests(BasePlatformTests):
                 raise
             raise unittest.SkipTest('pefile module not found')
         testdir = os.path.join(self.common_test_dir, '6 linkshared')
-        self.init(testdir)
+        self.init(testdir, extra_args=['--buildtype=release'])
         self.build()
         # Test that binaries have a non-zero checksum
         env = get_fake_env()
@@ -6682,6 +6684,17 @@ class LinuxCrossArmTests(BasePlatformTests):
                 self.assertEqual(i['value'], 'lib')
                 return
         self.assertTrue(False, 'Option libdir not in introspect data.')
+
+    def test_cross_libdir_subproject(self):
+        # Guard against a regression where calling "subproject"
+        # would reset the value of libdir to its default value.
+        testdir = os.path.join(self.unit_test_dir, '75 subdir libdir')
+        self.init(testdir, extra_args=['--libdir=fuf'])
+        for i in self.introspect('--buildoptions'):
+            if i['name'] == 'libdir':
+                self.assertEqual(i['value'], 'fuf')
+                return
+        self.assertTrue(False, 'Libdir specified on command line gets reset.')
 
     def test_std_remains(self):
         # C_std defined in project options must be in effect also when cross compiling.

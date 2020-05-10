@@ -33,6 +33,7 @@ from .interpreterbase import FeatureNew, FeatureDeprecated, FeatureNewKwargs
 from .interpreterbase import ObjectHolder
 from .modules import ModuleReturnValue
 from .cmake import CMakeInterpreter
+from .backend.backends import TestProtocol
 
 from pathlib import Path, PurePath
 import os
@@ -979,7 +980,7 @@ class Test(InterpreterObject):
         self.should_fail = should_fail
         self.timeout = timeout
         self.workdir = workdir
-        self.protocol = protocol
+        self.protocol = TestProtocol.from_str(protocol)
         self.priority = priority
 
     def get_exe(self):
@@ -1893,48 +1894,98 @@ class MesonMain(InterpreterObject):
                              'backend': self.backend_method,
                              })
 
-    def _find_source_script(self, name, args):
+    def _find_source_script(self, prog: T.Union[str, ExecutableHolder], args):
+        if isinstance(prog, ExecutableHolder):
+            prog_path = self.interpreter.backend.get_target_filename(prog.held_object)
+            return build.RunScript([prog_path], args)
+        elif isinstance(prog, ExternalProgramHolder):
+            return build.RunScript(prog.get_command(), args)
+
         # Prefer scripts in the current source directory
         search_dir = os.path.join(self.interpreter.environment.source_dir,
                                   self.interpreter.subdir)
-        key = (name, search_dir)
+        key = (prog, search_dir)
         if key in self._found_source_scripts:
             found = self._found_source_scripts[key]
         else:
-            found = dependencies.ExternalProgram(name, search_dir=search_dir)
+            found = dependencies.ExternalProgram(prog, search_dir=search_dir)
             if found.found():
                 self._found_source_scripts[key] = found
             else:
                 m = 'Script or command {!r} not found or not executable'
-                raise InterpreterException(m.format(name))
+                raise InterpreterException(m.format(prog))
         return build.RunScript(found.get_command(), args)
 
-    @permittedKwargs({})
-    def add_install_script_method(self, args, kwargs):
+    def _process_script_args(
+            self, name: str, args: T.List[T.Union[
+                str, mesonlib.File, CustomTargetHolder,
+                CustomTargetIndexHolder, ConfigureFileHolder,
+                ExternalProgramHolder, ExecutableHolder,
+            ]], allow_built: bool = False) -> T.List[str]:
+        script_args = []  # T.List[str]
+        new = False
+        for a in args:
+            a = unholder(a)
+            if isinstance(a, str):
+                script_args.append(a)
+            elif isinstance(a, mesonlib.File):
+                new = True
+                script_args.append(a.rel_to_builddir(self.interpreter.environment.source_dir))
+            elif isinstance(a, (build.BuildTarget, build.CustomTarget, build.CustomTargetIndex)):
+                if not allow_built:
+                    raise InterpreterException('Arguments to {} cannot be built'.format(name))
+                new = True
+                script_args.extend([os.path.join(a.get_subdir(), o) for o in a.get_outputs()])
+
+                # This feels really hacky, but I'm not sure how else to fix
+                # this without completely rewriting install script handling.
+                # This is complicated by the fact that the install target
+                # depends on all.
+                if isinstance(a, build.CustomTargetIndex):
+                    a.target.build_by_default = True
+                else:
+                    a.build_by_default = True
+            elif isinstance(a, build.ConfigureFile):
+                new = True
+                script_args.append(os.path.join(a.subdir, a.targetname))
+            elif isinstance(a, dependencies.ExternalProgram):
+                script_args.extend(a.command)
+                new = True
+            else:
+                raise InterpreterException(
+                    'Arguments to {} must be strings, Files, CustomTargets, '
+                    'Indexes of CustomTargets, or ConfigureFiles'.format(name))
+        if new:
+            FeatureNew('Calling "{}" with File, CustomTaget, Index of CustomTarget, ConfigureFile, Executable, or ExternalProgram'.format(name), '0.55.0').use(
+                self.interpreter.subproject)
+        return script_args
+
+    @permittedKwargs(set())
+    def add_install_script_method(self, args: 'T.Tuple[T.Union[str, ExecutableHolder], T.Union[str, mesonlib.File, CustomTargetHolder, CustomTargetIndexHolder, ConfigureFileHolder], ...]', kwargs):
         if len(args) < 1:
             raise InterpreterException('add_install_script takes one or more arguments')
-        check_stringlist(args, 'add_install_script args must be strings')
-        script = self._find_source_script(args[0], args[1:])
+        script_args = self._process_script_args('add_install_script', args[1:], allow_built=True)
+        script = self._find_source_script(args[0], script_args)
         self.build.install_scripts.append(script)
 
-    @permittedKwargs({})
+    @permittedKwargs(set())
     def add_postconf_script_method(self, args, kwargs):
         if len(args) < 1:
             raise InterpreterException('add_postconf_script takes one or more arguments')
-        check_stringlist(args, 'add_postconf_script arguments must be strings')
-        script = self._find_source_script(args[0], args[1:])
+        script_args = self._process_script_args('add_postconf_script', args[1:], allow_built=True)
+        script = self._find_source_script(args[0], script_args)
         self.build.postconf_scripts.append(script)
 
-    @permittedKwargs({})
+    @permittedKwargs(set())
     def add_dist_script_method(self, args, kwargs):
         if len(args) < 1:
             raise InterpreterException('add_dist_script takes one or more arguments')
         if len(args) > 1:
             FeatureNew('Calling "add_dist_script" with multiple arguments', '0.49.0').use(self.interpreter.subproject)
-        check_stringlist(args, 'add_dist_script argument must be a string')
         if self.interpreter.subproject != '':
             raise InterpreterException('add_dist_script may not be used in a subproject.')
-        script = self._find_source_script(args[0], args[1:])
+        script_args = self._process_script_args('add_dist_script', args[1:], allow_built=True)
+        script = self._find_source_script(args[0], script_args)
         self.build.dist_scripts.append(script)
 
     @noPosargs
@@ -3771,6 +3822,8 @@ This will become a hard error in the future.''' % kwargs['input'], location=self
     @FeatureNewKwargs('test', '0.52.0', ['priority'])
     @permittedKwargs(permitted_kwargs['test'])
     def func_test(self, node, args, kwargs):
+        if kwargs.get('protocol') == 'gtest':
+            FeatureNew('"gtest" protocol for tests', '0.55.0').use(self.subproject)
         self.add_test(node, args, kwargs, True)
 
     def unpack_env_kwarg(self, kwargs) -> build.EnvironmentVariables:
@@ -3822,8 +3875,8 @@ This will become a hard error in the future.''' % kwargs['input'], location=self
         if not isinstance(timeout, int):
             raise InterpreterException('Timeout must be an integer.')
         protocol = kwargs.get('protocol', 'exitcode')
-        if protocol not in ('exitcode', 'tap'):
-            raise InterpreterException('Protocol must be "exitcode" or "tap".')
+        if protocol not in {'exitcode', 'tap', 'gtest'}:
+            raise InterpreterException('Protocol must be "exitcode", "tap", or "gtest".')
         suite = []
         prj = self.subproject if self.is_subproject() else self.build.project_name
         for s in mesonlib.stringlistify(kwargs.get('suite', '')):

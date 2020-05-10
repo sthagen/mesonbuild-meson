@@ -12,12 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import copy, os, re
 from collections import OrderedDict, defaultdict
-import itertools, pathlib
-import hashlib
-import pickle
 from functools import lru_cache
+import copy
+import hashlib
+import itertools, pathlib
+import os
+import pickle
+import re
 import typing as T
 
 from . import environment
@@ -727,7 +729,7 @@ class BuildTarget(Target):
                     File.from_source_file(environment.source_dir, self.subdir, s))
             elif hasattr(s, 'get_outputs'):
                 self.link_depends.extend(
-                    [File.from_built_file(s.subdir, p) for p in s.get_outputs()])
+                    [File.from_built_file(s.get_subdir(), p) for p in s.get_outputs()])
             else:
                 raise InvalidArguments(
                     'Link_depends arguments must be strings, Files, '

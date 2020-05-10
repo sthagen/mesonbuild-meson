@@ -99,16 +99,16 @@ class UserBooleanOption(UserOption[bool]):
 class UserIntegerOption(UserOption[int]):
     def __init__(self, description, value, yielding=None):
         min_value, max_value, default_value = value
-        super().__init__(description, [True, False], yielding)
         self.min_value = min_value
         self.max_value = max_value
-        self.set_value(default_value)
         c = []
         if min_value is not None:
             c.append('>=' + str(min_value))
         if max_value is not None:
             c.append('<=' + str(max_value))
-        self.choices = ', '.join(c)
+        choices = ', '.join(c)
+        super().__init__(description, choices, yielding)
+        self.set_value(default_value)
 
     def validate_value(self, value) -> int:
         if isinstance(value, str):
@@ -385,6 +385,7 @@ class CoreData:
         # Only to print a warning if it changes between Meson invocations.
         self.config_files = self.__load_config_files(options, scratch_dir, 'native')
         self.init_builtins('')
+        self.libdir_cross_fixup()
 
     @staticmethod
     def __load_config_files(options: argparse.Namespace, scratch_dir: str, ftype: str) -> T.List[str]:
@@ -510,7 +511,6 @@ class CoreData:
         for for_machine in iter(MachineChoice):
             for key, opt in builtin_options_per_machine.items():
                 self.add_builtin_option(self.builtins_per_machine[for_machine], key, opt, subproject)
-        self.libdir_cross_fixup()
 
     def add_builtin_option(self, opts_map, key, opt, subproject):
         if subproject:
