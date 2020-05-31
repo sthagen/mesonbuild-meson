@@ -22,7 +22,7 @@ from .. import mlog
 from .. import mesonlib
 from ..environment import Environment
 
-from .base import (DependencyException, ExternalDependency)
+from .base import DependencyException, ExternalDependency, PkgConfigDependency
 from .misc import threads_factory
 
 # On windows 3 directory layouts are supported:
@@ -189,13 +189,13 @@ class BoostLibraryFile():
     def __lt__(self, other: T.Any) -> bool:
         if isinstance(other, BoostLibraryFile):
             return (
-                self.mod_name, self.version_lib, self.arch, self.static,
+                self.mod_name, self.static, self.version_lib, self.arch,
                 not self.mt, not self.runtime_static,
                 not self.debug, self.runtime_debug, self.python_debug,
                 self.stlport, self.deprecated_iostreams,
                 self.name,
             ) < (
-                other.mod_name, other.version_lib, other.arch, other.static,
+                other.mod_name, other.static, other.version_lib, other.arch,
                 not other.mt, not other.runtime_static,
                 not other.debug, other.runtime_debug, other.python_debug,
                 other.stlport, other.deprecated_iostreams,
@@ -344,6 +344,7 @@ class BoostDependency(ExternalDependency):
         self.multithreading = kwargs.get('threading', 'multi') == 'multi'
 
         self.boost_root = None
+        self.explicit_static = 'static' in kwargs
 
         # Extract and validate modules
         self.modules = mesonlib.extract_as_list(kwargs, 'modules')  # type: T.List[str]
@@ -411,10 +412,19 @@ class BoostDependency(ExternalDependency):
                 break
 
     def run_check(self, inc_dirs: T.List[BoostIncludeDir], lib_dirs: T.List[Path]) -> bool:
+        mlog.debug('  - potential library dirs: {}'.format([x.as_posix() for x in lib_dirs]))
+        mlog.debug('  - potential include dirs: {}'.format([x.path.as_posix() for x in inc_dirs]))
+
         #   2. Find all boost libraries
         libs = []  # type: T.List[BoostLibraryFile]
         for i in lib_dirs:
-            libs += self.detect_libraries(i)
+            libs = self.detect_libraries(i)
+            if libs:
+                mlog.debug('  - found boost library dir: {}'.format(i))
+                # mlog.debug('  - raw library list:')
+                # for j in libs:
+                #     mlog.debug('    - {}'.format(j))
+                break
         libs = sorted(set(libs))
 
         modules = ['boost_' + x for x in self.modules]
@@ -422,9 +432,6 @@ class BoostDependency(ExternalDependency):
             mlog.debug('  - found boost {} include dir: {}'.format(inc.version, inc.path))
             f_libs = self.filter_libraries(libs, inc.version_lib)
 
-            # mlog.debug('  - raw library list:')
-            # for j in libs:
-            #     mlog.debug('    - {}'.format(j))
             mlog.debug('  - filtered library list:')
             for j in f_libs:
                 mlog.debug('    - {}'.format(j))
@@ -499,6 +506,19 @@ class BoostDependency(ExternalDependency):
         return [self._include_dir_from_version_header(x) for x in candidates]
 
     def detect_lib_dirs(self, root: Path) -> T.List[Path]:
+        # First check the system include paths. Only consider those within the
+        # given root path
+        system_dirs_t = self.clib_compiler.get_library_dirs(self.env)
+        system_dirs = [Path(x) for x in system_dirs_t]
+        system_dirs = [x.resolve() for x in system_dirs if x.exists()]
+        system_dirs = [x for x in system_dirs if mesonlib.path_is_in_root(x, root)]
+        system_dirs = list(mesonlib.OrderedSet(system_dirs))
+
+        if system_dirs:
+            return system_dirs
+
+        # No system include paths were found --> fall back to manually looking
+        # for library dirs in root
         dirs = []     # type: T.List[Path]
         subdirs = []  # type: T.List[Path]
         for i in root.iterdir():
@@ -510,7 +530,25 @@ class BoostDependency(ExternalDependency):
             for j in i.iterdir():
                 if j.is_dir() and j.name.endswith('-linux-gnu'):
                     subdirs += [j]
-        return dirs + subdirs
+
+        # Filter out paths that don't match the target arch to avoid finding
+        # the wrong libraries. See https://github.com/mesonbuild/meson/issues/7110
+        if not self.arch:
+            return dirs + subdirs
+
+        arch_list_32 = ['32', 'i386']
+        arch_list_64 = ['64']
+
+        raw_list = dirs + subdirs
+        no_arch = [x for x in raw_list if not any([y in x.name for y in arch_list_32 + arch_list_64])]
+
+        matching_arch = []  # type: T.List[Path]
+        if '32' in self.arch:
+            matching_arch = [x for x in raw_list if any([y in x.name for y in arch_list_32])]
+        elif '64' in self.arch:
+            matching_arch = [x for x in raw_list if any([y in x.name for y in arch_list_64])]
+
+        return sorted(matching_arch) + sorted(no_arch)
 
     def filter_libraries(self, libs: T.List[BoostLibraryFile], lib_vers: str) -> T.List[BoostLibraryFile]:
         # MSVC is very picky with the library tags
@@ -522,7 +560,7 @@ class BoostDependency(ExternalDependency):
         except (KeyError, IndexError, AttributeError):
             pass
 
-        libs = [x for x in libs if x.static == self.static]
+        libs = [x for x in libs if x.static == self.static or not self.explicit_static]
         libs = [x for x in libs if x.mt == self.multithreading]
         libs = [x for x in libs if x.version_matches(lib_vers)]
         libs = [x for x in libs if x.arch_matches(self.arch)]
@@ -567,6 +605,23 @@ class BoostDependency(ExternalDependency):
                 roots += paths
                 return roots  # Do not add system paths if BOOST_ROOT is present
 
+        # Try getting the BOOST_ROOT from a boost.pc if it exists. This primarely
+        # allows BoostDependency to find boost from Conan. See #5438
+        try:
+            boost_pc = PkgConfigDependency('boost', self.env, {'required': False})
+            if boost_pc.found():
+                boost_root = boost_pc.get_pkgconfig_variable('prefix', {'default': None})
+                if boost_root:
+                    roots += [Path(boost_root)]
+        except DependencyException:
+            pass
+
+        # Add roots from system paths
+        inc_paths = [Path(x) for x in self.clib_compiler.get_default_include_dirs()]
+        inc_paths = [x.parent for x in inc_paths if x.exists()]
+        inc_paths = [x.resolve() for x in inc_paths]
+        roots += inc_paths
+
         # Add system paths
         if self.env.machines[self.for_machine].is_windows():
             # Where boost built from source actually installs it
@@ -588,8 +643,6 @@ class BoostDependency(ExternalDependency):
             roots += [x for x in candidates if x.name.lower().startswith('boost') and x.is_dir()]
         else:
             tmp = []  # type: T.List[Path]
-            # Add unix paths
-            tmp += [Path(x).parent for x in self.clib_compiler.get_default_include_dirs()]
 
             # Homebrew
             brew_boost = Path('/usr/local/Cellar/boost')

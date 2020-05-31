@@ -98,6 +98,9 @@ class Vs2010Backend(backends.Backend):
         self.subdirs = {}
         self.handled_target_deps = {}
 
+    def get_target_private_dir(self, target):
+        return os.path.join(self.get_target_dir(target), target.get_id())
+
     def generate_custom_generator_commands(self, target, parent_node):
         generator_output_files = []
         custom_target_include_dirs = []
@@ -821,12 +824,12 @@ class Vs2010Backend(backends.Backend):
         clconf = ET.SubElement(compiles, 'ClCompile')
         # CRT type; debug or release
         if vscrt_type.value == 'from_buildtype':
-            if self.buildtype == 'debug' or self.buildtype == 'debugoptimized':
+            if self.buildtype == 'debug':
                 ET.SubElement(type_config, 'UseDebugLibraries').text = 'true'
                 ET.SubElement(clconf, 'RuntimeLibrary').text = 'MultiThreadedDebugDLL'
             else:
                 ET.SubElement(type_config, 'UseDebugLibraries').text = 'false'
-                ET.SubElement(clconf, 'RuntimeLibrary').text = 'MultiThreaded'
+                ET.SubElement(clconf, 'RuntimeLibrary').text = 'MultiThreadedDLL'
         elif vscrt_type.value == 'mdd':
             ET.SubElement(type_config, 'UseDebugLibraries').text = 'true'
             ET.SubElement(clconf, 'RuntimeLibrary').text = 'MultiThreadedDebugDLL'

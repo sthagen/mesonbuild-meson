@@ -289,7 +289,17 @@ class ConverterTarget:
             for j in self.compile_opts[i]:
                 m = ConverterTarget.std_regex.match(j)
                 if m:
-                    self.override_options += ['{}_std={}'.format(i, m.group(2))]
+                    std = m.group(2)
+                    supported = self._all_lang_stds(i)
+                    if std not in supported:
+                        mlog.warning(
+                            'Unknown {0}_std "{1}" -> Ignoring. Try setting the project-'
+                            'level {0}_std if build errors occur. Known '
+                            '{0}_stds are: {2}'.format(i, std, ' '.join(supported)),
+                            once=True
+                        )
+                        continue
+                    self.override_options += ['{}_std={}'.format(i, std)]
                 elif j in ['-fPIC', '-fpic', '-fPIE', '-fpie']:
                     self.pie = True
                 elif j in blacklist_compiler_flags:
@@ -345,9 +355,16 @@ class ConverterTarget:
                 if 'CONFIGURATIONS' in tgt.properties:
                     cfgs += [x for x in tgt.properties['CONFIGURATIONS'] if x]
                     cfg = cfgs[0]
-
-                if 'RELEASE' in cfgs:
-                    cfg = 'RELEASE'
+                
+                is_debug = self.env.coredata.get_builtin_option('debug');
+                if is_debug:
+                    if 'DEBUG' in cfgs:
+                        cfg = 'DEBUG'
+                    elif 'RELEASE' in cfgs:
+                        cfg = 'RELEASE'
+                else:
+                    if 'RELEASE' in cfgs:
+                        cfg = 'RELEASE'
 
                 if 'IMPORTED_IMPLIB_{}'.format(cfg) in tgt.properties:
                     libraries += [x for x in tgt.properties['IMPORTED_IMPLIB_{}'.format(cfg)] if x]
@@ -538,6 +555,13 @@ class ConverterTarget:
         for exts in lang_suffixes.values():
             suffixes += [x for x in exts]
         return suffixes
+
+    @lru_cache(maxsize=None)
+    def _all_lang_stds(self, lang: str) -> T.List[str]:
+        lang_opts = self.env.coredata.compiler_options.build.get(lang, None)
+        if not lang_opts or 'std' not in lang_opts:
+            return []
+        return lang_opts['std'].choices
 
     def process_inter_target_dependencies(self):
         # Move the dependencies from all transfer_dependencies_from to the target

@@ -52,7 +52,7 @@ lib_suffixes = ('a', 'lib', 'dll', 'dll.a', 'dylib', 'so')
 # This means we can't include .h headers here since they could be C, C++, ObjC, etc.
 lang_suffixes = {
     'c': ('c',),
-    'cpp': ('cpp', 'cc', 'cxx', 'c++', 'hh', 'hpp', 'ipp', 'hxx'),
+    'cpp': ('cpp', 'cc', 'cxx', 'c++', 'hh', 'hpp', 'ipp', 'hxx', 'ino'),
     'cuda': ('cu',),
     # f90, f95, f03, f08 are for free-form fortran ('f90' recommended)
     # f, for, ftn, fpp are for fixed-form fortran ('f' or 'for' recommended)
@@ -186,7 +186,7 @@ rust_buildtype_args = {'plain': [],
 d_gdc_buildtype_args = {'plain': [],
                         'debug': [],
                         'debugoptimized': ['-finline-functions'],
-                        'release': ['-frelease', '-finline-functions'],
+                        'release': ['-finline-functions'],
                         'minsize': [],
                         'custom': [],
                         }
@@ -194,7 +194,7 @@ d_gdc_buildtype_args = {'plain': [],
 d_ldc_buildtype_args = {'plain': [],
                         'debug': [],
                         'debugoptimized': ['-enable-inlining', '-Hkeep-all-bodies'],
-                        'release': ['-release', '-enable-inlining', '-Hkeep-all-bodies'],
+                        'release': ['-enable-inlining', '-Hkeep-all-bodies'],
                         'minsize': [],
                         'custom': [],
                         }
@@ -202,7 +202,7 @@ d_ldc_buildtype_args = {'plain': [],
 d_dmd_buildtype_args = {'plain': [],
                         'debug': [],
                         'debugoptimized': ['-inline'],
-                        'release': ['-release', '-inline'],
+                        'release': ['-inline'],
                         'minsize': [],
                         'custom': [],
                         }
@@ -320,7 +320,7 @@ def get_base_compile_args(options, compiler):
         if (options['b_ndebug'].value == 'true' or
                 (options['b_ndebug'].value == 'if-release' and
                  options['buildtype'].value in {'release', 'plain'})):
-            args += ['-DNDEBUG']
+            args += compiler.get_disable_assert_args()
     except KeyError:
         pass
     # This does not need a try...except
@@ -494,7 +494,7 @@ class CompilerArgs(collections.abc.MutableSequence):
         value = self.__container[index]
         del self.__container[index]
         if value in self.__seen_args and value in self.__container: # this is also honoring that you can have duplicated entries
-          self.__seen_args.remove(value)
+            self.__seen_args.remove(value)
 
     def __len__(self) -> int:
         return len(self.__container)
@@ -688,7 +688,7 @@ class CompilerArgs(collections.abc.MutableSequence):
             should_prepend = self._should_prepend(arg)
             if dedup == 2:
                 # Remove all previous occurrences of the arg and add it anew
-                if arg in self.__seen_args and arg not in this_round_added: #if __seen_args contains arg as well as this_round_added, then its not yet part in self.
+                if arg in self.__seen_args and arg not in this_round_added:  # if __seen_args contains arg as well as this_round_added, then its not yet part in self.
                     self.remove(arg)
                 if should_prepend:
                     if arg in pre:
@@ -954,7 +954,7 @@ class Compiler:
         return args
 
     @contextlib.contextmanager
-    def compile(self, code, extra_args=None, *, mode='link', want_output=False, temp_dir=None):
+    def compile(self, code: str, extra_args: list = None, *, mode: str = 'link', want_output: bool = False, temp_dir: str = None):
         if extra_args is None:
             extra_args = []
         try:
@@ -1077,7 +1077,7 @@ class Compiler:
 
     def build_rpath_args(self, env: 'Environment', build_dir: str, from_dir: str,
                          rpath_paths: str, build_rpath: str,
-                         install_rpath: str) -> T.List[str]:
+                         install_rpath: str) -> T.Tuple[T.List[str], T.Set[bytes]]:
         return self.linker.build_rpath_args(
             env, build_dir, from_dir, rpath_paths, build_rpath, install_rpath)
 
@@ -1136,7 +1136,7 @@ class Compiler:
     def remove_linkerlike_args(self, args):
         rm_exact = ('-headerpad_max_install_names',)
         rm_prefixes = ('-Wl,', '-L',)
-        rm_next = ('-L',)
+        rm_next = ('-L', '-framework',)
         ret = []
         iargs = iter(args)
         for arg in iargs:
@@ -1203,6 +1203,9 @@ class Compiler:
 
     def get_coverage_link_args(self) -> T.List[str]:
         return self.linker.get_coverage_args()
+
+    def get_disable_assert_args(self) -> T.List[str]:
+        return []
 
 
 def get_largefile_args(compiler):

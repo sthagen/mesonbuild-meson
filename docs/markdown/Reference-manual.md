@@ -1613,6 +1613,13 @@ object](#build-target-object) returned by
 object](#external-program-object) returned by
 [`find_program()`](#find_program).
 
+*Since 0.55.0* When cross compiling, if an exe_wrapper is needed and defined
+the environment variable `MESON_EXE_WRAPPER` will be set to the string value
+of that wrapper (implementation detail: using `mesonlib.join_args`). Test
+scripts may use this to run cross built binaries. If your test needs
+`MESON_EXE_WRAPPER` in cross build situations it is your responsibility to
+return code 77 to tell the harness to report "skip"
+
 By default, environment variable
 [`MALLOC_PERTURB_`](http://man7.org/linux/man-pages/man3/mallopt.3.html)
 is automatically set by `meson test` to a random value between 1..255.
@@ -1836,10 +1843,14 @@ the following methods.
   If `native: false` or not specified, variable is retrieved from the
   cross-file if cross-compiling, and from the native-file when not cross-compiling.
 
-- `has_exe_wrapper()` returns true when doing a cross build if there
-  is a wrapper command that can be used to execute cross built
-  binaries (for example when cross compiling from Linux to Windows,
-  one can use `wine` as the wrapper).
+- `can_run_host_binaries()` returns true if the build machine can run
+  binaries compiled for the host. This returns true unless you are
+  cross compiling, need a helper to run host binaries, and don't have one.
+  For example when cross compiling from Linux to Windows, one can use `wine`
+  as the helper. *New in 0.55.0*
+
+- `has_exe_wrapper()` alias of `can_run_host_binaries`
+  *Deprecated since 0.55.0*
 
 - `install_dependency_manifest(output_name)` installs a manifest file
   containing a list of all subprojects, their versions and license

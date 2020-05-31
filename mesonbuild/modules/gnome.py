@@ -33,7 +33,7 @@ from ..mesonlib import (
     join_args, unholder,
 )
 from ..dependencies import Dependency, PkgConfigDependency, InternalDependency, ExternalProgram
-from ..interpreterbase import noKwargs, permittedKwargs, FeatureNew, FeatureNewKwargs
+from ..interpreterbase import noKwargs, permittedKwargs, FeatureNew, FeatureNewKwargs, FeatureDeprecatedKwargs
 
 # gresource compilation is broken due to the way
 # the resource compiler and Ninja clash about it
@@ -695,11 +695,10 @@ class GnomeModule(ExtensionModule):
                                               source.get_subdir())
                         if subdir not in typelib_includes:
                             typelib_includes.append(subdir)
-            elif isinstance(dep, PkgConfigDependency):
-                girdir = dep.get_pkgconfig_variable("girdir", {'default': ''})
+            if isinstance(dep, Dependency):
+                girdir = dep.get_variable(pkgconfig='girdir', internal='girdir', default_value='')
                 if girdir and girdir not in typelib_includes:
                     typelib_includes.append(girdir)
-
         return typelib_includes
 
     def _get_external_args_for_langs(self, state, langs):
@@ -769,7 +768,6 @@ class GnomeModule(ExtensionModule):
         external_ldflags += list(self._get_scanner_ldflags(dep_external_ldflags))
         girtargets_inc_dirs = self._get_gir_targets_inc_dirs(girtargets)
         inc_dirs = self._scan_inc_dirs(kwargs)
-        gi_includes.update(gir_inc_dirs + inc_dirs)
 
         scan_command = [giscanner]
         scan_command += ['--no-libtool']
@@ -790,7 +788,7 @@ class GnomeModule(ExtensionModule):
         scan_command += cflags
         scan_command += ['--cflags-end']
         scan_command += get_include_args(inc_dirs)
-        scan_command += get_include_args(list(gi_includes), prefix='--add-include-path=')
+        scan_command += get_include_args(list(gi_includes) + gir_inc_dirs + inc_dirs, prefix='--add-include-path=')
         scan_command += list(internal_ldflags)
         scan_command += self._scan_gir_targets(state, girtargets)
         scan_command += self._scan_langs(state, [lc[0] for lc in langs_compilers])
@@ -804,7 +802,7 @@ class GnomeModule(ExtensionModule):
 
         typelib_output = '%s-%s.typelib' % (ns, nsversion)
         typelib_cmd = [gicompiler, scan_target, '--output', '@OUTPUT@']
-        typelib_cmd += get_include_args(list(gi_includes), prefix='--includedir=')
+        typelib_cmd += get_include_args(gir_inc_dirs, prefix='--includedir=')
 
         for incdir in typelib_includes:
             typelib_cmd += ["--includedir=" + incdir]
@@ -836,6 +834,8 @@ class GnomeModule(ExtensionModule):
         return ModuleReturnValue(target_g, [target_g])
 
     @permittedKwargs({'sources', 'media', 'symlink_media', 'languages'})
+    @FeatureDeprecatedKwargs('gnome.yelp', '0.43.0', ['languages'],
+                             'Use a LINGUAS file in the source directory instead')
     def yelp(self, state, args, kwargs):
         if len(args) < 1:
             raise MesonException('Yelp requires a project id')
@@ -850,11 +850,6 @@ class GnomeModule(ExtensionModule):
         source_str = '@@'.join(sources)
 
         langs = mesonlib.stringlistify(kwargs.pop('languages', []))
-        if langs:
-            mlog.deprecation('''The "languages" argument of gnome.yelp() is deprecated.
-Use a LINGUAS file in the sources directory instead.
-This will become a hard error in the future.''')
-
         media = mesonlib.stringlistify(kwargs.pop('media', []))
         symlinks = kwargs.pop('symlink_media', True)
 

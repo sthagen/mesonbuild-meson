@@ -90,12 +90,13 @@ class InstallData:
         self.mesonintrospect = mesonintrospect
 
 class TargetInstallData:
-    def __init__(self, fname, outdir, aliases, strip, install_name_mappings, install_rpath, install_mode, optional=False):
+    def __init__(self, fname, outdir, aliases, strip, install_name_mappings, rpath_dirs_to_remove, install_rpath, install_mode, optional=False):
         self.fname = fname
         self.outdir = outdir
         self.aliases = aliases
         self.strip = strip
         self.install_name_mappings = install_name_mappings
+        self.rpath_dirs_to_remove = rpath_dirs_to_remove
         self.install_rpath = install_rpath
         self.install_mode = install_mode
         self.optional = optional
@@ -118,7 +119,8 @@ class TestSerialisation:
                  needs_exe_wrapper: bool, is_parallel: bool, cmd_args: T.List[str],
                  env: build.EnvironmentVariables, should_fail: bool,
                  timeout: T.Optional[int], workdir: T.Optional[str],
-                 extra_paths: T.List[str], protocol: TestProtocol, priority: int):
+                 extra_paths: T.List[str], protocol: TestProtocol, priority: int,
+                 cmd_is_built: bool):
         self.name = name
         self.project_name = project
         self.suite = suite
@@ -137,6 +139,8 @@ class TestSerialisation:
         self.protocol = protocol
         self.priority = priority
         self.needs_exe_wrapper = needs_exe_wrapper
+        self.cmd_is_built = cmd_is_built
+
 
 def get_backend_from_name(backend: str, build: T.Optional[build.Build] = None, interpreter: T.Optional['Interpreter'] = None) -> T.Optional['Backend']:
     if backend == 'ninja':
@@ -258,7 +262,7 @@ class Backend:
         return self.build_to_src
 
     def get_target_private_dir(self, target):
-        return os.path.join(self.get_target_dir(target), target.get_id())
+        return os.path.join(self.get_target_filename(target) + '.p')
 
     def get_target_private_dir_abs(self, target):
         return os.path.join(self.environment.get_build_dir(), self.get_target_private_dir(target))
@@ -443,6 +447,21 @@ class Backend:
                 return True
         return False
 
+    def get_external_rpath_dirs(self, target):
+        dirs = set()
+        args = []
+        # FIXME: is there a better way?
+        for lang in ['c', 'cpp']:
+            try:
+                args.extend(self.environment.coredata.get_external_link_args(target.for_machine, lang))
+            except Exception:
+                pass
+        for arg in args:
+            if arg.startswith('-Wl,-rpath='):
+                for dir in arg.replace('-Wl,-rpath=','').split(':'):
+                    dirs.add(dir)
+        return dirs
+
     def rpaths_for_bundled_shared_libraries(self, target, exclude_system=True):
         paths = []
         for dep in target.external_deps:
@@ -456,6 +475,9 @@ class Backend:
             libdir = os.path.dirname(libpath)
             if exclude_system and self._libdir_is_system(libdir, target.compilers, self.environment):
                 # No point in adding system paths.
+                continue
+            # Don't remove rpaths specified in LDFLAGS.
+            if libdir in self.get_external_rpath_dirs(target):
                 continue
             # Windows doesn't support rpaths, but we use this function to
             # emulate rpaths by setting PATH, so also accept DLLs here
@@ -476,6 +498,7 @@ class Backend:
             result = OrderedSet()
             result.add('meson-out')
         result.update(self.rpaths_for_bundled_shared_libraries(target))
+        target.rpath_dirs_to_remove.update([d.encode('utf8') for d in result])
         return tuple(result)
 
     def object_filename_from_source(self, target, source):
@@ -768,7 +791,16 @@ class Backend:
                 # E.g. an external verifier or simulator program run on a generated executable.
                 # Can always be run without a wrapper.
                 test_for_machine = MachineChoice.BUILD
-            is_cross = not self.environment.machines.matches_build_machine(test_for_machine)
+
+            # we allow passing compiled executables to tests, which may be cross built.
+            # We need to consider these as well when considering whether the target is cross or not.
+            for a in t.cmd_args:
+                if isinstance(a, build.BuildTarget):
+                    if a.for_machine is MachineChoice.HOST:
+                        test_for_machine = MachineChoice.HOST
+                        break
+
+            is_cross = self.environment.is_cross_build(test_for_machine)
             if is_cross and self.environment.need_exe_wrapper():
                 exe_wrapper = self.environment.get_exe_wrapper()
             else:
@@ -781,6 +813,7 @@ class Backend:
                 extra_paths = self.determine_windows_extra_paths(exe, extra_bdeps)
             else:
                 extra_paths = []
+
             cmd_args = []
             for a in unholder(t.cmd_args):
                 if isinstance(a, build.BuildTarget):
@@ -790,6 +823,11 @@ class Backend:
                     cmd_args.append(a)
                 elif isinstance(a, str):
                     cmd_args.append(a)
+                elif isinstance(a, build.Executable):
+                    p = self.construct_target_rel_path(a, t.workdir)
+                    if p == a.get_filename():
+                        p = './' + p
+                    cmd_args.append(p)
                 elif isinstance(a, build.Target):
                     cmd_args.append(self.construct_target_rel_path(a, t.workdir))
                 else:
@@ -798,7 +836,8 @@ class Backend:
                                    exe_wrapper, self.environment.need_exe_wrapper(),
                                    t.is_parallel, cmd_args, t.env,
                                    t.should_fail, t.timeout, t.workdir,
-                                   extra_paths, t.protocol, t.priority)
+                                   extra_paths, t.protocol, t.priority,
+                                   isinstance(exe, build.Executable))
             arr.append(ts)
         return arr
 
@@ -1140,6 +1179,7 @@ class Backend:
                     mappings = t.get_link_deps_mapping(d.prefix, self.environment)
                     i = TargetInstallData(self.get_target_filename(t), outdirs[0],
                                           t.get_aliases(), should_strip, mappings,
+                                          t.rpath_dirs_to_remove,
                                           t.install_rpath, install_mode)
                     d.targets.append(i)
 
@@ -1157,14 +1197,14 @@ class Backend:
                                 implib_install_dir = self.environment.get_import_lib_dir()
                             # Install the import library; may not exist for shared modules
                             i = TargetInstallData(self.get_target_filename_for_linking(t),
-                                                  implib_install_dir, {}, False, {}, '', install_mode,
+                                                  implib_install_dir, {}, False, {}, set(), '', install_mode,
                                                   optional=isinstance(t, build.SharedModule))
                             d.targets.append(i)
 
                         if not should_strip and t.get_debug_filename():
                             debug_file = os.path.join(self.get_target_dir(t), t.get_debug_filename())
                             i = TargetInstallData(debug_file, outdirs[0],
-                                                  {}, False, {}, '',
+                                                  {}, False, {}, set(), '',
                                                   install_mode, optional=True)
                             d.targets.append(i)
                 # Install secondary outputs. Only used for Vala right now.
@@ -1174,7 +1214,7 @@ class Backend:
                         if outdir is False:
                             continue
                         f = os.path.join(self.get_target_dir(t), output)
-                        i = TargetInstallData(f, outdir, {}, False, {}, None, install_mode)
+                        i = TargetInstallData(f, outdir, {}, False, {}, set(), None, install_mode)
                         d.targets.append(i)
             elif isinstance(t, build.CustomTarget):
                 # If only one install_dir is specified, assume that all
@@ -1187,7 +1227,7 @@ class Backend:
                 if num_outdirs == 1 and num_out > 1:
                     for output in t.get_outputs():
                         f = os.path.join(self.get_target_dir(t), output)
-                        i = TargetInstallData(f, outdirs[0], {}, False, {}, None, install_mode,
+                        i = TargetInstallData(f, outdirs[0], {}, False, {}, set(), None, install_mode,
                                               optional=not t.build_by_default)
                         d.targets.append(i)
                 else:
@@ -1196,7 +1236,7 @@ class Backend:
                         if outdir is False:
                             continue
                         f = os.path.join(self.get_target_dir(t), output)
-                        i = TargetInstallData(f, outdir, {}, False, {}, None, install_mode,
+                        i = TargetInstallData(f, outdir, {}, False, {}, set(), None, install_mode,
                                               optional=not t.build_by_default)
                         d.targets.append(i)
 

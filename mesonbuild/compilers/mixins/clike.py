@@ -254,14 +254,14 @@ class CLikeCompiler:
         code = 'int main(void) { int class=0; return class; }\n'
         return self.sanity_check_impl(work_dir, environment, 'sanitycheckc.c', code)
 
-    def check_header(self, hname, prefix, env, *, extra_args=None, dependencies=None):
+    def check_header(self, hname: str, prefix: str, env, *, extra_args=None, dependencies=None):
         fargs = {'prefix': prefix, 'header': hname}
         code = '''{prefix}
         #include <{header}>'''
         return self.compiles(code.format(**fargs), env, extra_args=extra_args,
                              dependencies=dependencies)
 
-    def has_header(self, hname, prefix, env, *, extra_args=None, dependencies=None, disable_cache=False):
+    def has_header(self, hname: str, prefix: str, env, *, extra_args=None, dependencies=None, disable_cache: bool = False):
         fargs = {'prefix': prefix, 'header': hname}
         code = '''{prefix}
         #ifdef __has_include
@@ -274,7 +274,7 @@ class CLikeCompiler:
         return self.compiles(code.format(**fargs), env, extra_args=extra_args,
                              dependencies=dependencies, mode='preprocess', disable_cache=disable_cache)
 
-    def has_header_symbol(self, hname, symbol, prefix, env, *, extra_args=None, dependencies=None):
+    def has_header_symbol(self, hname: str, symbol: str, prefix: str, env, *, extra_args=None, dependencies=None):
         fargs = {'prefix': prefix, 'header': hname, 'symbol': symbol}
         t = '''{prefix}
         #include <{header}>
@@ -288,7 +288,7 @@ class CLikeCompiler:
         return self.compiles(t.format(**fargs), env, extra_args=extra_args,
                              dependencies=dependencies)
 
-    def _get_basic_compiler_args(self, env, mode):
+    def _get_basic_compiler_args(self, env, mode: str):
         cargs, largs = [], []
         # Select a CRT if needed since we're linking
         if mode == 'link':
@@ -354,11 +354,11 @@ class CLikeCompiler:
 
     def compiles(self, code: str, env, *,
                  extra_args: T.Sequence[T.Union[T.Sequence[str], str]] = None,
-                 dependencies=None, mode: str = 'compile', disable_cache=False) -> T.Tuple[bool, bool]:
+                 dependencies=None, mode: str = 'compile', disable_cache: bool = False) -> T.Tuple[bool, bool]:
         with self._build_wrapper(code, env, extra_args, dependencies, mode, disable_cache=disable_cache) as p:
             return p.returncode == 0, p.cached
 
-    def _build_wrapper(self, code: str, env, extra_args, dependencies=None, mode: str = 'compile', want_output: bool = False, disable_cache: bool = False, temp_dir=None) -> T.Tuple[bool, bool]:
+    def _build_wrapper(self, code: str, env, extra_args, dependencies=None, mode: str = 'compile', want_output: bool = False, disable_cache: bool = False, temp_dir: str = None) -> T.Tuple[bool, bool]:
         args = self._get_compiler_check_args(env, extra_args, dependencies, mode)
         if disable_cache or want_output:
             return self.compile(code, extra_args=args, mode=mode, want_output=want_output, temp_dir=env.scratch_dir)
@@ -369,7 +369,8 @@ class CLikeCompiler:
                              dependencies=dependencies, mode='link', disable_cache=disable_cache)
 
     def run(self, code: str, env, *, extra_args=None, dependencies=None):
-        if self.is_cross and self.exe_wrapper is None:
+        need_exe_wrapper = env.need_exe_wrapper(self.for_machine)
+        if need_exe_wrapper and self.exe_wrapper is None:
             raise compilers.CrossNoRunException('Can not run test applications in this cross environment.')
         with self._build_wrapper(code, env, extra_args, dependencies, mode='link', want_output=True) as p:
             if p.returncode != 0:
@@ -377,7 +378,7 @@ class CLikeCompiler:
                     p.input_name,
                     p.returncode))
                 return compilers.RunResult(False)
-            if self.is_cross:
+            if need_exe_wrapper:
                 cmdlist = self.exe_wrapper + [p.output_name]
             else:
                 cmdlist = p.output_name
@@ -658,7 +659,7 @@ class CLikeCompiler:
         # is not run so we don't care what the return value is.
         main = '''\nint main(void) {{
             void *a = (void*) &{func};
-            long b = (long) a;
+            long long b = (long long) a;
             return (int) b;
         }}'''
         return head, main
@@ -727,24 +728,29 @@ class CLikeCompiler:
         # need to look for them differently. On nice compilers like clang, we
         # can just directly use the __has_builtin() macro.
         fargs['no_includes'] = '#include' not in prefix
-        fargs['__builtin_'] = '' if funcname.startswith('__builtin_') else '__builtin_'
+        is_builtin = funcname.startswith('__builtin_')
+        fargs['is_builtin'] = is_builtin
+        fargs['__builtin_'] = '' if is_builtin else '__builtin_'
         t = '''{prefix}
         int main(void) {{
+
+        /* With some toolchains (MSYS2/mingw for example) the compiler
+         * provides various builtins which are not really implemented and
+         * fall back to the stdlib where they aren't provided and fail at
+         * build/link time. In case the user provides a header, including
+         * the header didn't lead to the function being defined, and the
+         * function we are checking isn't a builtin itself we assume the
+         * builtin is not functional and we just error out. */
+        #if !{no_includes:d} && !defined({func}) && !{is_builtin:d}
+            #error "No definition for {__builtin_}{func} found in the prefix"
+        #endif
+
         #ifdef __has_builtin
             #if !__has_builtin({__builtin_}{func})
                 #error "{__builtin_}{func} not found"
             #endif
         #elif ! defined({func})
-            /* Check for {__builtin_}{func} only if no includes were added to the
-             * prefix above, which means no definition of {func} can be found.
-             * We would always check for this, but we get false positives on
-             * MSYS2 if we do. Their toolchain is broken, but we can at least
-             * give them a workaround. */
-            #if {no_includes:d}
-                {__builtin_}{func};
-            #else
-                #error "No definition for {__builtin_}{func} found in the prefix"
-            #endif
+            {__builtin_}{func};
         #endif
         return 0;
         }}'''
@@ -910,21 +916,21 @@ class CLikeCompiler:
         architecture.
         '''
         # If not building on macOS for Darwin, do a simple file check
-        files = [Path(f) for f in files]
+        paths = [Path(f) for f in files]
         if not env.machines.host.is_darwin() or not env.machines.build.is_darwin():
-            for f in files:
-                if f.is_file():
-                    return f
+            for p in paths:
+                if p.is_file():
+                    return p
         # Run `lipo` and check if the library supports the arch we want
-        for f in files:
-            if not f.is_file():
+        for p in paths:
+            if not p.is_file():
                 continue
-            archs = mesonlib.darwin_get_object_archs(str(f))
+            archs = mesonlib.darwin_get_object_archs(str(p))
             if archs and env.machines.host.cpu_family in archs:
-                return f
+                return p
             else:
                 mlog.debug('Rejected {}, supports {} but need {}'
-                           .format(f, archs, env.machines.host.cpu_family))
+                           .format(p, archs, env.machines.host.cpu_family))
         return None
 
     @functools.lru_cache()
@@ -1131,3 +1137,6 @@ class CLikeCompiler:
 
         return self.compiles(self.attribute_check_func(name), env,
                              extra_args=self.get_has_func_attribute_extra_args(name))
+
+    def get_disable_assert_args(self) -> T.List[str]:
+        return ['-DNDEBUG']

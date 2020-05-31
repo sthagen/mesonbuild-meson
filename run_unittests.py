@@ -40,6 +40,7 @@ from contextlib import contextmanager
 from glob import glob
 from pathlib import (PurePath, Path)
 from distutils.dir_util import copy_tree
+import typing
 
 import mesonbuild.mlog
 import mesonbuild.depfile
@@ -56,7 +57,7 @@ from mesonbuild.mesonlib import (
     BuildDirLock, LibType, MachineChoice, PerMachine, Version, is_windows,
     is_osx, is_cygwin, is_dragonflybsd, is_openbsd, is_haiku, is_sunos,
     windows_proof_rmtree, python_command, version_compare, split_args,
-    quote_arg, relpath
+    quote_arg, relpath, is_linux
 )
 from mesonbuild.environment import detect_ninja
 from mesonbuild.mesonlib import MesonException, EnvironmentException
@@ -717,25 +718,22 @@ class InternalTests(unittest.TestCase):
         self.assertEqual([1, 2, 3], extract(kwargs, 'sources'))
 
     def test_pkgconfig_module(self):
-
-        class Mock:
-            pass
-
-        dummystate = Mock()
+        dummystate = mock.Mock()
         dummystate.subproject = 'dummy'
-        mock = Mock()
-        mock.pcdep = Mock()
-        mock.pcdep.name = "some_name"
-        mock.version_reqs = []
+        _mock = mock.Mock(spec=mesonbuild.dependencies.ExternalDependency)
+        _mock.pcdep = mock.Mock()
+        _mock.pcdep.name = "some_name"
+        _mock.version_reqs = []
+        _mock = mock.Mock(held_object=_mock)
 
         # pkgconfig dependency as lib
         deps = mesonbuild.modules.pkgconfig.DependenciesHelper(dummystate, "thislib")
-        deps.add_pub_libs([mock])
+        deps.add_pub_libs([_mock])
         self.assertEqual(deps.format_reqs(deps.pub_reqs), "some_name")
 
         # pkgconfig dependency as requires
         deps = mesonbuild.modules.pkgconfig.DependenciesHelper(dummystate, "thislib")
-        deps.add_pub_reqs([mock])
+        deps.add_pub_reqs([_mock])
         self.assertEqual(deps.format_reqs(deps.pub_reqs), "some_name")
 
     def _test_all_naming(self, cc, env, patterns, platform):
@@ -1468,14 +1466,14 @@ class DataTests(unittest.TestCase):
 
 
 class BasePlatformTests(unittest.TestCase):
+    prefix = '/usr'
+    libdir = 'lib'
     def setUp(self):
         super().setUp()
         self.maxDiff = None
         src_root = os.path.dirname(__file__)
         src_root = os.path.join(os.getcwd(), src_root)
         self.src_root = src_root
-        self.prefix = '/usr'
-        self.libdir = 'lib'
         # Get the backend
         # FIXME: Extract this from argv?
         self.backend = getattr(Backend, os.environ.get('MESON_UNIT_TEST_BACKEND', 'ninja'))
@@ -1588,8 +1586,9 @@ class BasePlatformTests(unittest.TestCase):
             extra_args = [extra_args]
         args = [srcdir, self.builddir]
         if default_args:
-            args += ['--prefix', self.prefix,
-                     '--libdir', self.libdir]
+            args += ['--prefix', self.prefix]
+            if self.libdir:
+                args += ['--libdir', self.libdir]
             if self.meson_native_file:
                 args += ['--native-file', self.meson_native_file]
             if self.meson_cross_file:
@@ -2448,9 +2447,12 @@ class AllPlatformTests(BasePlatformTests):
         # Check include order for 'someexe'
         incs = [a for a in split_args(execmd) if a.startswith("-I")]
         self.assertEqual(len(incs), 9)
-        # target private dir
-        someexe_id = Target.construct_id_from_path("sub4", "someexe", "@exe")
-        self.assertPathEqual(incs[0], "-I" + os.path.join("sub4", someexe_id))
+        # Need to run the build so the private dir is created.
+        self.build()
+        pdirs = glob(os.path.join(self.builddir, 'sub4/someexe*.p'))
+        self.assertEqual(len(pdirs), 1)
+        privdir = pdirs[0][len(self.builddir)+1:]
+        self.assertPathEqual(incs[0], "-I" + privdir)
         # target build subdir
         self.assertPathEqual(incs[1], "-Isub4")
         # target source subdir
@@ -2471,7 +2473,10 @@ class AllPlatformTests(BasePlatformTests):
         incs = [a for a in split_args(fxecmd) if a.startswith('-I')]
         self.assertEqual(len(incs), 9)
         # target private dir
-        self.assertPathEqual(incs[0], '-Isomefxe@exe')
+        pdirs = glob(os.path.join(self.builddir, 'somefxe*.p'))
+        self.assertEqual(len(pdirs), 1)
+        privdir = pdirs[0][len(self.builddir)+1:]
+        self.assertPathEqual(incs[0], '-I' + privdir)
         # target build dir
         self.assertPathEqual(incs[1], '-I.')
         # target source dir
@@ -3418,67 +3423,6 @@ int main(int argc, char **argv) {
                     with open(os.path.join(tmpdir, 'Foo.' + lang), 'w') as f:
                         f.write('public class Foo { public static void main() {} }')
                     self._run(self.meson_command + ['init', '-b'], workdir=tmpdir)
-
-    # The test uses mocking and thus requires that
-    # the current process is the one to run the Meson steps.
-    # If we are using an external test executable (most commonly
-    # in Debian autopkgtests) then the mocking won't work.
-    @unittest.skipIf('MESON_EXE' in os.environ, 'MESON_EXE is defined, can not use mocking.')
-    def test_cross_file_system_paths(self):
-        if is_windows():
-            raise unittest.SkipTest('system crossfile paths not defined for Windows (yet)')
-        if is_sunos():
-            cc = 'gcc'
-        else:
-            cc = 'cc'
-
-        testdir = os.path.join(self.common_test_dir, '1 trivial')
-        cross_content = textwrap.dedent("""\
-            [binaries]
-            c = '/usr/bin/{}'
-            ar = '/usr/bin/ar'
-            strip = '/usr/bin/ar'
-
-            [properties]
-
-            [host_machine]
-            system = 'linux'
-            cpu_family = 'x86'
-            cpu = 'i686'
-            endian = 'little'
-            """.format(cc))
-
-        with tempfile.TemporaryDirectory() as d:
-            dir_ = os.path.join(d, 'meson', 'cross')
-            os.makedirs(dir_)
-            with tempfile.NamedTemporaryFile('w', dir=dir_, delete=False) as f:
-                f.write(cross_content)
-            name = os.path.basename(f.name)
-
-            with mock.patch.dict(os.environ, {'XDG_DATA_HOME': d}):
-                self.init(testdir, extra_args=['--cross-file=' + name], inprocess=True)
-                self.wipe()
-
-            with mock.patch.dict(os.environ, {'XDG_DATA_DIRS': d}):
-                os.environ.pop('XDG_DATA_HOME', None)
-                self.init(testdir, extra_args=['--cross-file=' + name], inprocess=True)
-                self.wipe()
-
-        with tempfile.TemporaryDirectory() as d:
-            dir_ = os.path.join(d, '.local', 'share', 'meson', 'cross')
-            os.makedirs(dir_)
-            with tempfile.NamedTemporaryFile('w', dir=dir_, delete=False) as f:
-                f.write(cross_content)
-            name = os.path.basename(f.name)
-
-            # If XDG_DATA_HOME is set in the environment running the
-            # tests this test will fail, os mock the environment, pop
-            # it, then test
-            with mock.patch.dict(os.environ):
-                os.environ.pop('XDG_DATA_HOME', None)
-                with mock.patch('mesonbuild.coredata.os.path.expanduser', lambda x: x.replace('~', d)):
-                    self.init(testdir, extra_args=['--cross-file=' + name], inprocess=True)
-                    self.wipe()
 
     def test_compiler_run_command(self):
         '''
@@ -4456,6 +4400,83 @@ recommended as it is not supported on some platforms''')
         self.maxDiff = None
         self.assertListEqual(res_nb, res_wb)
 
+    def test_introspect_ast_source(self):
+        testdir = os.path.join(self.unit_test_dir, '57 introspection')
+        testfile = os.path.join(testdir, 'meson.build')
+        res_nb = self.introspect_directory(testfile, ['--ast'] + self.meson_args)
+
+        node_counter = {}
+
+        def accept_node(json_node):
+            self.assertIsInstance(json_node, dict)
+            for i in ['lineno', 'colno', 'end_lineno', 'end_colno']:
+                self.assertIn(i, json_node)
+                self.assertIsInstance(json_node[i], int)
+            self.assertIn('node', json_node)
+            n = json_node['node']
+            self.assertIsInstance(n, str)
+            self.assertIn(n, nodes)
+            if n not in node_counter:
+                node_counter[n] = 0
+            node_counter[n] = node_counter[n] + 1
+            for nodeDesc in nodes[n]:
+                key = nodeDesc[0]
+                func = nodeDesc[1]
+                self.assertIn(key, json_node)
+                if func is None:
+                    tp = nodeDesc[2]
+                    self.assertIsInstance(json_node[key], tp)
+                    continue
+                func(json_node[key])
+
+        def accept_node_list(node_list):
+            self.assertIsInstance(node_list, list)
+            for i in node_list:
+                accept_node(i)
+
+        def accept_kwargs(kwargs):
+            self.assertIsInstance(kwargs, list)
+            for i in kwargs:
+                self.assertIn('key', i)
+                self.assertIn('val', i)
+                accept_node(i['key'])
+                accept_node(i['val'])
+
+        nodes = {
+            'BooleanNode': [('value', None, bool)],
+            'IdNode': [('value', None, str)],
+            'NumberNode': [('value', None, int)],
+            'StringNode': [('value', None, str)],
+            'ContinueNode': [],
+            'BreakNode': [],
+            'ArgumentNode': [('positional', accept_node_list), ('kwargs', accept_kwargs)],
+            'ArrayNode': [('args', accept_node)],
+            'DictNode': [('args', accept_node)],
+            'EmptyNode': [],
+            'OrNode': [('left', accept_node), ('right', accept_node)],
+            'AndNode': [('left', accept_node), ('right', accept_node)],
+            'ComparisonNode': [('left', accept_node), ('right', accept_node), ('ctype', None, str)],
+            'ArithmeticNode': [('left', accept_node), ('right', accept_node), ('op', None, str)],
+            'NotNode': [('right', accept_node)],
+            'CodeBlockNode': [('lines', accept_node_list)],
+            'IndexNode': [('object', accept_node), ('index', accept_node)],
+            'MethodNode': [('object', accept_node), ('args', accept_node), ('name', None, str)],
+            'FunctionNode': [('args', accept_node), ('name', None, str)],
+            'AssignmentNode': [('value', accept_node), ('var_name', None, str)],
+            'PlusAssignmentNode': [('value', accept_node), ('var_name', None, str)],
+            'ForeachClauseNode': [('items', accept_node), ('block', accept_node), ('varnames', None, list)],
+            'IfClauseNode': [('ifs', accept_node_list), ('else', accept_node)],
+            'IfNode': [('condition', accept_node), ('block', accept_node)],
+            'UMinusNode': [('right', accept_node)],
+            'TernaryNode': [('condition', accept_node), ('true', accept_node), ('false', accept_node)],
+        }
+
+        accept_node(res_nb)
+
+        for n, c in [('ContinueNode', 2), ('BreakNode', 1), ('NotNode', 3)]:
+            self.assertIn(n, node_counter)
+            self.assertEqual(node_counter[n], c)
+
     def test_introspect_dependencies_from_source(self):
         testdir = os.path.join(self.unit_test_dir, '57 introspection')
         testfile = os.path.join(testdir, 'meson.build')
@@ -4535,7 +4556,7 @@ recommended as it is not supported on some platforms''')
         self._run(self.mconf_command + [self.builddir])
 
     def test_summary(self):
-        testdir = os.path.join(self.unit_test_dir, '72 summary')
+        testdir = os.path.join(self.unit_test_dir, '73 summary')
         out = self.init(testdir)
         expected = textwrap.dedent(r'''
             Some Subproject 2.0
@@ -4589,7 +4610,7 @@ recommended as it is not supported on some platforms''')
         self.assertPathDoesNotExist(os.path.join(self.builddir, prog))
 
     def test_spurious_reconfigure_built_dep_file(self):
-        testdir = os.path.join(self.unit_test_dir, '74 dep files')
+        testdir = os.path.join(self.unit_test_dir, '75 dep files')
 
         # Regression test: Spurious reconfigure was happening when build
         # directory is inside source directory.
@@ -5325,7 +5346,7 @@ class DarwinTests(BasePlatformTests):
 
     def test_removing_unused_linker_args(self):
         testdir = os.path.join(self.common_test_dir, '108 has arg')
-        env = {'CFLAGS': '-L/tmp -L /var/tmp -headerpad_max_install_names -Wl,-export_dynamic'}
+        env = {'CFLAGS': '-L/tmp -L /var/tmp -headerpad_max_install_names -Wl,-export_dynamic -framework Foundation'}
         self.init(testdir, override_envvars=env)
 
 
@@ -5576,6 +5597,10 @@ class LinuxlikeTests(BasePlatformTests):
         self.assertRegex('\n'.join(mesonlog),
                          r'Run-time dependency qt5 \(modules: Core\) found: YES .* \((qmake|qmake-qt5)\)\n')
 
+    def glob_sofiles_without_privdir(self, g):
+        files = glob(g)
+        return [f for f in files if not f.endswith('.p')]
+
     def _test_soname_impl(self, libpath, install):
         if is_cygwin() or is_osx():
             raise unittest.SkipTest('Test only applicable to ELF and linuxlike sonames')
@@ -5591,28 +5616,28 @@ class LinuxlikeTests(BasePlatformTests):
         self.assertPathExists(nover)
         self.assertFalse(os.path.islink(nover))
         self.assertEqual(get_soname(nover), 'libnover.so')
-        self.assertEqual(len(glob(nover[:-3] + '*')), 1)
+        self.assertEqual(len(self.glob_sofiles_without_privdir(nover[:-3] + '*')), 1)
 
         # File with version set
         verset = os.path.join(libpath, 'libverset.so')
         self.assertPathExists(verset + '.4.5.6')
         self.assertEqual(os.readlink(verset), 'libverset.so.4')
         self.assertEqual(get_soname(verset), 'libverset.so.4')
-        self.assertEqual(len(glob(verset[:-3] + '*')), 3)
+        self.assertEqual(len(self.glob_sofiles_without_privdir(verset[:-3] + '*')), 3)
 
         # File with soversion set
         soverset = os.path.join(libpath, 'libsoverset.so')
         self.assertPathExists(soverset + '.1.2.3')
         self.assertEqual(os.readlink(soverset), 'libsoverset.so.1.2.3')
         self.assertEqual(get_soname(soverset), 'libsoverset.so.1.2.3')
-        self.assertEqual(len(glob(soverset[:-3] + '*')), 2)
+        self.assertEqual(len(self.glob_sofiles_without_privdir(soverset[:-3] + '*')), 2)
 
         # File with version and soversion set to same values
         settosame = os.path.join(libpath, 'libsettosame.so')
         self.assertPathExists(settosame + '.7.8.9')
         self.assertEqual(os.readlink(settosame), 'libsettosame.so.7.8.9')
         self.assertEqual(get_soname(settosame), 'libsettosame.so.7.8.9')
-        self.assertEqual(len(glob(settosame[:-3] + '*')), 2)
+        self.assertEqual(len(self.glob_sofiles_without_privdir(settosame[:-3] + '*')), 2)
 
         # File with version and soversion set to different values
         bothset = os.path.join(libpath, 'libbothset.so')
@@ -5620,7 +5645,7 @@ class LinuxlikeTests(BasePlatformTests):
         self.assertEqual(os.readlink(bothset), 'libbothset.so.1.2.3')
         self.assertEqual(os.readlink(bothset + '.1.2.3'), 'libbothset.so.4.5.6')
         self.assertEqual(get_soname(bothset), 'libbothset.so.1.2.3')
-        self.assertEqual(len(glob(bothset[:-3] + '*')), 3)
+        self.assertEqual(len(self.glob_sofiles_without_privdir(bothset[:-3] + '*')), 3)
 
     def test_soname(self):
         self._test_soname_impl(self.builddir, False)
@@ -5740,10 +5765,12 @@ class LinuxlikeTests(BasePlatformTests):
     def test_unity_subproj(self):
         testdir = os.path.join(self.common_test_dir, '45 subproject')
         self.init(testdir, extra_args='--unity=subprojects')
-        simpletest_id = Target.construct_id_from_path('subprojects/sublib', 'simpletest', '@exe')
-        self.assertPathExists(os.path.join(self.builddir, 'subprojects/sublib', simpletest_id, 'simpletest-unity0.c'))
-        sublib_id = Target.construct_id_from_path('subprojects/sublib', 'sublib', '@sha')
-        self.assertPathExists(os.path.join(self.builddir, 'subprojects/sublib', sublib_id, 'sublib-unity0.c'))
+        pdirs = glob(os.path.join(self.builddir, 'subprojects/sublib/simpletest*.p'))
+        self.assertEqual(len(pdirs), 1)
+        self.assertPathExists(os.path.join(pdirs[0], 'simpletest-unity0.c'))
+        sdirs = glob(os.path.join(self.builddir, 'subprojects/sublib/*sublib*.p'))
+        self.assertEqual(len(sdirs), 1)
+        self.assertPathExists(os.path.join(sdirs[0], 'sublib-unity0.c'))
         self.assertPathDoesNotExist(os.path.join(self.builddir, 'user@exe/user-unity.c'))
         self.build()
 
@@ -6079,6 +6106,39 @@ class LinuxlikeTests(BasePlatformTests):
         install_rpath = get_rpath(os.path.join(self.installdir, 'usr/bin/progcxx'))
         self.assertEqual(install_rpath, 'baz')
 
+    def test_global_rpath(self):
+        if is_cygwin():
+            raise unittest.SkipTest('Windows PE/COFF binaries do not use RPATH')
+        if is_osx():
+            raise unittest.SkipTest('Global RPATHs via LDFLAGS not yet supported on MacOS (does anybody need it?)')
+
+        testdir = os.path.join(self.unit_test_dir, '77 global-rpath')
+        oldinstalldir = self.installdir
+
+        # Build and install an external library without DESTDIR.
+        # The external library generates a .pc file without an rpath.
+        yonder_dir = os.path.join(testdir, 'yonder')
+        yonder_prefix = os.path.join(oldinstalldir, 'yonder')
+        yonder_libdir = os.path.join(yonder_prefix, self.libdir)
+        self.prefix = yonder_prefix
+        self.installdir = yonder_prefix
+        self.init(yonder_dir)
+        self.build()
+        self.install(use_destdir=False)
+        self.new_builddir()
+
+        # Build an app that uses that installed library.
+        # Supply the rpath to the installed library via LDFLAGS
+        # (as systems like buildroot and guix are wont to do)
+        # and verify install preserves that rpath.
+        env = {'LDFLAGS': '-Wl,-rpath=' + yonder_libdir,
+               'PKG_CONFIG_PATH': os.path.join(yonder_libdir, 'pkgconfig')}
+        self.init(testdir, override_envvars=env)
+        self.build()
+        self.install(use_destdir=False)
+        got_rpath = get_rpath(os.path.join(yonder_prefix, 'bin/rpathified'))
+        self.assertEqual(got_rpath, yonder_libdir)
+
     @skip_if_not_base_option('b_sanitize')
     def test_pch_with_address_sanitizer(self):
         if is_cygwin():
@@ -6390,13 +6450,15 @@ class LinuxlikeTests(BasePlatformTests):
         self.build(override_envvars=env)
         # test uninstalled
         self.run_tests(override_envvars=env)
-        if not is_osx():
-            # Rest of the workflow only works on macOS
+        if not (is_osx() or is_linux()):
             return
         # test running after installation
         self.install(use_destdir=False)
         prog = os.path.join(self.installdir, 'bin', 'prog')
         self._run([prog])
+        if not is_osx():
+            # Rest of the workflow only works on macOS
+            return
         out = self._run(['otool', '-L', prog])
         self.assertNotIn('@rpath', out)
         ## New builddir for testing that DESTDIR is not added to install_name
@@ -6412,6 +6474,57 @@ class LinuxlikeTests(BasePlatformTests):
             out = self._run(['otool', '-L', f])
             # Ensure that the otool output does not contain self.installdir
             self.assertNotRegex(out, self.installdir + '.*dylib ')
+
+    @skipIfNoPkgconfig
+    def test_usage_pkgconfig_prefixes(self):
+        '''
+        Build and install two external libraries, to different prefixes,
+        then build and install a client program that finds them via pkgconfig,
+        and verify the installed client program runs.
+        '''
+        oldinstalldir = self.installdir
+
+        # Build and install both external libraries without DESTDIR
+        val1dir = os.path.join(self.unit_test_dir, '76 pkgconfig prefixes', 'val1')
+        val1prefix = os.path.join(oldinstalldir, 'val1')
+        self.prefix = val1prefix
+        self.installdir = val1prefix
+        self.init(val1dir)
+        self.build()
+        self.install(use_destdir=False)
+        self.new_builddir()
+
+        env1 = {}
+        env1['PKG_CONFIG_PATH'] = os.path.join(val1prefix, self.libdir, 'pkgconfig')
+        val2dir = os.path.join(self.unit_test_dir, '76 pkgconfig prefixes', 'val2')
+        val2prefix = os.path.join(oldinstalldir, 'val2')
+        self.prefix = val2prefix
+        self.installdir = val2prefix
+        self.init(val2dir, override_envvars=env1)
+        self.build()
+        self.install(use_destdir=False)
+        self.new_builddir()
+
+        # Build, install, and run the client program
+        env2 = {}
+        env2['PKG_CONFIG_PATH'] = os.path.join(val2prefix, self.libdir, 'pkgconfig')
+        testdir = os.path.join(self.unit_test_dir, '76 pkgconfig prefixes', 'client')
+        testprefix = os.path.join(oldinstalldir, 'client')
+        self.prefix = testprefix
+        self.installdir = testprefix
+        self.init(testdir, override_envvars=env2)
+        self.build()
+        self.install(use_destdir=False)
+        prog = os.path.join(self.installdir, 'bin', 'client')
+        env3 = {}
+        if is_cygwin():
+          env3['PATH'] = os.path.join(val1prefix, 'bin') + \
+                        os.pathsep + \
+                        os.path.join(val2prefix, 'bin') + \
+                        os.pathsep + os.environ['PATH']
+        out = self._run([prog], override_envvars=env3).strip()
+        # Expected output is val1 + val2 = 3
+        self.assertEqual(out, '3')
 
     def install_subdir_invalid_symlinks(self, testdir, subdir_path):
         '''
@@ -6603,7 +6716,7 @@ c = ['{0}']
             return hashlib.sha256(f.read()).hexdigest()
 
     def test_wrap_with_file_url(self):
-        testdir = os.path.join(self.unit_test_dir, '73 wrap file url')
+        testdir = os.path.join(self.unit_test_dir, '74 wrap file url')
         source_filename = os.path.join(testdir, 'subprojects', 'foo.tar.xz')
         patch_filename = os.path.join(testdir, 'subprojects', 'foo-patch.tar.xz')
         wrap_filename = os.path.join(testdir, 'subprojects', 'foo.wrap')
@@ -6634,11 +6747,17 @@ c = ['{0}']
         os.unlink(wrap_filename)
 
 
+class BaseLinuxCrossTests(BasePlatformTests):
+    # Don't pass --libdir when cross-compiling. We have tests that
+    # check whether meson auto-detects it correctly.
+    libdir = None
+
+
 def should_run_cross_arm_tests():
     return shutil.which('arm-linux-gnueabihf-gcc') and not platform.machine().lower().startswith('arm')
 
 @unittest.skipUnless(not is_windows() and should_run_cross_arm_tests(), "requires ability to cross compile to ARM")
-class LinuxCrossArmTests(BasePlatformTests):
+class LinuxCrossArmTests(BaseLinuxCrossTests):
     '''
     Tests that cross-compilation to Linux/ARM works
     '''
@@ -6688,7 +6807,7 @@ class LinuxCrossArmTests(BasePlatformTests):
     def test_cross_libdir_subproject(self):
         # Guard against a regression where calling "subproject"
         # would reset the value of libdir to its default value.
-        testdir = os.path.join(self.unit_test_dir, '75 subdir libdir')
+        testdir = os.path.join(self.unit_test_dir, '76 subdir libdir')
         self.init(testdir, extra_args=['--libdir=fuf'])
         for i in self.introspect('--buildoptions'):
             if i['name'] == 'libdir':
@@ -6719,7 +6838,7 @@ def should_run_cross_mingw_tests():
     return shutil.which('x86_64-w64-mingw32-gcc') and not (is_windows() or is_cygwin())
 
 @unittest.skipUnless(not is_windows() and should_run_cross_mingw_tests(), "requires ability to cross compile with MinGW")
-class LinuxCrossMingwTests(BasePlatformTests):
+class LinuxCrossMingwTests(BaseLinuxCrossTests):
     '''
     Tests that cross-compilation to Windows/MinGW works
     '''
@@ -7512,6 +7631,134 @@ class CrossFileTests(BasePlatformTests):
 
     This is mainly aimed to testing overrides from cross files.
     """
+
+    def _cross_file_generator(self, *, needs_exe_wrapper: bool = False,
+                              exe_wrapper: typing.Optional[typing.List[str]] = None) -> str:
+        if is_windows():
+            raise unittest.SkipTest('Cannot run this test on non-mingw/non-cygwin windows')
+        if is_sunos():
+            cc = 'gcc'
+        else:
+            cc = 'cc'
+
+        return textwrap.dedent("""\
+            [binaries]
+            c = '/usr/bin/{}'
+            ar = '/usr/bin/ar'
+            strip = '/usr/bin/ar'
+            {}
+
+            [properties]
+            needs_exe_wrapper = {}
+
+            [host_machine]
+            system = 'linux'
+            cpu_family = 'x86'
+            cpu = 'i686'
+            endian = 'little'
+            """.format(cc,
+                       'exe_wrapper = {}'.format(str(exe_wrapper)) if exe_wrapper is not None else '',
+                       needs_exe_wrapper))
+
+    def _stub_exe_wrapper(self) -> str:
+        return textwrap.dedent('''\
+            #!/usr/bin/env python3
+            import subprocess
+            import sys
+
+            sys.exit(subprocess.run(sys.argv[1:]).returncode)
+            ''')
+
+    def test_needs_exe_wrapper_true(self):
+        testdir = os.path.join(self.unit_test_dir, '72 cross test passed')
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / 'crossfile'
+            with p.open('wt') as f:
+                f.write(self._cross_file_generator(needs_exe_wrapper=True))
+            self.init(testdir, extra_args=['--cross-file=' + str(p)])
+            out = self.run_target('test')
+            self.assertRegex(out, r'Skipped:\s*1\s*\n')
+
+    def test_needs_exe_wrapper_false(self):
+        testdir = os.path.join(self.unit_test_dir, '72 cross test passed')
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / 'crossfile'
+            with p.open('wt') as f:
+                f.write(self._cross_file_generator(needs_exe_wrapper=False))
+            self.init(testdir, extra_args=['--cross-file=' + str(p)])
+            out = self.run_target('test')
+            self.assertNotRegex(out, r'Skipped:\s*1\n')
+
+    def test_needs_exe_wrapper_true_wrapper(self):
+        testdir = os.path.join(self.unit_test_dir, '72 cross test passed')
+        with tempfile.TemporaryDirectory() as d:
+            s = Path(d) / 'wrapper.py'
+            with s.open('wt') as f:
+                f.write(self._stub_exe_wrapper())
+            s.chmod(0o774)
+            p = Path(d) / 'crossfile'
+            with p.open('wt') as f:
+                f.write(self._cross_file_generator(
+                    needs_exe_wrapper=True,
+                    exe_wrapper=[str(s)]))
+
+            self.init(testdir, extra_args=['--cross-file=' + str(p), '-Dexpect=true'])
+            out = self.run_target('test')
+            self.assertRegex(out, r'Ok:\s*3\s*\n')
+
+    def test_cross_exe_passed_no_wrapper(self):
+        testdir = os.path.join(self.unit_test_dir, '72 cross test passed')
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / 'crossfile'
+            with p.open('wt') as f:
+                f.write(self._cross_file_generator(needs_exe_wrapper=True))
+
+            self.init(testdir, extra_args=['--cross-file=' + str(p)])
+            self.build()
+            out = self.run_target('test')
+            self.assertRegex(out, r'Skipped:\s*1\s*\n')
+
+    # The test uses mocking and thus requires that the current process is the
+    # one to run the Meson steps. If we are using an external test executable
+    # (most commonly in Debian autopkgtests) then the mocking won't work.
+    @unittest.skipIf('MESON_EXE' in os.environ, 'MESON_EXE is defined, can not use mocking.')
+    def test_cross_file_system_paths(self):
+        if is_windows():
+            raise unittest.SkipTest('system crossfile paths not defined for Windows (yet)')
+
+        testdir = os.path.join(self.common_test_dir, '1 trivial')
+        cross_content = self._cross_file_generator()
+        with tempfile.TemporaryDirectory() as d:
+            dir_ = os.path.join(d, 'meson', 'cross')
+            os.makedirs(dir_)
+            with tempfile.NamedTemporaryFile('w', dir=dir_, delete=False) as f:
+                f.write(cross_content)
+            name = os.path.basename(f.name)
+
+            with mock.patch.dict(os.environ, {'XDG_DATA_HOME': d}):
+                self.init(testdir, extra_args=['--cross-file=' + name], inprocess=True)
+                self.wipe()
+
+            with mock.patch.dict(os.environ, {'XDG_DATA_DIRS': d}):
+                os.environ.pop('XDG_DATA_HOME', None)
+                self.init(testdir, extra_args=['--cross-file=' + name], inprocess=True)
+                self.wipe()
+
+        with tempfile.TemporaryDirectory() as d:
+            dir_ = os.path.join(d, '.local', 'share', 'meson', 'cross')
+            os.makedirs(dir_)
+            with tempfile.NamedTemporaryFile('w', dir=dir_, delete=False) as f:
+                f.write(cross_content)
+            name = os.path.basename(f.name)
+
+            # If XDG_DATA_HOME is set in the environment running the
+            # tests this test will fail, os mock the environment, pop
+            # it, then test
+            with mock.patch.dict(os.environ):
+                os.environ.pop('XDG_DATA_HOME', None)
+                with mock.patch('mesonbuild.coredata.os.path.expanduser', lambda x: x.replace('~', d)):
+                    self.init(testdir, extra_args=['--cross-file=' + name], inprocess=True)
+                    self.wipe()
 
     def test_cross_file_dirs(self):
         testcase = os.path.join(self.unit_test_dir, '60 native file override')

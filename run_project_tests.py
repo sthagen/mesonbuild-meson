@@ -191,6 +191,7 @@ class TestDef:
         self.env = os.environ.copy()
         self.installed_files = []  # type: T.List[InstalledFile]
         self.do_not_set_opts = []  # type: T.List[str]
+        self.stdout = [] # type: T.List[T.Dict[str, str]]
 
     def __repr__(self) -> str:
         return '<{}: {:<48} [{}: {}] -- {}>'.format(type(self).__name__, str(self.path), self.name, self.args, self.skip)
@@ -341,19 +342,19 @@ def log_text_file(logfile, testdir, stdo, stde):
 
 
 def bold(text):
-    return mlog.bold(text).get_text(mlog.colorize_console)
+    return mlog.bold(text).get_text(mlog.colorize_console())
 
 
 def green(text):
-    return mlog.green(text).get_text(mlog.colorize_console)
+    return mlog.green(text).get_text(mlog.colorize_console())
 
 
 def red(text):
-    return mlog.red(text).get_text(mlog.colorize_console)
+    return mlog.red(text).get_text(mlog.colorize_console())
 
 
 def yellow(text):
-    return mlog.yellow(text).get_text(mlog.colorize_console)
+    return mlog.yellow(text).get_text(mlog.colorize_console())
 
 
 def _run_ci_include(args: T.List[str]) -> str:
@@ -381,6 +382,63 @@ def run_ci_commands(raw_log: str) -> T.List[str]:
         res += ['CI COMMAND {}:\n{}\n'.format(cmd[0], ci_commands[cmd[0]](cmd[1:]))]
     return res
 
+def _compare_output(expected: T.List[T.Dict[str, str]], output: str, desc: str) -> str:
+    if expected:
+        i = iter(expected)
+
+        def next_expected(i):
+            # Get the next expected line
+            item = next(i)
+            how = item.get('match', 'literal')
+            expected = item.get('line')
+
+            # Simple heuristic to automatically convert path separators for
+            # Windows:
+            #
+            # Any '/' appearing before 'WARNING' or 'ERROR' (i.e. a path in a
+            # filename part of a location) is replaced with '\' (in a re: '\\'
+            # which matches a literal '\')
+            #
+            # (There should probably be a way to turn this off for more complex
+            # cases which don't fit this)
+            if mesonlib.is_windows():
+                if how != "re":
+                    sub = r'\\'
+                else:
+                    sub = r'\\\\'
+                expected = re.sub(r'/(?=.*(WARNING|ERROR))', sub, expected)
+
+            return how, expected
+
+        try:
+            how, expected = next_expected(i)
+            for actual in output.splitlines():
+                if how == "re":
+                    match = bool(re.match(expected, actual))
+                else:
+                    match = (expected == actual)
+                if match:
+                    how, expected = next_expected(i)
+
+            # reached the end of output without finding expected
+            return 'expected "{}" not found in {}'.format(expected, desc)
+        except StopIteration:
+            # matched all expected lines
+            pass
+
+    return ''
+
+def validate_output(test: TestDef, stdo: str, stde: str) -> str:
+    return _compare_output(test.stdout, stdo, 'stdout')
+
+# There are some class variables and such that cahce
+# information. Clear all of these. The better solution
+# would be to change the code so that no state is persisted
+# but that would be a lot of work given that Meson was originally
+# coded to run as a batch process.
+def clear_internal_caches():
+    import mesonbuild.interpreterbase
+    mesonbuild.interpreterbase.FeatureNew.feature_registry = {}
 
 def run_test_inprocess(testdir):
     old_stdout = sys.stdout
@@ -452,6 +510,11 @@ def _run_test(test: TestDef, test_build_dir: str, install_dir: str, extra_args, 
     cicmds = run_ci_commands(mesonlog)
     testresult = TestResult(cicmds)
     testresult.add_step(BuildStep.configure, stdo, stde, mesonlog, time.time() - gen_start)
+    output_msg = validate_output(test, stdo, stde)
+    testresult.mlog += output_msg
+    if output_msg:
+        testresult.fail('Unexpected output while configuring.')
+        return testresult
     if should_fail == 'meson':
         if returncode == 1:
             return testresult
@@ -497,6 +560,7 @@ def _run_test(test: TestDef, test_build_dir: str, install_dir: str, extra_args, 
     force_regenerate()
 
     # Test in-process
+    clear_internal_caches()
     test_start = time.time()
     (returncode, tstdo, tstde, test_log) = run_test_inprocess(test_build_dir)
     testresult.add_step(BuildStep.test, tstdo, tstde, test_log, time.time() - test_start)
@@ -539,18 +603,16 @@ def _run_test(test: TestDef, test_build_dir: str, install_dir: str, extra_args, 
 
     return testresult
 
-def gather_tests(testdir: Path) -> T.List[TestDef]:
+def gather_tests(testdir: Path, stdout_mandatory: bool) -> T.List[TestDef]:
     tests = [t.name for t in testdir.iterdir() if t.is_dir()]
     tests = [t for t in tests if not t.startswith('.')]  # Filter non-tests files (dot files, etc)
     test_defs = [TestDef(testdir / t, None, []) for t in tests]
     all_tests = []  # type: T.List[TestDef]
     for t in test_defs:
+        test_def = {}
         test_def_file = t.path / 'test.json'
-        if not test_def_file.is_file():
-            all_tests += [t]
-            continue
-
-        test_def = json.loads(test_def_file.read_text())
+        if test_def_file.is_file():
+            test_def = json.loads(test_def_file.read_text())
 
         # Handle additional environment variables
         env = {}  # type: T.Dict[str, str]
@@ -565,6 +627,11 @@ def gather_tests(testdir: Path) -> T.List[TestDef]:
         installed = []  # type: T.List[InstalledFile]
         if 'installed' in test_def:
             installed = [InstalledFile(x) for x in test_def['installed']]
+
+        # Handle expected output
+        stdout = test_def.get('stdout', [])
+        if stdout_mandatory and not stdout:
+            raise RuntimeError("{} must contain a non-empty stdout key".format(test_def_file))
 
         # Handle the do_not_set_opts list
         do_not_set_opts = test_def.get('do_not_set_opts', [])  # type: T.List[str]
@@ -583,6 +650,7 @@ def gather_tests(testdir: Path) -> T.List[TestDef]:
             t.env.update(env)
             t.installed_files = installed
             t.do_not_set_opts = do_not_set_opts
+            t.stdout = stdout
             all_tests += [t]
             continue
 
@@ -653,6 +721,7 @@ def gather_tests(testdir: Path) -> T.List[TestDef]:
             test.env.update(env)
             test.installed_files = installed
             test.do_not_set_opts = do_not_set_opts
+            test.stdout = stdout
             all_tests += [test]
 
     return sorted(all_tests)
@@ -837,45 +906,50 @@ def detect_tests_to_run(only: T.List[str], use_tmp: bool) -> T.List[T.Tuple[str,
                        shutil.which('pgfortran') or
                        shutil.which('ifort'))
 
-    # Name, subdirectory, skip condition.
+    class TestCategory:
+        def __init__(self, category: str, subdir: str, skip: bool = False, stdout_mandatory: bool = False):
+            self.category = category                  # category name
+            self.subdir = subdir                      # subdirectory
+            self.skip = skip                          # skip condition
+            self.stdout_mandatory = stdout_mandatory  # expected stdout is mandatory for tests in this categroy
+
     all_tests = [
-        ('cmake', 'cmake', not shutil.which('cmake') or (os.environ.get('compiler') == 'msvc2015' and under_ci)),
-        ('common', 'common', False),
-        ('warning-meson', 'warning', False),
-        ('failing-meson', 'failing', False),
-        ('failing-build', 'failing build', False),
-        ('failing-test',  'failing test', False),
-        ('keyval', 'keyval', False),
-
-        ('platform-osx', 'osx', not mesonlib.is_osx()),
-        ('platform-windows', 'windows', not mesonlib.is_windows() and not mesonlib.is_cygwin()),
-        ('platform-linux', 'linuxlike', mesonlib.is_osx() or mesonlib.is_windows()),
-
-        ('java', 'java', backend is not Backend.ninja or mesonlib.is_osx() or not have_java()),
-        ('C#', 'csharp', skip_csharp(backend)),
-        ('vala', 'vala', backend is not Backend.ninja or not shutil.which(os.environ.get('VALAC', 'valac'))),
-        ('rust', 'rust', should_skip_rust(backend)),
-        ('d', 'd', backend is not Backend.ninja or not have_d_compiler()),
-        ('objective c', 'objc', backend not in (Backend.ninja, Backend.xcode) or not have_objc_compiler(options.use_tmpdir)),
-        ('objective c++', 'objcpp', backend not in (Backend.ninja, Backend.xcode) or not have_objcpp_compiler(options.use_tmpdir)),
-        ('fortran', 'fortran', skip_fortran or backend != Backend.ninja),
-        ('swift', 'swift', backend not in (Backend.ninja, Backend.xcode) or not shutil.which('swiftc')),
+        TestCategory('cmake', 'cmake', not shutil.which('cmake') or (os.environ.get('compiler') == 'msvc2015' and under_ci)),
+        TestCategory('common', 'common'),
+        TestCategory('warning-meson', 'warning', stdout_mandatory=True),
+        TestCategory('failing-meson', 'failing', stdout_mandatory=True),
+        TestCategory('failing-build', 'failing build'),
+        TestCategory('failing-test',  'failing test'),
+        TestCategory('keyval', 'keyval'),
+        TestCategory('platform-osx', 'osx', not mesonlib.is_osx()),
+        TestCategory('platform-windows', 'windows', not mesonlib.is_windows() and not mesonlib.is_cygwin()),
+        TestCategory('platform-linux', 'linuxlike', mesonlib.is_osx() or mesonlib.is_windows()),
+        TestCategory('java', 'java', backend is not Backend.ninja or mesonlib.is_osx() or not have_java()),
+        TestCategory('C#', 'csharp', skip_csharp(backend)),
+        TestCategory('vala', 'vala', backend is not Backend.ninja or not shutil.which(os.environ.get('VALAC', 'valac'))),
+        TestCategory('rust', 'rust', should_skip_rust(backend)),
+        TestCategory('d', 'd', backend is not Backend.ninja or not have_d_compiler()),
+        TestCategory('objective c', 'objc', backend not in (Backend.ninja, Backend.xcode) or not have_objc_compiler(options.use_tmpdir)),
+        TestCategory('objective c++', 'objcpp', backend not in (Backend.ninja, Backend.xcode) or not have_objcpp_compiler(options.use_tmpdir)),
+        TestCategory('fortran', 'fortran', skip_fortran or backend != Backend.ninja),
+        TestCategory('swift', 'swift', backend not in (Backend.ninja, Backend.xcode) or not shutil.which('swiftc')),
         # CUDA tests on Windows: use Ninja backend:  python run_project_tests.py --only cuda --backend ninja
-        ('cuda', 'cuda', backend not in (Backend.ninja, Backend.xcode) or not shutil.which('nvcc')),
-        ('python3', 'python3', backend is not Backend.ninja),
-        ('python', 'python', backend is not Backend.ninja),
-        ('fpga', 'fpga', shutil.which('yosys') is None),
-        ('frameworks', 'frameworks', False),
-        ('nasm', 'nasm', False),
-        ('wasm', 'wasm', shutil.which('emcc') is None or backend is not Backend.ninja),
+        TestCategory('cuda', 'cuda', backend not in (Backend.ninja, Backend.xcode) or not shutil.which('nvcc')),
+        TestCategory('python3', 'python3', backend is not Backend.ninja),
+        TestCategory('python', 'python', backend is not Backend.ninja),
+        TestCategory('fpga', 'fpga', shutil.which('yosys') is None),
+        TestCategory('frameworks', 'frameworks'),
+        TestCategory('nasm', 'nasm'),
+        TestCategory('wasm', 'wasm', shutil.which('emcc') is None or backend is not Backend.ninja),
     ]
 
-    names = [t[0] for t in all_tests]
-    assert names == ALL_TESTS, 'argparse("--only", choices=ALL_TESTS) need to be updated to match all_tests names'
+    categories = [t.category for t in all_tests]
+    assert categories == ALL_TESTS, 'argparse("--only", choices=ALL_TESTS) need to be updated to match all_tests categories'
+
     if only:
-        ind = [names.index(o) for o in only]
-        all_tests = [all_tests[i] for i in ind]
-    gathered_tests = [(name, gather_tests(Path('test cases', subdir)), skip) for name, subdir, skip in all_tests]
+        all_tests = [t for t in all_tests if t.category in only]
+
+    gathered_tests = [(t.category, gather_tests(Path('test cases', t.subdir), t.stdout_mandatory), t.skip) for t in all_tests]
     return gathered_tests
 
 def run_tests(all_tests: T.List[T.Tuple[str, T.List[TestDef], bool]],

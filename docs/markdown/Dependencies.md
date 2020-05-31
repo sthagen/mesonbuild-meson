@@ -76,7 +76,7 @@ and config-tool based variables.
 
 ```meson
 foo_dep = dependency('foo')
-var = foo.get_variable(cmake : 'CMAKE_VAR', pkgconfig : 'pkg-config-var', configtool : 'get-var', default_value : 'default')
+var = foo_dep.get_variable(cmake : 'CMAKE_VAR', pkgconfig : 'pkg-config-var', configtool : 'get-var', default_value : 'default')
 ```
 
 It accepts the keywords 'cmake', 'pkgconfig', 'pkgconfig_define',
@@ -241,6 +241,9 @@ llvm_dep = dependency('llvm', version : '>=4.0')
 libgcrypt_dep = dependency('libgcrypt', version: '>= 1.8')
 gpgme_dep = dependency('gpgme', version: '>= 1.0')
 ```
+
+*Since 0.55.0* Meson won't search $PATH any more for a config tool binary when
+cross compiling if the config tool did not have an entry in the cross file.
 
 ## AppleFrameworks
 

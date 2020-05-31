@@ -384,8 +384,8 @@ class CoreData:
         self.compiler_check_cache = OrderedDict()
         # Only to print a warning if it changes between Meson invocations.
         self.config_files = self.__load_config_files(options, scratch_dir, 'native')
+        self.builtin_options_libdir_cross_fixup()
         self.init_builtins('')
-        self.libdir_cross_fixup()
 
     @staticmethod
     def __load_config_files(options: argparse.Namespace, scratch_dir: str, ftype: str) -> T.List[str]:
@@ -445,12 +445,12 @@ class CoreData:
             raise MesonException('Cannot find specified {} file: {}'.format(ftype, f))
         return real
 
-    def libdir_cross_fixup(self):
+    def builtin_options_libdir_cross_fixup(self):
         # By default set libdir to "lib" when cross compiling since
         # getting the "system default" is always wrong on multiarch
         # platforms as it gets a value like lib/x86_64-linux-gnu.
         if self.cross_files:
-            self.builtins['libdir'].value = 'lib'
+            builtin_options['libdir'].default = 'lib'
 
     def sanitize_prefix(self, prefix):
         prefix = os.path.expanduser(prefix)
@@ -491,7 +491,7 @@ class CoreData:
             # commonpath will always return a path in the native format, so we
             # must use pathlib.PurePath to do the same conversion before
             # comparing.
-            msg = ('The value of the {!r} option is {!r} which must be a '
+            msg = ('The value of the {!r} option is \'{!s}\' which must be a '
                    'subdir of the prefix {!r}.\nNote that if you pass a '
                    'relative path, it is assumed to be a subdir of prefix.')
             # os.path.commonpath doesn't understand case-insensitive filesystems,
@@ -682,7 +682,9 @@ class CoreData:
                 if type(oldval) != type(value):
                     self.user_options[name] = value
 
-    def is_cross_build(self) -> bool:
+    def is_cross_build(self, when_building_for: MachineChoice = MachineChoice.HOST) -> bool:
+        if when_building_for == MachineChoice.BUILD:
+            return False
         return len(self.cross_files) > 0
 
     def strip_build_option_names(self, options):
