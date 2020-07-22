@@ -22,6 +22,7 @@ import json
 import shlex
 import shutil
 import stat
+import sys
 import textwrap
 import platform
 import typing as T
@@ -74,6 +75,30 @@ class DependencyMethods(Enum):
     LIBWMFCONFIG = 'libwmf-config'
     # Misc
     DUB = 'dub'
+
+
+def find_external_program(env: Environment, for_machine: MachineChoice, name: str,
+                          display_name: str, default_names: T.List[str],
+                          allow_default_for_cross: bool = True) -> T.Generator['ExternalProgram', None, None]:
+    """Find an external program, chcking the cross file plus any default options."""
+    # Lookup in cross or machine file.
+    potential_path = env.lookup_binary_entry(for_machine, name)
+    if potential_path is not None:
+        mlog.debug('{} binary for {} specified from cross file, native file, '
+                    'or env var as {}'.format(display_name, for_machine, potential_path))
+        yield ExternalProgram.from_entry(name, potential_path)
+        # We never fallback if the user-specified option is no good, so
+        # stop returning options.
+        return
+    mlog.debug('{} binary missing from cross or native file, or env var undefined.'.format(display_name))
+    # Fallback on hard-coded defaults, if a default binary is allowed for use
+    # with cross targets, or if this is not a cross target
+    if allow_default_for_cross or not (for_machine is MachineChoice.HOST and env.is_cross_build(for_machine)):
+        for potential_path in default_names:
+            mlog.debug('Trying a default {} fallback at'.format(display_name), potential_path)
+            yield ExternalProgram(potential_path, silent=True)
+    else:
+        mlog.debug('Default target is not allowed for cross use')
 
 
 class Dependency:
@@ -352,25 +377,6 @@ class ExternalDependency(Dependency, HasNativeKwarg):
                         raise DependencyException(m.format(self.name, not_found, self.version))
                     return
 
-    # Create an iterator of options
-    def search_tool(self, name, display_name, default_names):
-        # Lookup in cross or machine file.
-        potential_path = self.env.lookup_binary_entry(self.for_machine, name)
-        if potential_path is not None:
-            mlog.debug('{} binary for {} specified from cross file, native file, '
-                       'or env var as {}'.format(display_name, self.for_machine, potential_path))
-            yield ExternalProgram.from_entry(name, potential_path)
-            # We never fallback if the user-specified option is no good, so
-            # stop returning options.
-            return
-        mlog.debug('{} binary missing from cross or native file, or env var undefined.'.format(display_name))
-        # Fallback on hard-coded defaults.
-        # TODO prefix this for the cross case instead of ignoring thing.
-        if self.env.machines.matches_build_machine(self.for_machine):
-            for potential_path in default_names:
-                mlog.debug('Trying a default {} fallback at'.format(display_name), potential_path)
-                yield ExternalProgram(potential_path, silent=True)
-
 
 class NotFoundDependency(Dependency):
     def __init__(self, environment):
@@ -419,8 +425,6 @@ class ConfigToolDependency(ExternalDependency):
             self.config = None
             return
         self.version = version
-        if getattr(self, 'finish_init', None):
-            self.finish_init(self)
 
     def _sanitize_version(self, version):
         """Remove any non-numeric, non-point version suffixes."""
@@ -431,14 +435,17 @@ class ConfigToolDependency(ExternalDependency):
             return m.group(0).rstrip('.')
         return version
 
-    def find_config(self, versions=None, returncode: int = 0):
+    def find_config(self, versions: T.Optional[T.List[str]] = None, returncode: int = 0) \
+            -> T.Tuple[T.Optional[str], T.Optional[str]]:
         """Helper method that searches for config tool binaries in PATH and
         returns the one that best matches the given version requirements.
         """
         if not isinstance(versions, list) and versions is not None:
             versions = listify(versions)
-        best_match = (None, None)
-        for potential_bin in self.search_tool(self.tool_name, self.tool_name, self.tools):
+        best_match = (None, None)  # type: T.Tuple[T.Optional[str], T.Optional[str]]
+        for potential_bin in find_external_program(
+                self.env, self.for_machine, self.tool_name,
+                self.tool_name, self.tools, allow_default_for_cross=False):
             if not potential_bin.found():
                 continue
             tool = potential_bin.get_command()
@@ -562,9 +569,9 @@ class PkgConfigDependency(ExternalDependency):
         else:
             assert PkgConfigDependency.class_pkgbin[self.for_machine] is None
             mlog.debug('Pkg-config binary for %s is not cached.' % self.for_machine)
-            for potential_pkgbin in self.search_tool('pkgconfig', 'Pkg-config', environment.default_pkgconfig):
-                mlog.debug('Trying pkg-config binary {} for machine {} at {}'
-                           .format(potential_pkgbin.name, self.for_machine, potential_pkgbin.command))
+            for potential_pkgbin in find_external_program(
+                    self.env, self.for_machine, 'pkgconfig', 'Pkg-config',
+                    environment.default_pkgconfig, allow_default_for_cross=False):
                 version_if_ok = self.check_pkgconfig(potential_pkgbin)
                 if not version_if_ok:
                     continue
@@ -1071,8 +1078,9 @@ class CMakeDependency(ExternalDependency):
         # Setup the trace parser
         self.traceparser = CMakeTraceParser(self.cmakebin.version(), self._get_build_dir())
 
+        cm_args = stringlistify(extract_as_list(kwargs, 'cmake_args'))
         if CMakeDependency.class_cmakeinfo[self.for_machine] is None:
-            CMakeDependency.class_cmakeinfo[self.for_machine] = self._get_cmake_info()
+            CMakeDependency.class_cmakeinfo[self.for_machine] = self._get_cmake_info(cm_args)
         self.cmakeinfo = CMakeDependency.class_cmakeinfo[self.for_machine]
         if self.cmakeinfo is None:
             raise self._gen_exception('Unable to obtain CMake system information')
@@ -1082,25 +1090,9 @@ class CMakeDependency(ExternalDependency):
         modules += [(x, False) for x in stringlistify(extract_as_list(kwargs, 'optional_modules'))]
         cm_path = stringlistify(extract_as_list(kwargs, 'cmake_module_path'))
         cm_path = [x if os.path.isabs(x) else os.path.join(environment.get_source_dir(), x) for x in cm_path]
-        cm_args = stringlistify(extract_as_list(kwargs, 'cmake_args'))
         if cm_path:
             cm_args.append('-DCMAKE_MODULE_PATH=' + ';'.join(cm_path))
-
-        pref_path = self.env.coredata.builtins_per_machine[self.for_machine]['cmake_prefix_path'].value
-        env_pref_path = get_env_var(
-            self.for_machine,
-            self.env.is_cross_build(),
-            'CMAKE_PREFIX_PATH')
-        if env_pref_path is not None:
-            env_pref_path = env_pref_path.split(os.pathsep)
-            env_pref_path = [x for x in env_pref_path if x]  # Filter out empty strings
-            if not pref_path:
-                pref_path = []
-            pref_path += env_pref_path
-        if pref_path:
-            cm_args.append('-DCMAKE_PREFIX_PATH={}'.format(';'.join(pref_path)))
-
-        if not self._preliminary_find_check(name, cm_path, pref_path, environment.machines[self.for_machine]):
+        if not self._preliminary_find_check(name, cm_path, self.cmakebin.get_cmake_prefix_paths(), environment.machines[self.for_machine]):
             mlog.debug('Preliminary CMake check failed. Aborting.')
             return
         self._detect_dep(name, modules, components, cm_args)
@@ -1110,7 +1102,7 @@ class CMakeDependency(ExternalDependency):
         return s.format(self.__class__.__name__, self.name, self.is_found,
                         self.version_reqs)
 
-    def _get_cmake_info(self):
+    def _get_cmake_info(self, cm_args):
         mlog.debug("Extracting basic cmake information")
         res = {}
 
@@ -1129,6 +1121,7 @@ class CMakeDependency(ExternalDependency):
 
             # Prepare options
             cmake_opts = temp_parser.trace_args() + ['.']
+            cmake_opts += cm_args
             if len(i) > 0:
                 cmake_opts = ['-G', i] + cmake_opts
 
@@ -1152,12 +1145,17 @@ class CMakeDependency(ExternalDependency):
         except MesonException:
             return None
 
+        def process_paths(l: T.List[str]) -> T.Set[str]:
+            l = [x.split(':') for x in l]
+            l = [x for sublist in l for x in sublist]
+            return set(l)
+
         # Extract the variables and sanity check them
-        root_paths = set(temp_parser.get_cmake_var('MESON_FIND_ROOT_PATH'))
-        root_paths.update(set(temp_parser.get_cmake_var('MESON_CMAKE_SYSROOT')))
+        root_paths = process_paths(temp_parser.get_cmake_var('MESON_FIND_ROOT_PATH'))
+        root_paths.update(process_paths(temp_parser.get_cmake_var('MESON_CMAKE_SYSROOT')))
         root_paths = sorted(root_paths)
         root_paths = list(filter(lambda x: os.path.isdir(x), root_paths))
-        module_paths = set(temp_parser.get_cmake_var('MESON_PATHS_LIST'))
+        module_paths = process_paths(temp_parser.get_cmake_var('MESON_PATHS_LIST'))
         rooted_paths = []
         for j in [Path(x) for x in root_paths]:
             for i in [Path(x) for x in module_paths]:
@@ -1847,14 +1845,22 @@ class ExternalProgram:
         # Ensure that we use USERPROFILE even when inside MSYS, MSYS2, Cygwin, etc.
         if 'USERPROFILE' not in os.environ:
             return path
-        # Ignore executables in the WindowsApps directory which are
-        # zero-sized wrappers that magically open the Windows Store to
-        # install the application.
+        # The WindowsApps directory is a bit of a problem. It contains
+        # some zero-sized .exe files which have "reparse points", that
+        # might either launch an installed application, or might open
+        # a page in the Windows Store to download the application.
+        #
+        # To handle the case where the python interpreter we're
+        # running on came from the Windows Store, if we see the
+        # WindowsApps path in the search path, replace it with
+        # dirname(sys.executable).
         appstore_dir = Path(os.environ['USERPROFILE']) / 'AppData' / 'Local' / 'Microsoft' / 'WindowsApps'
         paths = []
         for each in path.split(os.pathsep):
             if Path(each) != appstore_dir:
                 paths.append(each)
+            elif 'WindowsApps' in sys.executable:
+                paths.append(os.path.dirname(sys.executable))
         return os.pathsep.join(paths)
 
     @staticmethod

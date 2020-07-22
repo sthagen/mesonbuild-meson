@@ -27,7 +27,7 @@ from .mesonlib import (
 from . import mlog
 
 from .envconfig import (
-    BinaryTable, Directories, MachineInfo, MesonConfigFile,
+    BinaryTable, Directories, MachineInfo,
     Properties, known_cpu_families,
 )
 from . import compilers
@@ -134,8 +134,17 @@ def detect_gcovr(min_version='3.3', new_rootdir_version='4.2', log=False):
         return gcovr_exe, mesonlib.version_compare(found, '>=' + new_rootdir_version)
     return None, None
 
+def detect_llvm_cov():
+    tools = get_llvm_tool_names('llvm-cov')
+    for tool in tools:
+        if mesonlib.exe_exists([tool, '--version']):
+            return tool
+    return None
+
 def find_coverage_tools():
     gcovr_exe, gcovr_new_rootdir = detect_gcovr()
+
+    llvm_cov_exe = detect_llvm_cov()
 
     lcov_exe = 'lcov'
     genhtml_exe = 'genhtml'
@@ -145,7 +154,7 @@ def find_coverage_tools():
     if not mesonlib.exe_exists([genhtml_exe, '--version']):
         genhtml_exe = None
 
-    return gcovr_exe, gcovr_new_rootdir, lcov_exe, genhtml_exe
+    return gcovr_exe, gcovr_new_rootdir, lcov_exe, genhtml_exe, llvm_cov_exe
 
 def detect_ninja(version: str = '1.7', log: bool = False) -> str:
     r = detect_ninja_command_and_version(version, log)
@@ -332,6 +341,8 @@ def detect_cpu_family(compilers: CompilersDict) -> str:
         trial = 'x86'
     elif trial == 'bepc':
         trial = 'x86'
+    elif trial == 'arm64':
+        trial = 'aarch64'
     elif trial.startswith('arm') or trial.startswith('earm'):
         trial = 'arm'
     elif trial.startswith(('powerpc64', 'ppc64')):
@@ -344,6 +355,8 @@ def detect_cpu_family(compilers: CompilersDict) -> str:
         trial = 'sparc64'
     elif trial in {'mipsel', 'mips64el'}:
         trial = trial.rstrip('el')
+    elif trial in {'ip30', 'ip35'}:
+        trial = 'mips64'
 
     # On Linux (and maybe others) there can be any mixture of 32/64 bit code in
     # the kernel, Python, system, 32-bit chroot on 64-bit host, etc. The only
@@ -440,7 +453,7 @@ def machine_info_can_run(machine_info: MachineInfo):
         (machine_info.cpu_family == true_build_cpu_family) or \
         ((true_build_cpu_family == 'x86_64') and (machine_info.cpu_family == 'x86'))
 
-def search_version(text):
+def search_version(text: str) -> str:
     # Usually of the type 4.1.4 but compiler output may contain
     # stuff like this:
     # (Sourcery CodeBench Lite 2014.05-29) 4.8.3 20140320 (prerelease)
@@ -474,6 +487,13 @@ def search_version(text):
     match = version_regex.search(text)
     if match:
         return match.group(0)
+
+    # try a simpler regex that has like "blah 2020.01.100 foo" or "blah 2020.01 foo"
+    version_regex = re.compile(r"(\d{1,4}\.\d{1,4}\.?\d{0,4})")
+    match = version_regex.search(text)
+    if match:
+        return match.group(0)
+
     return 'unknown version'
 
 class Environment:
@@ -545,8 +565,7 @@ class Environment:
         ## Read in native file(s) to override build machine configuration
 
         if self.coredata.config_files is not None:
-            config = MesonConfigFile.from_config_parser(
-                coredata.load_configs(self.coredata.config_files))
+            config = coredata.parse_machine_files(self.coredata.config_files)
             binaries.build = BinaryTable(config.get('binaries', {}))
             paths.build = Directories(**config.get('paths', {}))
             properties.build = Properties(config.get('properties', {}))
@@ -554,8 +573,7 @@ class Environment:
         ## Read in cross file(s) to override host machine configuration
 
         if self.coredata.cross_files:
-            config = MesonConfigFile.from_config_parser(
-                coredata.load_configs(self.coredata.cross_files))
+            config = coredata.parse_machine_files(self.coredata.cross_files)
             properties.host = Properties(config.get('properties', {}))
             binaries.host = BinaryTable(config.get('binaries', {}))
             if 'host_machine' in config:
@@ -625,6 +643,7 @@ class Environment:
         self.clang_static_linker = ['llvm-ar']
         self.default_cmake = ['cmake']
         self.default_pkgconfig = ['pkg-config']
+        self.wrap_resolver = None
 
     def create_new_coredata(self, options):
         # WARNING: Don't use any values from coredata in __init__. It gets
@@ -911,9 +930,15 @@ class Environment:
                 cls = GnuBFDDynamicLinker
             linker = cls(compiler, for_machine, comp_class.LINKER_PREFIX, override, version=v)
         elif 'Solaris' in e or 'Solaris' in o:
+            for line in (o+e).split('\n'):
+                if 'ld: Software Generation Utilities' in line:
+                    v = line.split(':')[2].lstrip()
+                    break
+            else:
+                v = 'unknown version'
             linker = SolarisDynamicLinker(
                 compiler, for_machine, comp_class.LINKER_PREFIX, override,
-                version=search_version(e))
+                version=v)
         else:
             raise EnvironmentException('Unable to determine dynamic linker')
         return linker

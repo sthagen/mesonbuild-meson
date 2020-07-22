@@ -41,8 +41,9 @@ from mesonbuild import compilers
 from mesonbuild import mesonlib
 from mesonbuild import mlog
 from mesonbuild import mtest
+from mesonbuild.build import ConfigurationData
 from mesonbuild.mesonlib import MachineChoice, Popen_safe
-from mesonbuild.coredata import backendlist
+from mesonbuild.coredata import backendlist, version as meson_version
 
 from run_tests import get_fake_options, run_configure, get_meson_script
 from run_tests import get_backend_commands, get_backend_args_for_dir, Backend
@@ -361,11 +362,10 @@ def _run_ci_include(args: T.List[str]) -> str:
     if not args:
         return 'At least one parameter required'
     try:
-        file_path = Path(args[0])
-        data = file_path.open(errors='ignore', encoding='utf-8').read()
+        data = Path(args[0]).read_text(errors='ignore', encoding='utf-8')
         return 'Included file {}:\n{}\n'.format(args[0], data)
     except Exception:
-        return 'Failed to open {} ({})'.format(args[0])
+        return 'Failed to open {}'.format(args[0])
 
 ci_commands = {
     'ci_include': _run_ci_include
@@ -438,7 +438,10 @@ def validate_output(test: TestDef, stdo: str, stde: str) -> str:
 # coded to run as a batch process.
 def clear_internal_caches():
     import mesonbuild.interpreterbase
+    from mesonbuild.dependencies import CMakeDependency
+    from mesonbuild.mesonlib import PerMachine
     mesonbuild.interpreterbase.FeatureNew.feature_registry = {}
+    CMakeDependency.class_cmakeinfo = PerMachine(None, None)
 
 def run_test_inprocess(testdir):
     old_stdout = sys.stdout
@@ -473,6 +476,28 @@ def create_deterministic_builddir(test: TestDef, use_tmpdir: bool) -> str:
     os.mkdir(abs_pathname)
     return abs_pathname
 
+def format_parameter_file(file_basename: str, test: TestDef, test_build_dir: str) -> Path:
+    confdata = ConfigurationData()
+    confdata.values = {'MESON_TEST_ROOT': (str(test.path.absolute()), 'base directory of current test')}
+
+    template = test.path / (file_basename + '.in')
+    destination = Path(test_build_dir) / file_basename
+    mesonlib.do_conf_file(str(template), str(destination), confdata, 'meson')
+
+    return destination
+
+def detect_parameter_files(test: TestDef, test_build_dir: str) -> (Path, Path):
+    nativefile = test.path / 'nativefile.ini'
+    crossfile = test.path / 'crossfile.ini'
+
+    if os.path.exists(str(test.path / 'nativefile.ini.in')):
+        nativefile = format_parameter_file('nativefile.ini', test, test_build_dir)
+
+    if os.path.exists(str(test.path / 'crossfile.ini.in')):
+        crossfile = format_parameter_file('crossfile.ini', test, test_build_dir)
+
+    return nativefile, crossfile
+
 def run_test(test: TestDef, extra_args, compiler, backend, flags, commands, should_fail, use_tmp: bool):
     if test.skip:
         return None
@@ -495,8 +520,9 @@ def _run_test(test: TestDef, test_build_dir: str, install_dir: str, extra_args, 
     if 'libdir' not in test.do_not_set_opts:
         gen_args += ['--libdir', 'lib']
     gen_args += [test.path.as_posix(), test_build_dir] + flags + extra_args
-    nativefile = test.path / 'nativefile.ini'
-    crossfile = test.path / 'crossfile.ini'
+
+    nativefile, crossfile = detect_parameter_files(test, test_build_dir)
+
     if nativefile.exists():
         gen_args.extend(['--native-file', nativefile.as_posix()])
     if crossfile.exists():
@@ -666,11 +692,6 @@ def gather_tests(testdir: Path, stdout_mandatory: bool) -> T.List[TestDef]:
                 assert "val" in i
                 skip = False
 
-                # Add an empty matrix entry
-                if i['val'] is None:
-                    tmp_opts += [(None, False)]
-                    continue
-
                 # Skip the matrix entry if environment variable is present
                 if 'skip_on_env' in i:
                     for skip_env_var in i['skip_on_env']:
@@ -683,6 +704,11 @@ def gather_tests(testdir: Path, stdout_mandatory: bool) -> T.List[TestDef]:
                         if lang not in compiler_id_map or compiler_id_map[lang] not in id_list:
                             skip = True
                             break
+
+                # Add an empty matrix entry
+                if i['val'] is None:
+                    tmp_opts += [(None, skip)]
+                    continue
 
                 tmp_opts += [('{}={}'.format(key, i['val']), skip)]
 
@@ -936,7 +962,7 @@ def detect_tests_to_run(only: T.List[str], use_tmp: bool) -> T.List[T.Tuple[str,
         # CUDA tests on Windows: use Ninja backend:  python run_project_tests.py --only cuda --backend ninja
         TestCategory('cuda', 'cuda', backend not in (Backend.ninja, Backend.xcode) or not shutil.which('nvcc')),
         TestCategory('python3', 'python3', backend is not Backend.ninja),
-        TestCategory('python', 'python', backend is not Backend.ninja),
+        TestCategory('python', 'python'),
         TestCategory('fpga', 'fpga', shutil.which('yosys') is None),
         TestCategory('frameworks', 'frameworks'),
         TestCategory('nasm', 'nasm'),
@@ -1245,6 +1271,7 @@ if __name__ == '__main__':
     if options.cross_file:
         options.extra_args += ['--cross-file', options.cross_file]
 
+    print('Meson build system', meson_version, 'Project Tests')
     setup_commands(options.backend)
     detect_system_compiler(options)
     print_tool_versions()

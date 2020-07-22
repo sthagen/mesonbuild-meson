@@ -70,8 +70,10 @@ topic](https://github.com/topics/meson).
  - [Knot Resolver](https://gitlab.labs.nic.cz/knot/knot-resolver), Full caching DNS resolver implementation
  - [Ksh](https://github.com/att/ast), a Korn Shell
  - [Lc0](https://github.com/LeelaChessZero/lc0), LeelaChessZero is a UCI-compliant chess engine designed to play chess via neural network
+ - [Le](https://github.com/kirushyk/le), machine learning framework
  - [libcamera](https://git.linuxtv.org/libcamera.git/), a library to handle complex cameras on Linux, ChromeOS and Android
  - [Libdrm](https://gitlab.freedesktop.org/mesa/drm), a library for abstracting DRM kernel interfaces
+ - [libeconf](https://github.com/openSUSE/libeconf), Enhanced config file parsing library, which merges config files placed in several locations into one
  - [Libepoxy](https://github.com/anholt/libepoxy/), a library for handling OpenGL function pointer management
  - [libfuse](https://github.com/libfuse/libfuse), the reference implementation of the Linux FUSE (Filesystem in Userspace) interface
  - [Libgit2-glib](https://git.gnome.org/browse/libgit2-glib), a GLib wrapper for libgit2
@@ -115,6 +117,7 @@ format files
  - [RxDock](https://gitlab.com/rxdock/rxdock), a protein-ligand docking software designed for high throughput virtual screening (fork of rDock)
  - [scrcpy](https://github.com/Genymobile/scrcpy), a cross platform application that provides display and control of Android devices connected on USB or over TCP/IP
  - [Sequeler](https://github.com/Alecaddd/sequeler), a friendly SQL client for Linux, built with Vala and Gtk
+ - [Siril](https://gitlab.com/free-astro/siril), an image processing software for amateur astronomy
  - [SSHFS](https://github.com/libfuse/sshfs), allows you to mount a remote filesystem using SFTP
  - [sway](https://github.com/swaywm/sway), i3-compatible Wayland compositor
  - [Sysprof](https://git.gnome.org/browse/sysprof), a profiling tool

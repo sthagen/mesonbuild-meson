@@ -28,7 +28,6 @@ from .. import build
 from .. import dependencies
 from .. import mesonlib
 from .. import mlog
-from ..compilers import CompilerArgs, VisualStudioLikeCompiler
 from ..mesonlib import (
     File, MachineChoice, MesonException, OrderedSet, OptionOverrideProxy,
     classify_unity_sources, unholder
@@ -501,6 +500,12 @@ class Backend:
         target.rpath_dirs_to_remove.update([d.encode('utf8') for d in result])
         return tuple(result)
 
+    @staticmethod
+    def canonicalize_filename(fname):
+        for ch in ('/', '\\', ':'):
+            fname = fname.replace(ch, '_')
+        return fname
+
     def object_filename_from_source(self, target, source):
         assert isinstance(source, mesonlib.File)
         build_dir = self.environment.get_build_dir()
@@ -531,7 +536,7 @@ class Backend:
                 source = os.path.relpath(os.path.join(build_dir, rel_src),
                                          os.path.join(self.environment.get_source_dir(), target.get_subdir()))
         machine = self.environment.machines[target.for_machine]
-        return source.replace('/', '_').replace('\\', '_') + '.' + machine.get_object_suffix()
+        return self.canonicalize_filename(source) + '.' + machine.get_object_suffix()
 
     def determine_ext_objs(self, extobj, proj_dir_to_build_root):
         result = []
@@ -607,36 +612,20 @@ class Backend:
 
     @staticmethod
     def escape_extra_args(compiler, args):
-        # No extra escaping/quoting needed when not running on Windows
-        if not mesonlib.is_windows():
-            return args
+        # all backslashes in defines are doubly-escaped
         extra_args = []
-        # Compiler-specific escaping is needed for -D args but not for any others
-        if isinstance(compiler, VisualStudioLikeCompiler):
-            # MSVC needs escaping when a -D argument ends in \ or \"
-            for arg in args:
-                if arg.startswith('-D') or arg.startswith('/D'):
-                    # Without extra escaping for these two, the next character
-                    # gets eaten
-                    if arg.endswith('\\'):
-                        arg += '\\'
-                    elif arg.endswith('\\"'):
-                        arg = arg[:-2] + '\\\\"'
-                extra_args.append(arg)
-        else:
-            # MinGW GCC needs all backslashes in defines to be doubly-escaped
-            # FIXME: Not sure about Cygwin or Clang
-            for arg in args:
-                if arg.startswith('-D') or arg.startswith('/D'):
-                    arg = arg.replace('\\', '\\\\')
-                extra_args.append(arg)
+        for arg in args:
+            if arg.startswith('-D') or arg.startswith('/D'):
+                arg = arg.replace('\\', '\\\\')
+            extra_args.append(arg)
+
         return extra_args
 
     def generate_basic_compiler_args(self, target, compiler, no_warn_args=False):
         # Create an empty commands list, and start adding arguments from
         # various sources in the order in which they must override each other
         # starting from hard-coded defaults followed by build options and so on.
-        commands = CompilerArgs(compiler)
+        commands = compiler.compiler_args()
 
         copt_proxy = self.get_compiler_options_for_target(target)[compiler.language]
         # First, the trivial ones that are impossible to override.
@@ -759,6 +748,7 @@ class Backend:
             for deppath in self.rpaths_for_bundled_shared_libraries(target, exclude_system=False):
                 result.add(os.path.normpath(os.path.join(self.environment.get_build_dir(), deppath)))
         for bdep in extra_bdeps:
+            prospectives.add(bdep)
             prospectives.update(bdep.get_transitive_link_deps())
         # Internal deps
         for ld in prospectives:
@@ -1050,35 +1040,36 @@ class Backend:
             elif not isinstance(i, str):
                 err_msg = 'Argument {0} is of unknown type {1}'
                 raise RuntimeError(err_msg.format(str(i), str(type(i))))
-            elif '@SOURCE_ROOT@' in i:
-                i = i.replace('@SOURCE_ROOT@', source_root)
-            elif '@BUILD_ROOT@' in i:
-                i = i.replace('@BUILD_ROOT@', build_root)
-            elif '@DEPFILE@' in i:
-                if target.depfile is None:
-                    msg = 'Custom target {!r} has @DEPFILE@ but no depfile ' \
-                          'keyword argument.'.format(target.name)
-                    raise MesonException(msg)
-                dfilename = os.path.join(outdir, target.depfile)
-                i = i.replace('@DEPFILE@', dfilename)
-            elif '@PRIVATE_DIR@' in i:
-                if target.absolute_paths:
-                    pdir = self.get_target_private_dir_abs(target)
-                else:
-                    pdir = self.get_target_private_dir(target)
-                i = i.replace('@PRIVATE_DIR@', pdir)
-            elif '@PRIVATE_OUTDIR_' in i:
-                match = re.search(r'@PRIVATE_OUTDIR_(ABS_)?([^/\s*]*)@', i)
-                if not match:
-                    msg = 'Custom target {!r} has an invalid argument {!r}' \
-                          ''.format(target.name, i)
-                    raise MesonException(msg)
-                source = match.group(0)
-                if match.group(1) is None and not target.absolute_paths:
-                    lead_dir = ''
-                else:
-                    lead_dir = self.environment.get_build_dir()
-                i = i.replace(source, os.path.join(lead_dir, outdir))
+            else:
+                if '@SOURCE_ROOT@' in i:
+                    i = i.replace('@SOURCE_ROOT@', source_root)
+                if '@BUILD_ROOT@' in i:
+                    i = i.replace('@BUILD_ROOT@', build_root)
+                if '@DEPFILE@' in i:
+                    if target.depfile is None:
+                        msg = 'Custom target {!r} has @DEPFILE@ but no depfile ' \
+                              'keyword argument.'.format(target.name)
+                        raise MesonException(msg)
+                    dfilename = os.path.join(outdir, target.depfile)
+                    i = i.replace('@DEPFILE@', dfilename)
+                if '@PRIVATE_DIR@' in i:
+                    if target.absolute_paths:
+                        pdir = self.get_target_private_dir_abs(target)
+                    else:
+                        pdir = self.get_target_private_dir(target)
+                    i = i.replace('@PRIVATE_DIR@', pdir)
+                if '@PRIVATE_OUTDIR_' in i:
+                    match = re.search(r'@PRIVATE_OUTDIR_(ABS_)?([^/\s*]*)@', i)
+                    if not match:
+                        msg = 'Custom target {!r} has an invalid argument {!r}' \
+                              ''.format(target.name, i)
+                        raise MesonException(msg)
+                    source = match.group(0)
+                    if match.group(1) is None and not target.absolute_paths:
+                        lead_dir = ''
+                    else:
+                        lead_dir = self.environment.get_build_dir()
+                    i = i.replace(source, os.path.join(lead_dir, outdir))
             cmd.append(i)
         # Substitute the rest of the template strings
         values = mesonlib.get_filenames_templates_dict(inputs, outputs)

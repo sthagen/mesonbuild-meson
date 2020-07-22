@@ -17,12 +17,12 @@
 
 import pkg_resources
 
-from .common import CMakeException, CMakeTarget
+from .common import CMakeException, CMakeTarget, TargetOptions
 from .client import CMakeClient, RequestCMakeInputs, RequestConfigure, RequestCompute, RequestCodeModel
 from .fileapi import CMakeFileAPI
 from .executor import CMakeExecutor
 from .traceparser import CMakeTraceParser, CMakeGeneratorTarget
-from .. import mlog
+from .. import mlog, mesonlib
 from ..environment import Environment
 from ..mesonlib import MachineChoice, OrderedSet, version_compare
 from ..compilers.compilers import lang_suffixes, header_suffixes, obj_suffixes, lib_suffixes, is_header
@@ -317,13 +317,6 @@ class ConverterTarget:
         tgt = trace.targets.get(self.cmake_name)
         if tgt:
             self.depends_raw = trace.targets[self.cmake_name].depends
-            if self.type.upper() == 'INTERFACE_LIBRARY':
-                props = tgt.properties
-
-                self.includes += props.get('INTERFACE_INCLUDE_DIRECTORIES', [])
-                self.public_compile_opts += props.get('INTERFACE_COMPILE_DEFINITIONS', [])
-                self.public_compile_opts += props.get('INTERFACE_COMPILE_OPTIONS', [])
-                self.link_flags += props.get('INTERFACE_LINK_OPTIONS', [])
 
             # TODO refactor this copy paste from CMakeDependency for future releases
             reg_is_lib = re.compile(r'^(-l[a-zA-Z0-9_]+|-l?pthread)$')
@@ -342,6 +335,12 @@ class ConverterTarget:
                 libraries = []
                 mlog.debug(tgt)
 
+                if 'INTERFACE_INCLUDE_DIRECTORIES' in tgt.properties:
+                    self.includes += [x for x in tgt.properties['INTERFACE_INCLUDE_DIRECTORIES'] if x]
+
+                if 'INTERFACE_LINK_OPTIONS' in tgt.properties:
+                    self.link_flags += [x for x in tgt.properties['INTERFACE_LINK_OPTIONS'] if x]
+
                 if 'INTERFACE_COMPILE_DEFINITIONS' in tgt.properties:
                     self.public_compile_opts += ['-D' + re.sub('^-D', '', x) for x in tgt.properties['INTERFACE_COMPILE_DEFINITIONS'] if x]
 
@@ -355,7 +354,7 @@ class ConverterTarget:
                 if 'CONFIGURATIONS' in tgt.properties:
                     cfgs += [x for x in tgt.properties['CONFIGURATIONS'] if x]
                     cfg = cfgs[0]
-                
+
                 is_debug = self.env.coredata.get_builtin_option('debug');
                 if is_debug:
                     if 'DEBUG' in cfgs:
@@ -994,7 +993,7 @@ class CMakeInterpreter:
 
         mlog.log('CMake project', mlog.bold(self.project_name), 'has', mlog.bold(str(len(self.targets) + len(self.custom_targets))), 'build targets.')
 
-    def pretend_to_be_meson(self) -> CodeBlockNode:
+    def pretend_to_be_meson(self, options: TargetOptions) -> CodeBlockNode:
         if not self.project_name:
             raise CMakeException('CMakeInterpreter was not analysed')
 
@@ -1060,9 +1059,6 @@ class CMakeInterpreter:
         root_cb.lines += [function('project', [self.project_name] + self.languages)]
 
         # Add the run script for custom commands
-        run_script = pkg_resources.resource_filename('mesonbuild', 'cmake/data/run_ctgt.py')
-        run_script_var = 'ctgt_run_script'
-        root_cb.lines += [assign(run_script_var, function('find_program', [[run_script]], {'required': True}))]
 
         # Add the targets
         processing = []
@@ -1158,21 +1154,26 @@ class CMakeInterpreter:
             dep_var = '{}_dep'.format(tgt.name)
             tgt_var = tgt.name
 
+            install_tgt = options.get_install(tgt.cmake_name, tgt.install)
+
             # Generate target kwargs
             tgt_kwargs = {
-                'build_by_default': tgt.install,
-                'link_args': tgt.link_flags + tgt.link_libraries,
+                'build_by_default': install_tgt,
+                'link_args': options.get_link_args(tgt.cmake_name, tgt.link_flags + tgt.link_libraries),
                 'link_with': link_with,
                 'include_directories': id_node(inc_var),
-                'install': tgt.install,
-                'install_dir': tgt.install_dir,
-                'override_options': tgt.override_options,
+                'install': install_tgt,
+                'override_options': options.get_override_options(tgt.cmake_name, tgt.override_options),
                 'objects': [method(x, 'extract_all_objects') for x in objec_libs],
             }
 
+            # Only set if installed and only override if it is set
+            if install_tgt and tgt.install_dir:
+                tgt_kwargs['install_dir'] = tgt.install_dir
+
             # Handle compiler args
             for key, val in tgt.compile_opts.items():
-                tgt_kwargs['{}_args'.format(key)] = val
+                tgt_kwargs['{}_args'.format(key)] = options.get_compile_args(tgt.cmake_name, key, val)
 
             # Handle -fPCI, etc
             if tgt_func == 'executable':
@@ -1244,7 +1245,8 @@ class CMakeInterpreter:
 
             # Generate the command list
             command = []
-            command += [id_node(run_script_var)]
+            command += mesonlib.meson_command
+            command += ['--internal', 'cmake_run_ctgt']
             command += ['-o', '@OUTPUT@']
             if tgt.original_outputs:
                 command += ['-O'] + tgt.original_outputs

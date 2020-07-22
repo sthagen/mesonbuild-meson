@@ -17,6 +17,7 @@ import os
 import typing as T
 
 from . import mesonlib
+from .arglist import CompilerArgs
 from .envconfig import get_env_var
 
 if T.TYPE_CHECKING:
@@ -28,6 +29,9 @@ class StaticLinker:
 
     def __init__(self, exelist: T.List[str]):
         self.exelist = exelist
+
+    def compiler_args(self, args: T.Optional[T.Iterable[str]] = None) -> CompilerArgs:
+        return CompilerArgs(self, args)
 
     def can_linker_accept_rsp(self) -> bool:
         """
@@ -149,6 +153,10 @@ class ArLinker(StaticLinker):
             self.std_args = ['csrD']
         else:
             self.std_args = ['csr']
+        self.can_rsp = '@<' in stdo
+
+    def can_linker_accept_rsp(self) -> bool:
+        return self.can_rsp
 
     def get_std_link_args(self) -> T.List[str]:
         return self.std_args
@@ -436,11 +444,12 @@ class DynamicLinker(LinkerEnvVarsMixin, metaclass=abc.ABCMeta):
         """Arguments to make all warnings errors."""
         return []
 
+    def headerpad_args(self) -> T.List[str]:
+        # Only used by the Apple linker
+        return []
+
     def bitcode_args(self) -> T.List[str]:
         raise mesonlib.MesonException('This linker does not support bitcode bundles')
-
-    def get_debug_crt_args(self) -> T.List[str]:
-        return []
 
     def build_rpath_args(self, env: 'Environment', build_dir: str, from_dir: str,
                          rpath_paths: str, build_rpath: str,
@@ -655,8 +664,8 @@ class AppleDynamicLinker(PosixDynamicLinkerMixin, DynamicLinker):
     def no_undefined_args(self) -> T.List[str]:
         return self._apply_prefix('-undefined,error')
 
-    def get_always_args(self) -> T.List[str]:
-        return self._apply_prefix('-headerpad_max_install_names') + super().get_always_args()
+    def headerpad_args(self) -> T.List[str]:
+        return self._apply_prefix('-headerpad_max_install_names')
 
     def bitcode_args(self) -> T.List[str]:
         return self._apply_prefix('-bitcode_bundle')
@@ -684,9 +693,7 @@ class AppleDynamicLinker(PosixDynamicLinkerMixin, DynamicLinker):
                          install_rpath: str) -> T.Tuple[T.List[str], T.Set[bytes]]:
         if not rpath_paths and not install_rpath and not build_rpath:
             return ([], set())
-        # Ensure that there is enough space for install_name_tool in-place
-        # editing of large RPATHs
-        args = self._apply_prefix('-headerpad_max_install_names')
+        args = []
         # @loader_path is the equivalent of $ORIGIN on macOS
         # https://stackoverflow.com/q/26280738
         origin_placeholder = '@loader_path'
@@ -703,6 +710,9 @@ class AppleDynamicLinker(PosixDynamicLinkerMixin, DynamicLinker):
 class GnuDynamicLinker(GnuLikeDynamicLinkerMixin, PosixDynamicLinkerMixin, DynamicLinker):
 
     """Representation of GNU ld.bfd and ld.gold."""
+
+    def get_accepts_rsp(self) -> bool:
+        return True;
 
 
 class GnuGoldDynamicLinker(GnuDynamicLinker):
@@ -985,16 +995,6 @@ class VisualStudioLikeLinkerMixin:
     def invoked_by_compiler(self) -> bool:
         return not self.direct
 
-    def get_debug_crt_args(self) -> T.List[str]:
-        """Arguments needed to select a debug crt for the linker.
-
-        Sometimes we need to manually select the CRT (C runtime) to use with
-        MSVC. One example is when trying to link with static libraries since
-        MSVC won't auto-select a CRT for us in that case and will error out
-        asking us to select one.
-        """
-        return self._apply_prefix('/MDd')
-
     def get_output_args(self, outputname: str) -> T.List[str]:
         return self._apply_prefix(['/MACHINE:' + self.machine, '/OUT:' + outputname])
 
@@ -1084,6 +1084,19 @@ class SolarisDynamicLinker(PosixDynamicLinkerMixin, DynamicLinker):
         if not args:
             return args
         return self._apply_prefix('--whole-archive') + args + self._apply_prefix('--no-whole-archive')
+
+    def get_pie_args(self) -> T.List[str]:
+        # Available in Solaris 11.2 and later
+        pc, stdo, stde = mesonlib.Popen_safe(self.exelist + self._apply_prefix('-zhelp'))
+        for line in (stdo + stde).split('\n'):
+            if '-z type' in line:
+                if 'pie' in line:
+                    return ['-z', 'type=pie']
+                break
+        return []
+
+    def get_asneeded_args(self) -> T.List[str]:
+        return self._apply_prefix(['-z', 'ignore'])
 
     def no_undefined_args(self) -> T.List[str]:
         return ['-z', 'defs']

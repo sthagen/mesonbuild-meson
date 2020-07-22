@@ -64,6 +64,7 @@ class CMakeTarget:
             return
         for key, val in self.properties.items():
             self.properties[key] = [x.strip() for x in val]
+            assert all([';' not in x for x in self.properties[key]])
 
 class CMakeGeneratorTarget(CMakeTarget):
     def __init__(self, name):
@@ -138,7 +139,7 @@ class CMakeTraceParser:
         if not self.requires_stderr():
             if not self.trace_file_path.exists and not self.trace_file_path.is_file():
                 raise CMakeException('CMake: Trace file "{}" not found'.format(str(self.trace_file_path)))
-            trace = self.trace_file_path.read_text()
+            trace = self.trace_file_path.read_text(errors='ignore')
         if not trace:
             raise CMakeException('CMake: The CMake trace was not provided or is empty')
 
@@ -574,10 +575,10 @@ class CMakeTraceParser:
                 continue
 
             if mode in ['INTERFACE', 'LINK_INTERFACE_LIBRARIES', 'PUBLIC', 'LINK_PUBLIC']:
-                interface += [i]
+                interface += i.split(';')
 
             if mode in ['PUBLIC', 'PRIVATE', 'LINK_PRIVATE']:
-                private += [i]
+                private += i.split(';')
 
         if paths:
             interface = self._guess_files(interface)
