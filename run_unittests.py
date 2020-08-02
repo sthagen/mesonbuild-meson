@@ -1272,7 +1272,6 @@ class InternalTests(unittest.TestCase):
 
         self.assertFalse(errors)
 
-
 @unittest.skipIf(is_tarball(), 'Skipping because this is a tarball release')
 class DataTests(unittest.TestCase):
 
@@ -1485,6 +1484,38 @@ class DataTests(unittest.TestCase):
         astint = AstInterpreter('.', '', '')
         self.assertEqual(set(interp.funcs.keys()), set(astint.funcs.keys()))
 
+    def test_mesondata_is_up_to_date(self):
+        from mesonbuild.mesondata import mesondata
+        err_msg = textwrap.dedent('''
+
+            ###########################################################
+            ###        mesonbuild.mesondata is not up-to-date       ###
+            ###  Please regenerate it by running tools/gen_data.py  ###
+            ###########################################################
+
+        ''')
+
+        root_dir = Path(__file__).resolve().parent
+        mesonbuild_dir = root_dir / 'mesonbuild'
+
+        data_dirs = mesonbuild_dir.glob('**/data')
+        data_files = []  # type: T.List[T.Tuple(str, str)]
+
+        for i in data_dirs:
+            for p in i.iterdir():
+                data_files += [(p.relative_to(mesonbuild_dir).as_posix(), hashlib.sha256(p.read_bytes()).hexdigest())]
+
+        from pprint import pprint
+        current_files = set(mesondata.keys())
+        scanned_files = set([x[0] for x in data_files])
+
+        self.assertSetEqual(current_files, scanned_files, err_msg + 'Data files were added or removed\n')
+        errors = []
+        for i in data_files:
+            if mesondata[i[0]].sha256sum != i[1]:
+                errors += [i[0]]
+
+        self.assertListEqual(errors, [], err_msg + 'Files were changed')
 
 class BasePlatformTests(unittest.TestCase):
     prefix = '/usr'
@@ -4873,6 +4904,25 @@ recommended as it is not supported on some platforms''')
         self.run_tests()
         self.run_target('coverage')
 
+    def test_coverage_complex(self):
+        if mesonbuild.environment.detect_msys2_arch():
+            raise unittest.SkipTest('Skipped due to problems with coverage on MSYS2')
+        gcovr_exe, gcovr_new_rootdir = mesonbuild.environment.detect_gcovr()
+        if not gcovr_exe:
+            raise unittest.SkipTest('gcovr not found, or too old')
+        testdir = os.path.join(self.common_test_dir, '109 generatorcustom')
+        env = get_fake_env(testdir, self.builddir, self.prefix)
+        cc = env.detect_c_compiler(MachineChoice.HOST)
+        if cc.get_id() == 'clang':
+            if not mesonbuild.environment.detect_llvm_cov():
+                raise unittest.SkipTest('llvm-cov not found')
+        if cc.get_id() == 'msvc':
+            raise unittest.SkipTest('Test only applies to non-MSVC compilers')
+        self.init(testdir, extra_args=['-Db_coverage=true'])
+        self.build()
+        self.run_tests()
+        self.run_target('coverage')
+
     def test_coverage_html(self):
         if mesonbuild.environment.detect_msys2_arch():
             raise unittest.SkipTest('Skipped due to problems with coverage on MSYS2')
@@ -5786,6 +5836,19 @@ class LinuxlikeTests(BasePlatformTests):
         out = self._run(cmd + ['--libs'], override_envvars=env).strip().split()
         self.assertEqual(out, ['-llibmain2', '-llibinternal'])
 
+        # See common/47 pkgconfig-gen/meson.build for description of the case this test
+        with open(os.path.join(privatedir1, 'simple2.pc')) as f:
+            content = f.read()
+            self.assertIn('Libs: -L${libdir} -lsimple2 -lz -lsimple1', content)
+
+        with open(os.path.join(privatedir1, 'simple3.pc')) as f:
+            content = f.read()
+            self.assertEqual(1, content.count('-lsimple3'))
+
+        with open(os.path.join(privatedir1, 'simple5.pc')) as f:
+            content = f.read()
+            self.assertNotIn('-lstat2', content)
+
     def test_pkgconfig_uninstalled(self):
         testdir = os.path.join(self.common_test_dir, '47 pkgconfig-gen')
         self.init(testdir)
@@ -6423,19 +6486,34 @@ class LinuxlikeTests(BasePlatformTests):
         self.init(yonder_dir)
         self.build()
         self.install(use_destdir=False)
-        self.new_builddir()
 
-        # Build an app that uses that installed library.
-        # Supply the rpath to the installed library via LDFLAGS
-        # (as systems like buildroot and guix are wont to do)
-        # and verify install preserves that rpath.
-        env = {'LDFLAGS': '-Wl,-rpath=' + yonder_libdir,
-               'PKG_CONFIG_PATH': os.path.join(yonder_libdir, 'pkgconfig')}
-        self.init(testdir, override_envvars=env)
-        self.build()
-        self.install(use_destdir=False)
-        got_rpath = get_rpath(os.path.join(yonder_prefix, 'bin/rpathified'))
-        self.assertEqual(got_rpath, yonder_libdir)
+        # Since rpath has multiple valid formats we need to
+        # test that they are all properly used.
+        rpath_formats = [
+            ('-Wl,-rpath=', False),
+            ('-Wl,-rpath,', False),
+            ('-Wl,--just-symbols=', True),
+            ('-Wl,--just-symbols,', True),
+            ('-Wl,-R', False),
+            ('-Wl,-R,', False)
+        ]
+        for rpath_format, exception in rpath_formats:
+            # Build an app that uses that installed library.
+            # Supply the rpath to the installed library via LDFLAGS
+            # (as systems like buildroot and guix are wont to do)
+            # and verify install preserves that rpath.
+            self.new_builddir()
+            env = {'LDFLAGS': rpath_format + yonder_libdir,
+                   'PKG_CONFIG_PATH': os.path.join(yonder_libdir, 'pkgconfig')}
+            if exception:
+                with self.assertRaises(subprocess.CalledProcessError):
+                    self.init(testdir, override_envvars=env)
+                break
+            self.init(testdir, override_envvars=env)
+            self.build()
+            self.install(use_destdir=False)
+            got_rpath = get_rpath(os.path.join(yonder_prefix, 'bin/rpathified'))
+            self.assertEqual(got_rpath, yonder_libdir, rpath_format)
 
     @skip_if_not_base_option('b_sanitize')
     def test_pch_with_address_sanitizer(self):
