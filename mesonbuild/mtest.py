@@ -206,7 +206,7 @@ class TAPParser:
         explanation = explanation.strip() if explanation else None
         if directive is not None:
             directive = directive.upper()
-            if directive == 'SKIP':
+            if directive.startswith('SKIP'):
                 if ok:
                     yield self.Test(num, name, TestResult.SKIP, explanation)
                     return
@@ -489,7 +489,7 @@ class TestRun:
                 failed = True
             elif isinstance(i, TAPParser.Test):
                 results.append(i.result)
-                if i.result not in {TestResult.OK, TestResult.EXPECTEDFAIL}:
+                if i.result not in {TestResult.OK, TestResult.EXPECTEDFAIL, TestResult.SKIP}:
                     failed = True
             elif isinstance(i, TAPParser.Error):
                 results.append(TestResult.ERROR)
@@ -907,7 +907,7 @@ class TestHarness:
         if result.res is TestResult.FAIL:
             result_str += ' ' + returncode_to_status(result.returncode)
         if not self.options.quiet or result.res not in ok_statuses:
-            if result.res not in ok_statuses and mlog.colorize_console:
+            if result.res not in ok_statuses and mlog.colorize_console():
                 if result.res in bad_statuses:
                     self.collected_failures.append(result_str)
                     decorator = mlog.red

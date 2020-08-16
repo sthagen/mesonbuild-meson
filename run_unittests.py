@@ -1372,8 +1372,8 @@ class DataTests(unittest.TestCase):
             found_entries |= options
 
         self.assertEqual(found_entries, set([
-            *mesonbuild.coredata.builtin_options.keys(),
-            *mesonbuild.coredata.builtin_options_per_machine.keys()
+            *mesonbuild.coredata.BUILTIN_OPTIONS.keys(),
+            *mesonbuild.coredata.BUILTIN_OPTIONS_PER_MACHINE.keys()
         ]))
 
         # Check that `buildtype` table inside `Core options` matches how
@@ -3037,7 +3037,7 @@ int main(int argc, char **argv) {
         test. Needs to be a unit test because it accesses Meson internals.
         '''
         testdir = os.path.join(self.common_test_dir, '154 reserved targets')
-        targets = mesonbuild.coredata.forbidden_target_names
+        targets = mesonbuild.coredata.FORBIDDEN_TARGET_NAMES
         # We don't actually define a target with this name
         targets.pop('build.ninja')
         # Remove this to avoid multiple entries with the same name
@@ -4030,7 +4030,7 @@ recommended as it is not supported on some platforms''')
         self.__reconfigure()
 
         out = self.init(testdir, extra_args=['--reconfigure', '-Dopt3=val3'])
-        self.assertRegex(out, 'WARNING:.*Regenerating configuration from scratch')
+        self.assertRegex(out, 'Regenerating configuration from scratch')
         self.assertRegex(out, 'opt1 val1')
         self.assertRegex(out, 'opt2 val2')
         self.assertRegex(out, 'opt3 val3')
@@ -4067,7 +4067,7 @@ recommended as it is not supported on some platforms''')
         self.__reconfigure(change_minor=True)
 
         out = self.init(testdir, extra_args=['--reconfigure', '-Dopt3=val3'])
-        self.assertNotRegex(out, 'WARNING:.*Regenerating configuration from scratch')
+        self.assertNotRegex(out, 'Regenerating configuration from scratch')
         self.assertRegex(out, 'opt1 val1')
         self.assertRegex(out, 'opt2 val2')
         self.assertRegex(out, 'opt3 val3')
@@ -4885,6 +4885,18 @@ recommended as it is not supported on some platforms''')
             m = get_data_pattern(command).search(md, pos=md_command_sections[command][0], endpos=md_command_sections[command][1])
             self.assertIsNotNone(m, 'Command `{}` is missing placeholders for dynamic data. Doc file: `{}`'.format(command, doc_path))
 
+    def _check_coverage_files(self, types=('text', 'xml', 'html')):
+        covdir = Path(self.builddir) / 'meson-logs'
+        files = []
+        if 'text' in types:
+            files.append('coverage.txt')
+        if 'xml' in types:
+            files.append('coverage.xml')
+        if 'html' in types:
+            files.append('coveragereport/index.html')
+        for f in files:
+            self.assertTrue((covdir / f).is_file(), msg='{} is not a file'.format(f))
+
     def test_coverage(self):
         if mesonbuild.environment.detect_msys2_arch():
             raise unittest.SkipTest('Skipped due to problems with coverage on MSYS2')
@@ -4903,6 +4915,7 @@ recommended as it is not supported on some platforms''')
         self.build()
         self.run_tests()
         self.run_target('coverage')
+        self._check_coverage_files()
 
     def test_coverage_complex(self):
         if mesonbuild.environment.detect_msys2_arch():
@@ -4922,6 +4935,7 @@ recommended as it is not supported on some platforms''')
         self.build()
         self.run_tests()
         self.run_target('coverage')
+        self._check_coverage_files()
 
     def test_coverage_html(self):
         if mesonbuild.environment.detect_msys2_arch():
@@ -4941,6 +4955,7 @@ recommended as it is not supported on some platforms''')
         self.build()
         self.run_tests()
         self.run_target('coverage-html')
+        self._check_coverage_files(['html'])
 
     def test_coverage_text(self):
         if mesonbuild.environment.detect_msys2_arch():
@@ -4960,6 +4975,7 @@ recommended as it is not supported on some platforms''')
         self.build()
         self.run_tests()
         self.run_target('coverage-text')
+        self._check_coverage_files(['text'])
 
     def test_coverage_xml(self):
         if mesonbuild.environment.detect_msys2_arch():
@@ -4979,6 +4995,7 @@ recommended as it is not supported on some platforms''')
         self.build()
         self.run_tests()
         self.run_target('coverage-xml')
+        self._check_coverage_files(['xml'])
 
     def test_cross_file_constants(self):
         with temp_filename() as crossfile1, temp_filename() as crossfile2:
@@ -5014,7 +5031,7 @@ recommended as it is not supported on some platforms''')
     def test_wrap_git(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             srcdir = os.path.join(tmpdir, 'src')
-            shutil.copytree(os.path.join(self.unit_test_dir, '78 wrap-git'), srcdir)
+            shutil.copytree(os.path.join(self.unit_test_dir, '81 wrap-git'), srcdir)
             upstream = os.path.join(srcdir, 'subprojects', 'wrap_git_upstream')
             upstream_uri = Path(upstream).as_uri()
             _git_init(upstream)
@@ -5028,6 +5045,14 @@ recommended as it is not supported on some platforms''')
             self.init(srcdir)
             self.build()
             self.run_tests()
+
+    def test_multi_output_custom_target_no_warning(self):
+        testdir = os.path.join(self.common_test_dir, '235 custom_target source')
+
+        out = self.init(testdir)
+        self.assertNotRegex(out, 'WARNING:.*Using the first one.')
+        self.build()
+        self.run_tests()
 
 class FailureTests(BasePlatformTests):
     '''
@@ -6473,7 +6498,7 @@ class LinuxlikeTests(BasePlatformTests):
         if is_osx():
             raise unittest.SkipTest('Global RPATHs via LDFLAGS not yet supported on MacOS (does anybody need it?)')
 
-        testdir = os.path.join(self.unit_test_dir, '77 global-rpath')
+        testdir = os.path.join(self.unit_test_dir, '80 global-rpath')
         oldinstalldir = self.installdir
 
         # Build and install an external library without DESTDIR.
@@ -6846,7 +6871,7 @@ class LinuxlikeTests(BasePlatformTests):
         oldinstalldir = self.installdir
 
         # Build and install both external libraries without DESTDIR
-        val1dir = os.path.join(self.unit_test_dir, '76 pkgconfig prefixes', 'val1')
+        val1dir = os.path.join(self.unit_test_dir, '77 pkgconfig prefixes', 'val1')
         val1prefix = os.path.join(oldinstalldir, 'val1')
         self.prefix = val1prefix
         self.installdir = val1prefix
@@ -6857,7 +6882,7 @@ class LinuxlikeTests(BasePlatformTests):
 
         env1 = {}
         env1['PKG_CONFIG_PATH'] = os.path.join(val1prefix, self.libdir, 'pkgconfig')
-        val2dir = os.path.join(self.unit_test_dir, '76 pkgconfig prefixes', 'val2')
+        val2dir = os.path.join(self.unit_test_dir, '77 pkgconfig prefixes', 'val2')
         val2prefix = os.path.join(oldinstalldir, 'val2')
         self.prefix = val2prefix
         self.installdir = val2prefix
@@ -6869,7 +6894,7 @@ class LinuxlikeTests(BasePlatformTests):
         # Build, install, and run the client program
         env2 = {}
         env2['PKG_CONFIG_PATH'] = os.path.join(val2prefix, self.libdir, 'pkgconfig')
-        testdir = os.path.join(self.unit_test_dir, '76 pkgconfig prefixes', 'client')
+        testdir = os.path.join(self.unit_test_dir, '77 pkgconfig prefixes', 'client')
         testprefix = os.path.join(oldinstalldir, 'client')
         self.prefix = testprefix
         self.installdir = testprefix
@@ -7119,6 +7144,24 @@ c = ['{0}']
         build_rpath = get_rpath(os.path.join(self.builddir, 'prog'))
         self.assertIsNone(build_rpath)
 
+    def test_lookup_system_after_broken_fallback(self):
+        # Just to generate libfoo.pc so we can test system dependency lookup.
+        testdir = os.path.join(self.common_test_dir, '47 pkgconfig-gen')
+        self.init(testdir)
+        privatedir = self.privatedir
+
+        # Write test project where the first dependency() returns not-found
+        # because 'broken' subproject does not exit, but that should not prevent
+        # the 2nd dependency() to lookup on system.
+        self.new_builddir()
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, 'meson.build'), 'w') as f:
+                f.write(textwrap.dedent('''\
+                    project('test')
+                    dependency('notfound', fallback: 'broken', required: false)
+                    dependency('libfoo', fallback: 'broken', required: true)
+                    '''))
+            self.init(d, override_envvars={'PKG_CONFIG_LIBDIR': privatedir})
 
 class BaseLinuxCrossTests(BasePlatformTests):
     # Don't pass --libdir when cross-compiling. We have tests that
@@ -7180,7 +7223,7 @@ class LinuxCrossArmTests(BaseLinuxCrossTests):
     def test_cross_libdir_subproject(self):
         # Guard against a regression where calling "subproject"
         # would reset the value of libdir to its default value.
-        testdir = os.path.join(self.unit_test_dir, '76 subdir libdir')
+        testdir = os.path.join(self.unit_test_dir, '78 subdir libdir')
         self.init(testdir, extra_args=['--libdir=fuf'])
         for i in self.introspect('--buildoptions'):
             if i['name'] == 'libdir':
@@ -7672,7 +7715,12 @@ class NativeFileTests(BasePlatformTests):
             for section, entries in values.items():
                 f.write('[{}]\n'.format(section))
                 for k, v in entries.items():
-                    f.write("{}='{}'\n".format(k, v))
+                    if isinstance(v, (bool, int, float)):
+                        f.write("{}={}\n".format(k, v))
+                    elif isinstance(v, list):
+                        f.write("{}=[{}]\n".format(k, ', '.join(["'{}'".format(w) for w in v])))
+                    else:
+                        f.write("{}='{}'\n".format(k, v))
         return filename
 
     def helper_create_binary_wrapper(self, binary, dir_=None, extra_args=None, **kwargs):
@@ -7996,6 +8044,219 @@ class NativeFileTests(BasePlatformTests):
         self.init(testcase, extra_args=['--native-file', config])
         self.build()
 
+    def test_user_options(self):
+        testcase = os.path.join(self.common_test_dir, '43 options')
+        for opt, value in [('testoption', 'some other val'), ('other_one', True),
+                           ('combo_opt', 'one'), ('array_opt', ['two']),
+                           ('integer_opt', 0)]:
+            config = self.helper_create_native_file({'project options': {opt: value}})
+            with self.assertRaises(subprocess.CalledProcessError) as cm:
+                self.init(testcase, extra_args=['--native-file', config])
+                self.assertRegex(cm.exception.stdout, r'Incorrect value to [a-z]+ option')
+
+    def test_user_options_command_line_overrides(self):
+        testcase = os.path.join(self.common_test_dir, '43 options')
+        config = self.helper_create_native_file({'project options': {'other_one': True}})
+        self.init(testcase, extra_args=['--native-file', config, '-Dother_one=false'])
+
+    def test_user_options_subproject(self):
+        testcase = os.path.join(self.unit_test_dir, '79 user options for subproject')
+
+        s = os.path.join(testcase, 'subprojects')
+        if not os.path.exists(s):
+            os.mkdir(s)
+        s = os.path.join(s, 'sub')
+        if not os.path.exists(s):
+            sub = os.path.join(self.common_test_dir, '43 options')
+            shutil.copytree(sub, s)
+
+        for opt, value in [('testoption', 'some other val'), ('other_one', True),
+                           ('combo_opt', 'one'), ('array_opt', ['two']),
+                           ('integer_opt', 0)]:
+            config = self.helper_create_native_file({'sub:project options': {opt: value}})
+            with self.assertRaises(subprocess.CalledProcessError) as cm:
+                self.init(testcase, extra_args=['--native-file', config])
+                self.assertRegex(cm.exception.stdout, r'Incorrect value to [a-z]+ option')
+
+    def test_option_bool(self):
+        # Bools are allowed to be unquoted
+        testcase = os.path.join(self.common_test_dir, '1 trivial')
+        config = self.helper_create_native_file({'built-in options': {'werror': True}})
+        self.init(testcase, extra_args=['--native-file', config])
+        configuration = self.introspect('--buildoptions')
+        for each in configuration:
+            # Test that no-per subproject options are inherited from the parent
+            if 'werror' in each['name']:
+                self.assertEqual(each['value'], True)
+                break
+        else:
+            self.fail('Did not find werror in build options?')
+
+    def test_option_integer(self):
+        # Bools are allowed to be unquoted
+        testcase = os.path.join(self.common_test_dir, '1 trivial')
+        config = self.helper_create_native_file({'built-in options': {'unity_size': 100}})
+        self.init(testcase, extra_args=['--native-file', config])
+        configuration = self.introspect('--buildoptions')
+        for each in configuration:
+            # Test that no-per subproject options are inherited from the parent
+            if 'unity_size' in each['name']:
+                self.assertEqual(each['value'], 100)
+                break
+        else:
+            self.fail('Did not find unity_size in build options?')
+
+    def test_builtin_options(self):
+        testcase = os.path.join(self.common_test_dir, '2 cpp')
+        config = self.helper_create_native_file({'built-in options': {'cpp_std': 'c++14'}})
+
+        self.init(testcase, extra_args=['--native-file', config])
+        configuration = self.introspect('--buildoptions')
+        for each in configuration:
+            if each['name'] == 'cpp_std':
+                self.assertEqual(each['value'], 'c++14')
+                break
+        else:
+            self.fail('Did not find werror in build options?')
+
+    def test_builtin_options_env_overrides_conf(self):
+        testcase = os.path.join(self.common_test_dir, '2 cpp')
+        config = self.helper_create_native_file({'built-in options': {'pkg_config_path': '/foo'}})
+
+        self.init(testcase, extra_args=['--native-file', config], override_envvars={'PKG_CONFIG_PATH': '/bar'})
+        configuration = self.introspect('--buildoptions')
+        for each in configuration:
+            if each['name'] == 'pkg_config_path':
+                self.assertEqual(each['value'], ['/bar'])
+                break
+        else:
+            self.fail('Did not find pkg_config_path in build options?')
+
+    def test_builtin_options_subprojects(self):
+        testcase = os.path.join(self.common_test_dir, '102 subproject subdir')
+        config = self.helper_create_native_file({'built-in options': {'default_library': 'both', 'c_args': ['-Dfoo']}, 'sub:built-in options': {'default_library': 'static'}})
+
+        self.init(testcase, extra_args=['--native-file', config])
+        configuration = self.introspect('--buildoptions')
+        found = 0
+        for each in configuration:
+            # Test that no-per subproject options are inherited from the parent
+            if 'c_args' in each['name']:
+                # This path will be hit twice, once for build and once for host,
+                self.assertEqual(each['value'], ['-Dfoo'])
+                found += 1
+            elif each['name'] == 'default_library':
+                self.assertEqual(each['value'], 'both')
+                found += 1
+            elif each['name'] == 'sub:default_library':
+                self.assertEqual(each['value'], 'static')
+                found += 1
+        self.assertEqual(found, 4, 'Did not find all three sections')
+
+    def test_builtin_options_subprojects_overrides_buildfiles(self):
+        # If the buildfile says subproject(... default_library: shared), ensure that's overwritten
+        testcase = os.path.join(self.common_test_dir, '230 persubproject options')
+        config = self.helper_create_native_file({'sub2:built-in options': {'default_library': 'shared'}})
+
+        with self.assertRaises(subprocess.CalledProcessError) as cm:
+            self.init(testcase, extra_args=['--native-file', config])
+            self.assertIn(cm.exception.stdout, 'Parent should override default_library')
+
+    def test_builtin_options_subprojects_inherits_parent_override(self):
+        # If the buildfile says subproject(... default_library: shared), ensure that's overwritten
+        testcase = os.path.join(self.common_test_dir, '230 persubproject options')
+        config = self.helper_create_native_file({'built-in options': {'default_library': 'both'}})
+
+        with self.assertRaises(subprocess.CalledProcessError) as cm:
+            self.init(testcase, extra_args=['--native-file', config])
+            self.assertIn(cm.exception.stdout, 'Parent should override default_library')
+
+    def test_builtin_options_compiler_properties(self):
+        # the properties section can have lang_args, and those need to be
+        # overwritten by the built-in options
+        testcase = os.path.join(self.common_test_dir, '1 trivial')
+        config = self.helper_create_native_file({
+            'built-in options': {'c_args': ['-DFOO']},
+            'properties': {'c_args': ['-DBAR']},
+        })
+
+        self.init(testcase, extra_args=['--native-file', config])
+        configuration = self.introspect('--buildoptions')
+        for each in configuration:
+            if each['name'] == 'c_args':
+                self.assertEqual(each['value'], ['-DFOO'])
+                break
+        else:
+            self.fail('Did not find c_args in build options?')
+
+    def test_builtin_options_compiler_properties_legacy(self):
+        # The legacy placement in properties is still valid if a 'built-in
+        # options' setting is present, but doesn't have the lang_args
+        testcase = os.path.join(self.common_test_dir, '1 trivial')
+        config = self.helper_create_native_file({
+            'built-in options': {'default_library': 'static'},
+            'properties': {'c_args': ['-DBAR']},
+        })
+
+        self.init(testcase, extra_args=['--native-file', config])
+        configuration = self.introspect('--buildoptions')
+        for each in configuration:
+            if each['name'] == 'c_args':
+                self.assertEqual(each['value'], ['-DBAR'])
+                break
+        else:
+            self.fail('Did not find c_args in build options?')
+
+    def test_builtin_options_paths(self):
+        # the properties section can have lang_args, and those need to be
+        # overwritten by the built-in options
+        testcase = os.path.join(self.common_test_dir, '1 trivial')
+        config = self.helper_create_native_file({
+            'built-in options': {'bindir': 'foo'},
+            'paths': {'bindir': 'bar'},
+        })
+
+        self.init(testcase, extra_args=['--native-file', config])
+        configuration = self.introspect('--buildoptions')
+        for each in configuration:
+            if each['name'] == 'bindir':
+                self.assertEqual(each['value'], 'foo')
+                break
+        else:
+            self.fail('Did not find bindir in build options?')
+
+    def test_builtin_options_paths_legacy(self):
+        testcase = os.path.join(self.common_test_dir, '1 trivial')
+        config = self.helper_create_native_file({
+            'built-in options': {'default_library': 'static'},
+            'paths': {'bindir': 'bar'},
+        })
+
+        self.init(testcase, extra_args=['--native-file', config])
+        configuration = self.introspect('--buildoptions')
+        for each in configuration:
+            if each['name'] == 'bindir':
+                self.assertEqual(each['value'], 'bar')
+                break
+        else:
+            self.fail('Did not find bindir in build options?')
+
+    def test_builtin_options_paths_legacy(self):
+        testcase = os.path.join(self.common_test_dir, '1 trivial')
+        config = self.helper_create_native_file({
+            'built-in options': {'default_library': 'static'},
+            'paths': {'bindir': 'bar'},
+        })
+
+        self.init(testcase, extra_args=['--native-file', config])
+        configuration = self.introspect('--buildoptions')
+        for each in configuration:
+            if each['name'] == 'bindir':
+                self.assertEqual(each['value'], 'bar')
+                break
+        else:
+            self.fail('Did not find bindir in build options?')
+
 
 class CrossFileTests(BasePlatformTests):
 
@@ -8004,6 +8265,11 @@ class CrossFileTests(BasePlatformTests):
 
     This is mainly aimed to testing overrides from cross files.
     """
+
+    def setUp(self):
+        super().setUp()
+        self.current_config = 0
+        self.current_wrapper = 0
 
     def _cross_file_generator(self, *, needs_exe_wrapper: bool = False,
                               exe_wrapper: T.Optional[T.List[str]] = None) -> str:
@@ -8133,6 +8399,21 @@ class CrossFileTests(BasePlatformTests):
                     self.init(testdir, extra_args=['--cross-file=' + name], inprocess=True)
                     self.wipe()
 
+    def helper_create_cross_file(self, values):
+        """Create a config file as a temporary file.
+
+        values should be a nested dictionary structure of {section: {key:
+        value}}
+        """
+        filename = os.path.join(self.builddir, 'generated{}.config'.format(self.current_config))
+        self.current_config += 1
+        with open(filename, 'wt') as f:
+            for section, entries in values.items():
+                f.write('[{}]\n'.format(section))
+                for k, v in entries.items():
+                    f.write("{}='{}'\n".format(k, v))
+        return filename
+
     def test_cross_file_dirs(self):
         testcase = os.path.join(self.unit_test_dir, '60 native file override')
         self.init(testcase, default_args=False,
@@ -8188,6 +8469,89 @@ class CrossFileTests(BasePlatformTests):
                               '-Ddef_sbindir=sbinbar',
                               '-Ddef_sharedstatedir=sharedstatebar',
                               '-Ddef_sysconfdir=sysconfbar'])
+
+    def test_user_options(self):
+        # This is just a touch test for cross file, since the implementation
+        # shares code after loading from the files
+        testcase = os.path.join(self.common_test_dir, '43 options')
+        config = self.helper_create_cross_file({'project options': {'testoption': 'some other value'}})
+        with self.assertRaises(subprocess.CalledProcessError) as cm:
+            self.init(testcase, extra_args=['--cross-file', config])
+            self.assertRegex(cm.exception.stdout, r'Incorrect value to [a-z]+ option')
+
+    def test_builtin_options(self):
+        testcase = os.path.join(self.common_test_dir, '2 cpp')
+        config = self.helper_create_cross_file({'built-in options': {'cpp_std': 'c++14'}})
+
+        self.init(testcase, extra_args=['--cross-file', config])
+        configuration = self.introspect('--buildoptions')
+        for each in configuration:
+            if each['name'] == 'cpp_std':
+                self.assertEqual(each['value'], 'c++14')
+                break
+        else:
+            self.fail('No c++ standard set?')
+
+    def test_builtin_options_per_machine(self):
+        """Test options that are allowed to be set on a per-machine basis.
+
+        Such options could be passed twice, once for the build machine, and
+        once for the host machine. I've picked pkg-config path, but any would
+        do that can be set for both.
+        """
+        testcase = os.path.join(self.common_test_dir, '2 cpp')
+        cross = self.helper_create_cross_file({'built-in options': {'pkg_config_path': '/cross/path', 'cpp_std': 'c++17'}})
+        native = self.helper_create_cross_file({'built-in options': {'pkg_config_path': '/native/path', 'cpp_std': 'c++14'}})
+
+        # Ensure that PKG_CONFIG_PATH is not set in the environment
+        with mock.patch.dict('os.environ'):
+            for k in ['PKG_CONFIG_PATH', 'PKG_CONFIG_PATH_FOR_BUILD']:
+                try:
+                    del os.environ[k]
+                except KeyError:
+                    pass
+            self.init(testcase, extra_args=['--cross-file', cross, '--native-file', native])
+
+        configuration = self.introspect('--buildoptions')
+        found = 0
+        for each in configuration:
+            if each['name'] == 'pkg_config_path':
+                self.assertEqual(each['value'], ['/cross/path'])
+                found += 1
+            elif each['name'] == 'cpp_std':
+                self.assertEqual(each['value'], 'c++17')
+                found += 1
+            elif each['name'] == 'build.pkg_config_path':
+                self.assertEqual(each['value'], ['/native/path'])
+                found += 1
+            elif each['name'] == 'build.cpp_std':
+                self.assertEqual(each['value'], 'c++14')
+                found += 1
+
+            if found == 4:
+                break
+        self.assertEqual(found, 4, 'Did not find all sections.')
+
+    def test_builtin_options_env_overrides_conf(self):
+        testcase = os.path.join(self.common_test_dir, '2 cpp')
+        config = self.helper_create_cross_file({'built-in options': {'pkg_config_path': '/foo'}})
+        cross = self.helper_create_cross_file({'built-in options': {'pkg_config_path': '/foo'}})
+
+        self.init(testcase, extra_args=['--native-file', config, '--cross-file', cross],
+                  override_envvars={'PKG_CONFIG_PATH': '/bar', 'PKG_CONFIG_PATH_FOR_BUILD': '/dir'})
+        configuration = self.introspect('--buildoptions')
+        found = 0
+        for each in configuration:
+            if each['name'] == 'pkg_config_path':
+                self.assertEqual(each['value'], ['/bar'])
+                found += 1
+            elif each['name'] == 'build.pkg_config_path':
+                self.assertEqual(each['value'], ['/dir'])
+                found += 1
+            if found == 2:
+                break
+        self.assertEqual(found, 2, 'Did not find all sections.')
+
 
 class TAPParserTests(unittest.TestCase):
     def assert_test(self, events, **kwargs):

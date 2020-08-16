@@ -389,6 +389,9 @@ class PerMachine(T.Generic[_T]):
             unfreeze.host = None
         return unfreeze
 
+    def __repr__(self) -> str:
+        return 'PerMachine({!r}, {!r})'.format(self.build, self.host)
+
 
 class PerThreeMachine(PerMachine[_T]):
     """Like `PerMachine` but includes `target` too.
@@ -421,6 +424,9 @@ class PerThreeMachine(PerMachine[_T]):
     def matches_build_machine(self, machine: MachineChoice) -> bool:
         return self.build == self[machine]
 
+    def __repr__(self) -> str:
+        return 'PerThreeMachine({!r}, {!r}, {!r})'.format(self.build, self.host, self.target)
+
 
 class PerMachineDefaultable(PerMachine[T.Optional[_T]]):
     """Extends `PerMachine` with the ability to default from `None`s.
@@ -438,6 +444,9 @@ class PerMachineDefaultable(PerMachine[T.Optional[_T]]):
         if freeze.host is None:
             freeze.host = freeze.build
         return freeze
+
+    def __repr__(self) -> str:
+        return 'PerMachineDefaultable({!r}, {!r})'.format(self.build, self.host)
 
 
 class PerThreeMachineDefaultable(PerMachineDefaultable, PerThreeMachine[T.Optional[_T]]):
@@ -459,6 +468,9 @@ class PerThreeMachineDefaultable(PerMachineDefaultable, PerThreeMachine[T.Option
         if freeze.target is None:
             freeze.target = freeze.host
         return freeze
+
+    def __repr__(self) -> str:
+        return 'PerThreeMachineDefaultable({!r}, {!r}, {!r})'.format(self.build, self.host, self.target)
 
 
 def is_sunos() -> bool:
@@ -515,6 +527,8 @@ def is_irix() -> bool:
 def is_hurd() -> bool:
     return platform.system().lower() == 'gnu'
 
+def is_qnx() -> bool:
+    return platform.system().lower() == 'qnx'
 
 def exe_exists(arglist: T.List[str]) -> bool:
     try:

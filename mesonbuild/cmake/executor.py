@@ -35,6 +35,31 @@ if T.TYPE_CHECKING:
 
 TYPE_result = T.Tuple[int, T.Optional[str], T.Optional[str]]
 
+MESON_TO_CMAKE_MAPPING = {
+    'arm':          'ARMCC',
+    'armclang':     'ARMClang',
+    'clang':        'Clang',
+    'clang-cl':     'MSVC',
+    'flang':        'Flang',
+    'g95':          'G95',
+    'gcc':          'GNU',
+    'intel':        'Intel',
+    'intel-cl':     'MSVC',
+    'msvc':         'MSVC',
+    'pathscale':    'PathScale',
+    'pgi':          'PGI',
+    'sun':          'SunPro',
+}
+
+def meson_compiler_to_cmake_id(cobj):
+    # cland and apple clang both map to 'clang' in meson, so we need to look at
+    # the linker that's being used
+    if cobj.linker.get_id() == 'ld64':
+        return 'AppleClang'
+    # If no mapping, try GNU and hope that the build files don't care
+    return MESON_TO_CMAKE_MAPPING.get(cobj.get_id(), 'GNU')
+
+
 class CMakeExecutor:
     # The class's copy of the CMake path. Avoids having to search for it
     # multiple times in the same Meson invocation.
@@ -69,7 +94,12 @@ class CMakeExecutor:
             self.environment.is_cross_build(),
             'CMAKE_PREFIX_PATH')
         if env_pref_path is not None:
-            env_pref_path = re.split(r':|;', env_pref_path)
+            if mesonlib.is_windows():
+                # Cannot split on ':' on Windows because its in the drive letter
+                env_pref_path = env_pref_path.split(os.pathsep)
+            else:
+                # https://github.com/mesonbuild/meson/issues/7294
+                env_pref_path = re.split(r':|;', env_pref_path)
             env_pref_path = [x for x in env_pref_path if x]  # Filter out empty strings
             if not self.prefix_paths:
                 self.prefix_paths = []
@@ -262,29 +292,33 @@ class CMakeExecutor:
                 p = fallback
             return p
 
-        def choose_compiler(lang: str) -> T.Tuple[str, str]:
+        def choose_compiler(lang: str) -> T.Tuple[str, str, str, str]:
+            comp_obj = None
             exe_list = []
             if lang in compilers:
-                exe_list = compilers[lang].get_exelist()
+                comp_obj = compilers[lang]
             else:
                 try:
                     comp_obj = self.environment.compiler_from_language(lang, MachineChoice.BUILD)
-                    if comp_obj is not None:
-                        exe_list = comp_obj.get_exelist()
                 except Exception:
                     pass
 
+            if comp_obj is not None:
+                exe_list = comp_obj.get_exelist()
+                comp_id = meson_compiler_to_cmake_id(comp_obj)
+                comp_version = comp_obj.version.upper()
+
             if len(exe_list) == 1:
-                return make_abs(exe_list[0], lang), ''
+                return make_abs(exe_list[0], lang), '', comp_id, comp_version
             elif len(exe_list) == 2:
-                return make_abs(exe_list[1], lang), make_abs(exe_list[0], lang)
+                return make_abs(exe_list[1], lang), make_abs(exe_list[0], lang), comp_id, comp_version
             else:
                 mlog.debug('Failed to find a {} compiler for CMake. This might cause CMake to fail.'.format(lang))
-                return fallback, ''
+                return fallback, '', 'GNU', ''
 
-        c_comp, c_launcher = choose_compiler('c')
-        cxx_comp, cxx_launcher = choose_compiler('cpp')
-        fortran_comp, fortran_launcher = choose_compiler('fortran')
+        c_comp, c_launcher, c_id, c_version = choose_compiler('c')
+        cxx_comp, cxx_launcher, cxx_id, cxx_version = choose_compiler('cpp')
+        fortran_comp, fortran_launcher, _, _ = choose_compiler('fortran')
 
         # on Windows, choose_compiler returns path with \ as separator - replace by / before writing to CMAKE file
         c_comp = c_comp.replace('\\', '/')
@@ -306,34 +340,42 @@ class CMakeExecutor:
         fortran_comp_file = comp_dir / 'CMakeFortranCompiler.cmake'
 
         if c_comp and not c_comp_file.is_file():
+            is_gnu = '1' if c_id == 'GNU' else ''
             c_comp_file.write_text(textwrap.dedent('''\
                 # Fake CMake file to skip the boring and slow stuff
                 set(CMAKE_C_COMPILER "{}") # Should be a valid compiler for try_compile, etc.
                 set(CMAKE_C_COMPILER_LAUNCHER "{}") # The compiler launcher (if presentt)
-                set(CMAKE_C_COMPILER_ID "GNU") # Pretend we have found GCC
-                set(CMAKE_COMPILER_IS_GNUCC 1)
+                set(CMAKE_COMPILER_IS_GNUCC {})
+                set(CMAKE_C_COMPILER_ID "{}")
+                set(CMAKE_C_COMPILER_VERSION "{}")
                 set(CMAKE_C_COMPILER_LOADED 1)
+                set(CMAKE_C_COMPILER_FORCED 1)
                 set(CMAKE_C_COMPILER_WORKS TRUE)
                 set(CMAKE_C_ABI_COMPILED TRUE)
                 set(CMAKE_C_SOURCE_FILE_EXTENSIONS c;m)
                 set(CMAKE_C_IGNORE_EXTENSIONS h;H;o;O;obj;OBJ;def;DEF;rc;RC)
                 set(CMAKE_SIZEOF_VOID_P "{}")
-            '''.format(c_comp, c_launcher, ctypes.sizeof(ctypes.c_voidp))))
+            '''.format(c_comp, c_launcher, is_gnu, c_id, c_version,
+                       ctypes.sizeof(ctypes.c_voidp))))
 
         if cxx_comp and not cxx_comp_file.is_file():
+            is_gnu = '1' if cxx_id == 'GNU' else ''
             cxx_comp_file.write_text(textwrap.dedent('''\
                 # Fake CMake file to skip the boring and slow stuff
                 set(CMAKE_CXX_COMPILER "{}") # Should be a valid compiler for try_compile, etc.
                 set(CMAKE_CXX_COMPILER_LAUNCHER "{}") # The compiler launcher (if presentt)
-                set(CMAKE_CXX_COMPILER_ID "GNU") # Pretend we have found GCC
-                set(CMAKE_COMPILER_IS_GNUCXX 1)
+                set(CMAKE_COMPILER_IS_GNUCXX {})
+                set(CMAKE_CXX_COMPILER_ID "{}")
+                set(CMAKE_CXX_COMPILER_VERSION "{}")
                 set(CMAKE_CXX_COMPILER_LOADED 1)
+                set(CMAKE_CXX_COMPILER_FORCED 1)
                 set(CMAKE_CXX_COMPILER_WORKS TRUE)
                 set(CMAKE_CXX_ABI_COMPILED TRUE)
                 set(CMAKE_CXX_IGNORE_EXTENSIONS inl;h;hpp;HPP;H;o;O;obj;OBJ;def;DEF;rc;RC)
                 set(CMAKE_CXX_SOURCE_FILE_EXTENSIONS C;M;c++;cc;cpp;cxx;mm;CPP)
                 set(CMAKE_SIZEOF_VOID_P "{}")
-            '''.format(cxx_comp, cxx_launcher, ctypes.sizeof(ctypes.c_voidp))))
+            '''.format(cxx_comp, cxx_launcher, is_gnu, cxx_id, cxx_version,
+                       ctypes.sizeof(ctypes.c_voidp))))
 
         if fortran_comp and not fortran_comp_file.is_file():
             fortran_comp_file.write_text(textwrap.dedent('''\
