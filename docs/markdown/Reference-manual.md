@@ -1776,7 +1776,7 @@ the following methods.
 
   `MESONINTROSPECT` contains the path to the introspect command that
   corresponds to the `meson` executable that was used to configure the
-  build. (This might be a different path then the first executable
+  build. (This might be a different path than the first executable
   found in `PATH`.) It can be used to query build configuration. Note
   that the value will contain many parts, f.ex., it may be `python3
   /path/to/meson.py introspect`. The user is responsible for splitting
@@ -2155,27 +2155,27 @@ the following methods:
   `args` keyword, you can specify external dependencies to use with
   `dependencies` keyword argument.
 
-- `check_header` *(since 0.47.0)*: returns true if the specified header is *usable* with
-  the specified prefix, dependencies, and arguments.
-  You can specify external dependencies to use with `dependencies`
-  keyword argument and extra code to put above the header test with
-  the `prefix` keyword. In order to look for headers in a specific
-  directory you can use `args : '-I/extra/include/dir`, but this
-  should only be used in exceptional cases for includes that can't be
-  detected via pkg-config and passed via `dependencies`. *(since 0.50.0)* The
-  `required` keyword argument can be used to abort if the header cannot be
-  found.
+- `check_header(header_name)` *(since 0.47.0)*: returns true if the
+  specified header is *usable* with the specified prefix,
+  dependencies, and arguments. You can specify external dependencies
+  to use with `dependencies` keyword argument and extra code to put
+  above the header test with the `prefix` keyword. In order to look
+  for headers in a specific directory you can use `args :
+  '-I/extra/include/dir`, but this should only be used in exceptional
+  cases for includes that can't be detected via pkg-config and passed
+  via `dependencies`. *(since 0.50.0)* The `required` keyword argument
+  can be used to abort if the header cannot be found.
 
-- `has_header`: returns true if the specified header *exists*, and is
-  faster than `check_header()` since it only does a pre-processor check.
-  You can specify external dependencies to use with `dependencies`
-  keyword argument and extra code to put above the header test with
-  the `prefix` keyword. In order to look for headers in a specific
-  directory you can use `args : '-I/extra/include/dir`, but this
-  should only be used in exceptional cases for includes that can't be
-  detected via pkg-config and passed via `dependencies`. *(since 0.50.0)* The
-  `required` keyword argument can be used to abort if the header cannot be
-  found.
+- `has_header(header_name)`: returns true if the specified header
+  *exists*, and is faster than `check_header()` since it only does a
+  pre-processor check. You can specify external dependencies to use
+  with `dependencies` keyword argument and extra code to put above the
+  header test with the `prefix` keyword. In order to look for headers
+  in a specific directory you can use `args : '-I/extra/include/dir`,
+  but this should only be used in exceptional cases for includes that
+  can't be detected via pkg-config and passed via `dependencies`.
+  *(since 0.50.0)* The `required` keyword argument can be used to
+  abort if the header cannot be found.
 
 - `has_header_symbol(headername, symbolname)`: detects
   whether a particular symbol (function, variable, #define, type

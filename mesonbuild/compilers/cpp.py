@@ -156,7 +156,7 @@ class CPPCompiler(CLikeCompiler, Compiler):
 class ClangCPPCompiler(ClangCompiler, CPPCompiler):
     def __init__(self, exelist, version, for_machine: MachineChoice,
                  is_cross, info: 'MachineInfo', exe_wrapper=None,
-                 defines : T.Optional[T.List[str]] = None, **kwargs):
+                 defines: T.Optional[T.List[str]] = None, **kwargs):
         CPPCompiler.__init__(self, exelist, version, for_machine, is_cross,
                              info, exe_wrapper, **kwargs)
         ClangCompiler.__init__(self, defines)
@@ -240,8 +240,8 @@ class ArmclangCPPCompiler(ArmclangCompiler, CPPCompiler):
     def __init__(self, exelist, version, for_machine: MachineChoice,
                  is_cross, info: 'MachineInfo', exe_wrapper=None, **kwargs):
         CPPCompiler.__init__(self, exelist=exelist, version=version,
-                                  for_machine=for_machine, is_cross=is_cross,
-                                  info=info, exe_wrapper=exe_wrapper, **kwargs)
+                             for_machine=for_machine, is_cross=is_cross,
+                             info=info, exe_wrapper=exe_wrapper, **kwargs)
         ArmclangCompiler.__init__(self)
         default_warn_args = ['-Wall', '-Winvalid-pch', '-Wnon-virtual-dtor']
         self.warn_args = {'0': [],
@@ -305,7 +305,7 @@ class GnuCPPCompiler(GnuCompiler, CPPCompiler):
             'std': coredata.UserComboOption(
                 'C++ language standard to use',
                 ['none', 'c++98', 'c++03', 'c++11', 'c++14', 'c++17', 'c++1z', 'c++2a',
-                'gnu++03', 'gnu++11', 'gnu++14', 'gnu++17', 'gnu++1z', 'gnu++2a'],
+                 'gnu++03', 'gnu++11', 'gnu++14', 'gnu++17', 'gnu++1z', 'gnu++2a'],
                 'none',
             ),
             'debugstl': coredata.UserBooleanOption(
@@ -356,6 +356,15 @@ class PGICPPCompiler(PGICompiler, CPPCompiler):
         PGICompiler.__init__(self)
 
 
+class NvidiaHPC_CPPCompiler(PGICompiler, CPPCompiler):
+    def __init__(self, exelist, version, for_machine: MachineChoice,
+                 is_cross, info: 'MachineInfo', exe_wrapper=None, **kwargs):
+        CPPCompiler.__init__(self, exelist, version, for_machine, is_cross, info, exe_wrapper, **kwargs)
+        PGICompiler.__init__(self)
+
+        self.id = 'nvidia_hpc'
+
+
 class ElbrusCPPCompiler(GnuCPPCompiler, ElbrusCompiler):
     def __init__(self, exelist, version, for_machine: MachineChoice,
                  is_cross, info: 'MachineInfo', exe_wrapper=None,
@@ -365,9 +374,20 @@ class ElbrusCPPCompiler(GnuCPPCompiler, ElbrusCompiler):
                                 **kwargs)
         ElbrusCompiler.__init__(self)
 
-    # It does not support c++/gnu++ 17 and 1z, but still does support 0x, 1y, and gnu++98.
     def get_options(self):
         opts = CPPCompiler.get_options(self)
+
+        cpp_stds = [
+            'none', 'c++98', 'c++03', 'c++0x', 'c++11', 'c++14', 'c++1y',
+            'gnu++98', 'gnu++03', 'gnu++0x', 'gnu++11', 'gnu++14', 'gnu++1y',
+        ]
+
+        if version_compare(self.version, '>=1.24.00'):
+            cpp_stds += [ 'c++1z', 'c++17', 'gnu++1z', 'gnu++17' ]
+
+        if version_compare(self.version, '>=1.25.00'):
+            cpp_stds += [ 'c++2a', 'gnu++2a' ]
+
         opts.update({
             'eh': coredata.UserComboOption(
                 'C++ exception handling type.',
@@ -376,10 +396,7 @@ class ElbrusCPPCompiler(GnuCPPCompiler, ElbrusCompiler):
             ),
             'std': coredata.UserComboOption(
                 'C++ language standard to use',
-                [
-                    'none', 'c++98', 'c++03', 'c++0x', 'c++11', 'c++14', 'c++1y',
-                    'gnu++98', 'gnu++03', 'gnu++0x', 'gnu++11', 'gnu++14', 'gnu++1y',
-                ],
+                cpp_stds,
                 'none',
             ),
             'debugstl': coredata.UserBooleanOption(

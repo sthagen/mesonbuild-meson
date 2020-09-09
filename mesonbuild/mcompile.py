@@ -139,7 +139,7 @@ def get_parsed_args_ninja(options: 'argparse.Namespace', builddir: Path) -> T.Li
         raise MesonException('Cannot find ninja.')
     mlog.log('Found runner:', runner)
 
-    cmd = [runner, '-C', builddir.as_posix()]
+    cmd = runner + ['-C', builddir.as_posix()]
 
     if options.targets:
         intro_data = parse_introspect_data(builddir)
@@ -156,7 +156,7 @@ def get_parsed_args_ninja(options: 'argparse.Namespace', builddir: Path) -> T.Li
         cmd.extend(['-l', str(options.load_average)])
 
     if options.verbose:
-        cmd.append('--verbose')
+        cmd.append('-v')
 
     cmd += options.ninja_args
 
@@ -263,7 +263,7 @@ def add_arguments(parser: 'argparse.ArgumentParser') -> None:
         help='The system load average to try to maintain (if supported).'
     )
     parser.add_argument(
-        '--verbose',
+        '-v', '--verbose',
         action='store_true',
         help='Show more verbose output.'
     )

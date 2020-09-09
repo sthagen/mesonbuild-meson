@@ -58,11 +58,10 @@ GNU_ERROR_RETURNCODE = 99
 
 def is_windows() -> bool:
     platname = platform.system().lower()
-    return platname == 'windows' or 'mingw' in platname
+    return platname == 'windows'
 
 def is_cygwin() -> bool:
-    platname = platform.system().lower()
-    return 'cygwin' in platname
+    return sys.platform == 'cygwin'
 
 def determine_worker_count() -> int:
     varname = 'MESON_TESTTHREADS'
@@ -1179,7 +1178,7 @@ def rebuild_all(wd: str) -> bool:
         print("Can't find ninja, can't rebuild test.")
         return False
 
-    ret = subprocess.run([ninja, '-C', wd]).returncode
+    ret = subprocess.run(ninja + ['-C', wd]).returncode
     if ret != 0:
         print('Could not rebuild {}'.format(wd))
         return False

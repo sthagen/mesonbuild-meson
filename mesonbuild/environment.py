@@ -19,7 +19,7 @@ import typing as T
 import collections
 
 from . import coredata
-from .linkers import ArLinker, ArmarLinker, VisualStudioLinker, DLinker, CcrxLinker, Xc16Linker, C2000Linker, IntelVisualStudioLinker
+from .linkers import ArLinker, ArmarLinker, VisualStudioLinker, DLinker, CcrxLinker, Xc16Linker, C2000Linker, IntelVisualStudioLinker, AIXArLinker
 from . import mesonlib
 from .mesonlib import (
     MesonException, EnvironmentException, MachineChoice, Popen_safe,
@@ -58,9 +58,12 @@ from .linkers import (
     QualcommLLVMDynamicLinker,
     MSVCDynamicLinker,
     OptlinkDynamicLinker,
+    NvidiaHPC_DynamicLinker,
+    NvidiaHPC_StaticLinker,
     PGIDynamicLinker,
     PGIStaticLinker,
     SolarisDynamicLinker,
+    AIXDynamicLinker,
     XilinkDynamicLinker,
     CudaLinker,
     VisualStudioLikeLinkerMixin,
@@ -74,6 +77,8 @@ from .compilers import (
     ArmclangCPPCompiler,
     AppleClangCCompiler,
     AppleClangCPPCompiler,
+    AppleClangObjCCompiler,
+    AppleClangObjCPPCompiler,
     ClangCCompiler,
     ClangCPPCompiler,
     ClangObjCCompiler,
@@ -105,6 +110,9 @@ from .compilers import (
     NAGFortranCompiler,
     Open64FortranCompiler,
     PathScaleFortranCompiler,
+    NvidiaHPC_CCompiler,
+    NvidiaHPC_CPPCompiler,
+    NvidiaHPC_FortranCompiler,
     PGICCompiler,
     PGICPPCompiler,
     PGIFortranCompiler,
@@ -160,15 +168,19 @@ def find_coverage_tools():
 
     return gcovr_exe, gcovr_new_rootdir, lcov_exe, genhtml_exe, llvm_cov_exe
 
-def detect_ninja(version: str = '1.7', log: bool = False) -> str:
+def detect_ninja(version: str = '1.7', log: bool = False) -> T.List[str]:
     r = detect_ninja_command_and_version(version, log)
     return r[0] if r else None
 
-def detect_ninja_command_and_version(version: str = '1.7', log: bool = False) -> (str, str):
+def detect_ninja_command_and_version(version: str = '1.7', log: bool = False) -> (T.List[str], str):
+    from .dependencies.base import ExternalProgram
     env_ninja = os.environ.get('NINJA', None)
     for n in [env_ninja] if env_ninja else ['ninja', 'ninja-build', 'samu']:
+        prog = ExternalProgram(n, silent=True)
+        if not prog.found():
+            continue
         try:
-            p, found = Popen_safe([n, '--version'])[0:2]
+            p, found = Popen_safe(prog.command + ['--version'])[0:2]
         except (FileNotFoundError, PermissionError):
             # Doesn't exist in PATH or isn't executable
             continue
@@ -176,7 +188,6 @@ def detect_ninja_command_and_version(version: str = '1.7', log: bool = False) ->
         # Perhaps we should add a way for the caller to know the failure mode
         # (not found or too old)
         if p.returncode == 0 and mesonlib.version_compare(found, '>=' + version):
-            n = shutil.which(n)
             if log:
                 name = os.path.basename(n)
                 if name.endswith('-' + found):
@@ -185,8 +196,9 @@ def detect_ninja_command_and_version(version: str = '1.7', log: bool = False) ->
                     name = 'ninja'
                 if name == 'samu':
                     name = 'samurai'
-                mlog.log('Found {}-{} at {}'.format(name, found, quote_arg(n)))
-            return (n, found)
+                mlog.log('Found {}-{} at {}'.format(name, found,
+                         ' '.join([quote_arg(x) for x in prog.command])))
+            return (prog.command, found)
 
 def get_llvm_tool_names(tool: str) -> T.List[str]:
     # Ordered list of possible suffixes of LLVM executables to try. Start with
@@ -196,6 +208,7 @@ def get_llvm_tool_names(tool: str) -> T.List[str]:
     # unless it becomes a stable release.
     suffixes = [
         '', # base (no suffix)
+        '-10',  '100',
         '-9',   '90',
         '-8',   '80',
         '-7',   '70',
@@ -207,7 +220,7 @@ def get_llvm_tool_names(tool: str) -> T.List[str]:
         '-3.7', '37',
         '-3.6', '36',
         '-3.5', '35',
-        '-10',    # Debian development snapshot
+        '-11',    # Debian development snapshot
         '-devel', # FreeBSD development snapshot
     ]
     names = []
@@ -337,7 +350,7 @@ def detect_cpu_family(compilers: CompilersDict) -> str:
     """
     if mesonlib.is_windows():
         trial = detect_windows_arch(compilers)
-    elif mesonlib.is_freebsd() or mesonlib.is_netbsd() or mesonlib.is_openbsd() or mesonlib.is_qnx():
+    elif mesonlib.is_freebsd() or mesonlib.is_netbsd() or mesonlib.is_openbsd() or mesonlib.is_qnx() or mesonlib.is_aix():
         trial = platform.processor().lower()
     else:
         trial = platform.machine().lower()
@@ -377,6 +390,10 @@ def detect_cpu_family(compilers: CompilersDict) -> str:
         # ATM there is no 64 bit userland for PA-RISC. Thus always
         # report it as 32 bit for simplicity.
         trial = 'parisc'
+    elif trial == 'ppc':
+        # AIX always returns powerpc, check here for 64-bit
+        if any_compiler_has_define(compilers, '__64BIT__'):
+            trial = 'ppc64'
 
     if trial not in known_cpu_families:
         mlog.warning('Unknown CPU family {!r}, please report this at '
@@ -388,7 +405,7 @@ def detect_cpu_family(compilers: CompilersDict) -> str:
 def detect_cpu(compilers: CompilersDict):
     if mesonlib.is_windows():
         trial = detect_windows_arch(compilers)
-    elif mesonlib.is_freebsd() or mesonlib.is_netbsd() or mesonlib.is_openbsd():
+    elif mesonlib.is_freebsd() or mesonlib.is_netbsd() or mesonlib.is_openbsd() or mesonlib.is_aix():
         trial = platform.processor().lower()
     else:
         trial = platform.machine().lower()
@@ -416,10 +433,9 @@ def detect_cpu(compilers: CompilersDict):
     return trial
 
 def detect_system():
-    system = platform.system().lower()
-    if system.startswith('cygwin'):
+    if sys.platform == 'cygwin':
         return 'cygwin'
-    return system
+    return platform.system().lower()
 
 def detect_msys2_arch():
     if 'MSYSTEM_CARCH' in os.environ:
@@ -768,11 +784,11 @@ class Environment:
                 self.default_objc = []
                 self.default_objcpp = []
             else:
-                self.default_c = ['cc', 'gcc', 'clang', 'pgcc', 'icc']
-                self.default_cpp = ['c++', 'g++', 'clang++', 'pgc++', 'icpc']
+                self.default_c = ['cc', 'gcc', 'clang', 'nvc', 'pgcc', 'icc']
+                self.default_cpp = ['c++', 'g++', 'clang++', 'nvc++', 'pgc++', 'icpc']
                 self.default_objc = ['cc', 'gcc', 'clang']
                 self.default_objcpp = ['c++', 'g++', 'clang++']
-            self.default_fortran = ['gfortran', 'flang', 'pgfortran', 'ifort', 'g95']
+            self.default_fortran = ['gfortran', 'flang', 'nvfortran', 'pgfortran', 'ifort', 'g95']
             self.default_cs = ['mcs', 'csc']
         self.default_d = ['ldc2', 'ldc', 'gdc', 'dmd']
         self.default_java = ['javac']
@@ -1088,6 +1104,14 @@ class Environment:
             linker = SolarisDynamicLinker(
                 compiler, for_machine, comp_class.LINKER_PREFIX, override,
                 version=v)
+        elif 'ld: 0706-012 The -- flag is not recognized' in e:
+            if isinstance(comp_class.LINKER_PREFIX, str):
+                _, _, e = Popen_safe(compiler + [comp_class.LINKER_PREFIX + '-V'] + extra_args)
+            else:
+                _, _, e = Popen_safe(compiler + comp_class.LINKER_PREFIX + ['-V'] + extra_args)
+            linker = AIXDynamicLinker(
+                compiler, for_machine, comp_class.LINKER_PREFIX, override,
+                version=search_version(e))
         else:
             raise EnvironmentException('Unable to determine dynamic linker')
         return linker
@@ -1303,6 +1327,13 @@ class Environment:
                 return cls(
                     ccache + compiler, version, for_machine, is_cross,
                     info, exe_wrap, linker=linker)
+            if 'NVIDIA Compilers and Tools' in out:
+                cls = NvidiaHPC_CCompiler if lang == 'c' else NvidiaHPC_CPPCompiler
+                self.coredata.add_lang_args(cls.language, cls, for_machine, self)
+                linker = NvidiaHPC_DynamicLinker(compiler, for_machine, cls.LINKER_PREFIX, [], version=version)
+                return cls(
+                    ccache + compiler, version, for_machine, is_cross,
+                    info, exe_wrap, linker=linker)
             if '(ICC)' in out:
                 cls = IntelCCompiler if lang == 'c' else IntelCPPCompiler
                 l = self._guess_nix_linker(compiler, cls, for_machine)
@@ -1356,8 +1387,6 @@ class Environment:
         for compiler in compilers:
             if isinstance(compiler, str):
                 compiler = [compiler]
-            else:
-                raise EnvironmentException()
             arg = '--version'
             try:
                 p, out, err = Popen_safe(compiler + [arg])
@@ -1474,6 +1503,15 @@ class Environment:
                         compiler, version, for_machine, is_cross, info, exe_wrap,
                         full_version=full_version, linker=linker)
 
+                if 'NVIDIA Compilers and Tools' in out:
+                    cls = NvidiaHPC_FortranCompiler
+                    self.coredata.add_lang_args(cls.language, cls, for_machine, self)
+                    linker = PGIDynamicLinker(compiler, for_machine,
+                                              cls.LINKER_PREFIX, [], version=version)
+                    return cls(
+                        compiler, version, for_machine, is_cross, info, exe_wrap,
+                        full_version=full_version, linker=linker)
+
                 if 'flang' in out or 'clang' in out:
                     linker = self._guess_nix_linker(
                         compiler, FlangFortranCompiler, for_machine)
@@ -1506,7 +1544,7 @@ class Environment:
     def detect_objcpp_compiler(self, for_machine: MachineInfo) -> 'Compiler':
         return self._detect_objc_or_objcpp_compiler(for_machine, False)
 
-    def _detect_objc_or_objcpp_compiler(self, for_machine: MachineInfo, objc: bool) -> 'Compiler':
+    def _detect_objc_or_objcpp_compiler(self, for_machine: MachineChoice, objc: bool) -> 'Compiler':
         popen_exceptions = {}
         compilers, ccache, exe_wrap = self._get_compilers('objc' if objc else 'objcpp', for_machine)
         is_cross = self.is_cross_build(for_machine)
@@ -1535,7 +1573,10 @@ class Environment:
                     exe_wrap, defines, linker=linker)
             if 'clang' in out:
                 linker = None
-                comp = ClangObjCCompiler if objc else ClangObjCPPCompiler
+                if 'Apple' in out:
+                    comp = AppleClangObjCCompiler if objc else AppleClangObjCPPCompiler
+                else:
+                    comp = ClangObjCCompiler if objc else ClangObjCPPCompiler
                 if 'windows' in out or self.machines[for_machine].is_windows():
                     # If we're in a MINGW context this actually will use a gnu style ld
                     try:
@@ -1927,7 +1968,7 @@ class Environment:
             if p.returncode == 1 and err.startswith('usage'): # OSX
                 return ArLinker(linker)
             if p.returncode == 1 and err.startswith('Usage'): # AIX
-                return ArLinker(linker)
+                return AIXArLinker(linker)
             if p.returncode == 1 and err.startswith('ar: bad option: --'): # Solaris
                 return ArLinker(linker)
         self._handle_exceptions(popen_exceptions, linkers, 'linker')

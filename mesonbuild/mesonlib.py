@@ -242,6 +242,7 @@ class File:
         self.is_built = is_built
         self.subdir = subdir
         self.fname = fname
+        self.hash = hash((is_built, subdir, fname))
 
     def __str__(self) -> str:
         return self.relative_name()
@@ -291,10 +292,12 @@ class File:
     def __eq__(self, other) -> bool:
         if not isinstance(other, File):
             return NotImplemented
+        if self.hash != other.hash:
+            return False
         return (self.fname, self.subdir, self.is_built) == (other.fname, other.subdir, other.is_built)
 
     def __hash__(self) -> int:
-        return hash((self.fname, self.subdir, self.is_built))
+        return self.hash
 
     @lru_cache(maxsize=None)
     def relative_name(self) -> str:
@@ -499,11 +502,11 @@ def is_openbsd() -> bool:
 
 def is_windows() -> bool:
     platname = platform.system().lower()
-    return platname == 'windows' or 'mingw' in platname
+    return platname == 'windows'
 
 
 def is_cygwin() -> bool:
-    return platform.system().lower().startswith('cygwin')
+    return sys.platform == 'cygwin'
 
 
 def is_debianlike() -> bool:
@@ -529,6 +532,9 @@ def is_hurd() -> bool:
 
 def is_qnx() -> bool:
     return platform.system().lower() == 'qnx'
+
+def is_aix() -> bool:
+    return platform.system().lower() == 'aix'
 
 def exe_exists(arglist: T.List[str]) -> bool:
     try:

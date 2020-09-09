@@ -1450,10 +1450,12 @@ class CMakeDependency(ExternalDependency):
                     cfgs = [x for x in tgt.properties['IMPORTED_CONFIGURATIONS'] if x]
                     cfg = cfgs[0]
 
-                is_debug = self.env.coredata.get_builtin_option('buildtype') == 'debug'
                 if 'b_vscrt' in self.env.coredata.base_options:
+                    is_debug = self.env.coredata.get_builtin_option('buildtype') == 'debug'
                     if self.env.coredata.base_options['b_vscrt'].value in ('mdd', 'mtd'):
                         is_debug = True
+                else:
+                    is_debug = self.env.coredata.get_builtin_option('debug')
                 if is_debug:
                     if 'DEBUG' in cfgs:
                         cfg = 'DEBUG'
@@ -1802,7 +1804,14 @@ class ExternalProgram:
             if mesonlib.is_windows():
                 cmd = self.command[0]
                 args = self.command[1:]
-                self.command = self._search_windows_special_cases(name, cmd) + args
+                # Check whether the specified cmd is a path to a script, in
+                # which case we need to insert the interpreter. If not, try to
+                # use it as-is.
+                ret = self._shebang_to_cmd(cmd)
+                if ret:
+                    self.command = ret + args
+                else:
+                    self.command = [cmd] + args
         else:
             all_search_dirs = [search_dir]
             if extra_search_dirs:
@@ -1888,7 +1897,7 @@ class ExternalProgram:
         return ExternalProgram(command, silent=True)
 
     @staticmethod
-    def _shebang_to_cmd(script):
+    def _shebang_to_cmd(script: str) -> T.Optional[list]:
         """
         Check if the file has a shebang and manually parse it to figure out
         the interpreter to use. This is useful if the script is not executable
@@ -1932,7 +1941,7 @@ class ExternalProgram:
         except Exception as e:
             mlog.debug(e)
         mlog.debug('Unusable script {!r}'.format(script))
-        return False
+        return None
 
     def _is_executable(self, path):
         suffix = os.path.splitext(path)[-1].lower()[1:]
@@ -1944,9 +1953,9 @@ class ExternalProgram:
             return not os.path.isdir(path)
         return False
 
-    def _search_dir(self, name, search_dir):
+    def _search_dir(self, name: str, search_dir: T.Optional[str]) -> T.Optional[list]:
         if search_dir is None:
-            return False
+            return None
         trial = os.path.join(search_dir, name)
         if os.path.exists(trial):
             if self._is_executable(trial):
@@ -1961,9 +1970,9 @@ class ExternalProgram:
                     trial_ext = '{}.{}'.format(trial, ext)
                     if os.path.exists(trial_ext):
                         return [trial_ext]
-        return False
+        return None
 
-    def _search_windows_special_cases(self, name, command):
+    def _search_windows_special_cases(self, name: str, command: str) -> list:
         '''
         Lots of weird Windows quirks:
         1. PATH search for @name returns files with extensions from PATHEXT,
@@ -2006,7 +2015,7 @@ class ExternalProgram:
                 return commands
         return [None]
 
-    def _search(self, name, search_dir):
+    def _search(self, name: str, search_dir: T.Optional[str]) -> list:
         '''
         Search in the specified dir for the specified executable by name
         and if not found search in PATH
@@ -2301,7 +2310,7 @@ def get_dep_identifier(name, kwargs) -> T.Tuple:
         # 'required' is irrelevant for caching; the caller handles it separately
         # 'fallback' subprojects cannot be cached -- they must be initialized
         # 'default_options' is only used in fallback case
-        if key in ('version', 'native', 'required', 'fallback', 'default_options'):
+        if key in ('version', 'native', 'required', 'fallback', 'default_options', 'force_fallback'):
             continue
         # All keyword arguments are strings, ints, or lists (or lists of lists)
         if isinstance(value, list):
@@ -2498,10 +2507,11 @@ def strip_system_libdirs(environment, for_machine: MachineChoice, link_args):
     return [l for l in link_args if l not in exclude]
 
 
-def process_method_kw(possible: T.List[DependencyMethods], kwargs) -> T.List[DependencyMethods]:
-    method = kwargs.get('method', 'auto')
+def process_method_kw(possible: T.Iterable[DependencyMethods], kwargs) -> T.List[DependencyMethods]:
+    method = kwargs.get('method', 'auto')  # type: T.Union[DependencyMethods, str]
     if isinstance(method, DependencyMethods):
-        return method
+        return [method]
+    # TODO: try/except?
     if method not in [e.value for e in DependencyMethods]:
         raise DependencyException('method {!r} is invalid'.format(method))
     method = DependencyMethods(method)
@@ -2519,26 +2529,23 @@ def process_method_kw(possible: T.List[DependencyMethods], kwargs) -> T.List[Dep
     # Set the detection method. If the method is set to auto, use any available method.
     # If method is set to a specific string, allow only that detection method.
     if method == DependencyMethods.AUTO:
-        methods = possible
+        methods = list(possible)
     elif method in possible:
         methods = [method]
     else:
         raise DependencyException(
             'Unsupported detection method: {}, allowed methods are {}'.format(
                 method.value,
-                mlog.format_list([x.value for x in [DependencyMethods.AUTO] + possible])))
+                mlog.format_list([x.value for x in [DependencyMethods.AUTO] + list(possible)])))
 
     return methods
 
 
 if T.TYPE_CHECKING:
-    FactoryType = T.Callable[[Environment, MachineChoice, T.Dict[str, T.Any]],
-                             T.List['DependencyType']]
-    FullFactoryType = T.Callable[[Environment, MachineChoice, T.Dict[str, T.Any], T.Set[DependencyMethods]],
-                                 T.List['DependencyType']]
+    FactoryType = T.TypeVar('FactoryType', bound=T.Callable[..., T.List[T.Callable[[], 'Dependency']]])
 
 
-def factory_methods(methods: T.Set[DependencyMethods]) -> 'FactoryType':
+def factory_methods(methods: T.Set[DependencyMethods]) -> T.Callable[['FactoryType'], 'FactoryType']:
     """Decorator for handling methods for dependency factory functions.
 
     This helps to make factory functions self documenting
@@ -2547,13 +2554,13 @@ def factory_methods(methods: T.Set[DependencyMethods]) -> 'FactoryType':
     >>>     pass
     """
 
-    def inner(func: 'FullFactoryType') -> 'FactoryType':
+    def inner(func: 'FactoryType') -> 'FactoryType':
 
         @functools.wraps(func)
-        def wrapped(env: Environment, for_machine: MachineChoice, kwargs: T.Dict[str, T.Any]) -> T.List['DependencyType']:
+        def wrapped(env: Environment, for_machine: MachineChoice, kwargs: T.Dict[str, T.Any]) -> T.List[T.Callable[[], 'Dependency']]:
             return func(env, for_machine, kwargs, process_method_kw(methods, kwargs))
 
-        return wrapped
+        return T.cast('FactoryType', wrapped)
 
     return inner
 

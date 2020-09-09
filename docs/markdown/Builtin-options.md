@@ -11,9 +11,10 @@ universal options, base options, compiler options.
 ## Universal options
 
 A list of these options can be found by running `meson --help`. All
-these can be set by passing to `meson` (aka `meson setup`) in any of
-these ways: `--option=value`, `--option value`, `-Doption=value`, or
+these can be set by passing `-Doption=value` to `meson` (aka `meson setup`), or
 by setting them inside `default_options` of `project()` in your `meson.build`.
+Some options can also be set by `--option=value`, or `--option value`--- a list
+is shown by running `meson setup --help`.
 
 For legacy reasons `--warnlevel` is the cli argument for the `warning_level` option.
 
@@ -101,7 +102,9 @@ All other combinations of `debug` and `optimization` set `buildtype` to `'custom
 
 ## Base options
 
-These are set in the same way as universal options, but cannot be shown in the
+These are set in the same way as universal options, either by `-Doption=value`, 
+or by setting them inside `default_options` of `project()` in your `meson.build`.
+However, they cannot be shown in the
 output of `meson --help` because they depend on both the current platform and
 the compiler that will be selected. The only way to see them is to setup
 a builddir and then run `meson configure` on it with no options.
@@ -155,7 +158,8 @@ embedded because `-Wl,-bitcode_bundle` is incompatible with both `-bundle` and
 
 Same caveats as base options above.
 
-The following options are available. Note that both the options themselves and
+The following options are available. They can be set by passing `-Doption=value`
+to `meson`. Note that both the options themselves and
 the possible values they can take will depend on the target platform or
 compiler being used:
 
@@ -163,12 +167,12 @@ compiler being used:
 | ------           | ------------- | ---------------                          | ----------- |
 | c_args           |               | free-form comma-separated list           | C compile arguments to use |
 | c_link_args      |               | free-form comma-separated list           | C link arguments to use |
-| c_std            | none          | none, c89, c99, c11, c17, c18, gnu89, gnu99, gnu11, gnu17, gnu18 | C language standard to use |
+| c_std            | none          | none, c89, c99, c11, c17, c18, c2x, gnu89, gnu99, gnu11, gnu17, gnu18, gnu2x | C language standard to use |
 | c_winlibs        | see below     | free-form comma-separated list           | Standard Windows libs to link against |
 | c_thread_count   | 4             | integer value ≥ 0                        | Number of threads to use with emcc when using threads |
 | cpp_args         |               | free-form comma-separated list           | C++ compile arguments to use |
 | cpp_link_args    |               | free-form comma-separated list           | C++ link arguments to use |
-| cpp_std          | none          | none, c++98, c++03, c++11, c++14, c++17, <br/>c++1z, gnu++03, gnu++11, gnu++14, gnu++17, gnu++1z, <br/> vc++14, vc++17, vc++latest | C++ language standard to use |
+| cpp_std          | none          | none, c++98, c++03, c++11, c++14, c++17, c++2a <br/>c++1z, gnu++03, gnu++11, gnu++14, gnu++17, gnu++1z, gnu++2a, <br/> vc++14, vc++17, vc++latest | C++ language standard to use |
 | cpp_debugstl     | false         | true, false                              | C++ STL debug mode |
 | cpp_eh           | default       | none, default, a, s, sc                  | C++ exception handling type |
 | cpp_rtti         | true          | true, false                              | Whether to enable RTTI (runtime type identification) |

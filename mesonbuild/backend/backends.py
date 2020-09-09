@@ -29,6 +29,7 @@ from .. import build
 from .. import dependencies
 from .. import mesonlib
 from .. import mlog
+from ..compilers import languages_using_ldflags
 from ..mesonlib import (
     File, MachineChoice, MesonException, OrderedSet, OptionOverrideProxy,
     classify_unity_sources, unholder
@@ -120,7 +121,8 @@ class TestSerialisation:
                  env: build.EnvironmentVariables, should_fail: bool,
                  timeout: T.Optional[int], workdir: T.Optional[str],
                  extra_paths: T.List[str], protocol: TestProtocol, priority: int,
-                 cmd_is_built: bool):
+                 cmd_is_built: bool,
+                 depends: T.List[str]):
         self.name = name
         self.project_name = project
         self.suite = suite
@@ -140,6 +142,7 @@ class TestSerialisation:
         self.priority = priority
         self.needs_exe_wrapper = needs_exe_wrapper
         self.cmd_is_built = cmd_is_built
+        self.depends = depends
 
 
 def get_backend_from_name(backend: str, build: T.Optional[build.Build] = None, interpreter: T.Optional['Interpreter'] = None) -> T.Optional['Backend']:
@@ -351,18 +354,11 @@ class Backend:
         return obj_list
 
     def as_meson_exe_cmdline(self, tname, exe, cmd_args, workdir=None,
-                             for_machine=MachineChoice.BUILD,
                              extra_bdeps=None, capture=None, force_serialize=False):
         '''
         Serialize an executable for running with a generator or a custom target
         '''
         import hashlib
-        machine = self.environment.machines[for_machine]
-        if machine.is_windows() or machine.is_cygwin():
-            extra_paths = self.determine_windows_extra_paths(exe, extra_bdeps or [])
-        else:
-            extra_paths = []
-
         if isinstance(exe, dependencies.ExternalProgram):
             exe_cmd = exe.get_command()
             exe_for_machine = exe.for_machine
@@ -372,6 +368,12 @@ class Backend:
         else:
             exe_cmd = [exe]
             exe_for_machine = MachineChoice.BUILD
+
+        machine = self.environment.machines[exe_for_machine]
+        if machine.is_windows() or machine.is_cygwin():
+            extra_paths = self.determine_windows_extra_paths(exe, extra_bdeps or [])
+        else:
+            extra_paths = []
 
         is_cross_built = not self.environment.machines.matches_build_machine(exe_for_machine)
         if is_cross_built and self.environment.need_exe_wrapper():
@@ -450,8 +452,7 @@ class Backend:
     def get_external_rpath_dirs(self, target):
         dirs = set()
         args = []
-        # FIXME: is there a better way?
-        for lang in ['c', 'cpp']:
+        for lang in languages_using_ldflags:
             try:
                 args.extend(self.environment.coredata.get_external_link_args(target.for_machine, lang))
             except Exception:
@@ -657,7 +658,7 @@ class Backend:
         # First, the trivial ones that are impossible to override.
         #
         # Add -nostdinc/-nostdinc++ if needed; can't be overridden
-        commands += self.get_cross_stdlib_args(target, compiler)
+        commands += self.get_no_stdlib_args(target, compiler)
         # Add things like /NOLOGO or -pipe; usually can't be overridden
         commands += compiler.get_always_args()
         # Only add warning-flags by default if the buildtype enables it, and if
@@ -831,7 +832,12 @@ class Backend:
                 extra_paths = []
 
             cmd_args = []
+            depends = set(t.depends)
+            if isinstance(exe, build.Target):
+                depends.add(exe)
             for a in unholder(t.cmd_args):
+                if isinstance(a, build.Target):
+                    depends.add(a)
                 if isinstance(a, build.BuildTarget):
                     extra_paths += self.determine_windows_extra_paths(a, [])
                 if isinstance(a, mesonlib.File):
@@ -853,7 +859,8 @@ class Backend:
                                    t.is_parallel, cmd_args, t.env,
                                    t.should_fail, t.timeout, t.workdir,
                                    extra_paths, t.protocol, t.priority,
-                                   isinstance(exe, build.Executable))
+                                   isinstance(exe, build.Executable),
+                                   [x.get_id() for x in depends])
             arr.append(ts)
         return arr
 

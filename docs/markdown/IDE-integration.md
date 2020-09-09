@@ -247,12 +247,18 @@ line arguments, environment variable settings and how to process the output.
     "is_parallel": true / false,
     "protocol": "exitcode" / "tap",
     "cmd": ["command", "to", "run"],
+    "depends": ["target1-id", "target2-id"],
     "env": {
         "VARIABLE1": "value 1",
         "VARIABLE2": "value 2"
     }
 }
 ```
+
+The `depends` entry *(since 0.56.0)* contains target ids; they can be
+looked up in the targets introspection data.  The executable
+pointed to by `cmd` is also included in the entry, as are any
+arguments to the test that are build products.
 
 ## Build system files
 
@@ -335,3 +341,4 @@ removal of a key) are unlikely and will be announced in the release notes.
 - [Meson Cmake Wrapper](https://github.com/prozum/meson-cmake-wrapper) (for cmake IDEs) (currently unmaintained !!)
 - [Meson-UI](https://github.com/michaelbadcrumble/meson-ui) (Meson build GUI)
 - [Meson Syntax Highlighter](https://plugins.jetbrains.com/plugin/13269-meson-syntax-highlighter) plugin for JetBrains IDEs.
+- [asabil.meson](https://open-vsx.org/extension/asabil/meson) extension for VS Code/Codium

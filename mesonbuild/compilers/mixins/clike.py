@@ -40,7 +40,9 @@ from .visualstudio import VisualStudioLikeCompiler
 if T.TYPE_CHECKING:
     from ...environment import Environment
 
-SOREGEX = re.compile(r'.*\.so(\.[0-9]+)?(\.[0-9]+)?(\.[0-9]+)?$')
+GROUP_FLAGS = re.compile(r'''\.so (?:\.[0-9]+)? (?:\.[0-9]+)? (?:\.[0-9]+)?$ |
+                             ^(?:-Wl,)?-l |
+                             \.a$''', re.X)
 
 class CLikeCompilerArgs(arglist.CompilerArgs):
     prepend_prefixes = ('-I', '-L')
@@ -69,8 +71,7 @@ class CLikeCompilerArgs(arglist.CompilerArgs):
             group_start = -1
             group_end = -1
             for i, each in enumerate(new):
-                if not each.startswith(('-Wl,-l', '-l')) and not each.endswith('.a') and \
-                   not SOREGEX.match(each):
+                if not GROUP_FLAGS.search(each):
                     continue
                 group_end = i
                 if group_start < 0:
@@ -85,6 +86,9 @@ class CLikeCompilerArgs(arglist.CompilerArgs):
             default_dirs = self.compiler.get_default_include_dirs()
             bad_idx_list = []  # type: T.List[int]
             for i, each in enumerate(new):
+                if not each.startswith('-isystem'):
+                    continue
+
                 # Remove the -isystem and the path if the path is a default path
                 if (each == '-isystem' and
                         i < (len(new) - 1) and
@@ -92,7 +96,7 @@ class CLikeCompilerArgs(arglist.CompilerArgs):
                     bad_idx_list += [i, i + 1]
                 elif each.startswith('-isystem=') and each[9:] in default_dirs:
                     bad_idx_list += [i]
-                elif each.startswith('-isystem') and each[8:] in default_dirs:
+                elif each[8:] in default_dirs:
                     bad_idx_list += [i]
             for i in reversed(bad_idx_list):
                 new.pop(i)
@@ -373,7 +377,7 @@ class CLikeCompiler:
             # us in that case and will error out asking us to pick one.
             try:
                 crt_val = env.coredata.base_options['b_vscrt'].value
-                buildtype = env.coredata.base_options['buildtype'].value
+                buildtype = env.coredata.builtins['buildtype'].value
                 cargs += self.get_crt_compile_args(crt_val, buildtype)
             except (KeyError, AttributeError):
                 pass
@@ -1033,7 +1037,7 @@ class CLikeCompiler:
         if ((not extra_dirs and libtype is LibType.PREFER_SHARED) or
                 libname in self.internal_libs):
             cargs = ['-l' + libname]
-            largs = self.get_allow_undefined_link_args()
+            largs = self.get_linker_always_args() + self.get_allow_undefined_link_args()
             extra_args = cargs + self.linker_to_compiler_args(largs)
 
             if self.links(code, env, extra_args=extra_args, disable_cache=True)[0]:

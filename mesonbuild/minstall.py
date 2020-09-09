@@ -270,11 +270,9 @@ class Installer:
                 # Remove this entire branch when changing the behaviour to duplicate
                 # symlinks rather than copying what they point to.
                 print(symlink_warning)
-                shutil.copyfile(from_file, to_file)
-                shutil.copystat(from_file, to_file)
+                shutil.copy2(from_file, to_file)
         else:
-            shutil.copyfile(from_file, to_file)
-            shutil.copystat(from_file, to_file)
+            shutil.copy2(from_file, to_file)
         selinux_updates.append(to_file)
         append_to_log(self.lf, to_file)
         return True
@@ -439,11 +437,13 @@ class Installer:
             self.log('Running custom install script {!r}'.format(name))
             try:
                 rc = subprocess.call(script + args, env=child_env)
-                if rc != 0:
-                    sys.exit(rc)
             except OSError:
-                print('Failed to run install script {!r}'.format(name))
-                sys.exit(1)
+                print('FAILED: install script \'{}\' could not be run, stopped'.format(name))
+                # POSIX shells return 127 when a command could not be found
+                sys.exit(127)
+            if rc != 0:
+                print('FAILED: install script \'{}\' exit code {}, stopped'.format(name, rc))
+                sys.exit(rc)
 
     def install_targets(self, d):
         for t in d.targets:

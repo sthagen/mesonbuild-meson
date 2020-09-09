@@ -430,11 +430,19 @@ class ConverterTarget:
         # Make paths relative
         def rel_path(x: str, is_header: bool, is_generated: bool) -> T.Optional[str]:
             if not os.path.isabs(x):
-                x = os.path.normpath(os.path.join(self.src_dir, x))
+                x = os.path.join(self.src_dir, x)
+            x = os.path.normpath(x)
             if not os.path.exists(x) and not any([x.endswith(y) for y in obj_suffixes]) and not is_generated:
-                mlog.warning('CMake: path', mlog.bold(x), 'does not exist.')
-                mlog.warning(' --> Ignoring. This can lead to build errors.')
-                return None
+                if (
+                    any([os.path.commonpath([x, os.path.normpath(os.path.join(root_src_dir, y))]) == x for y in self.generated])
+                        and os.path.commonpath([x, self.env.get_build_dir()]) == self.env.get_build_dir()
+                    ):
+                    os.makedirs(x)
+                    return os.path.relpath(x, os.path.join(self.env.get_build_dir(), subdir))
+                else:
+                    mlog.warning('CMake: path', mlog.bold(x), 'does not exist.')
+                    mlog.warning(' --> Ignoring. This can lead to build errors.')
+                    return None
             if Path(x) in trace.explicit_headers:
                 return None
             if (
@@ -467,10 +475,10 @@ class ConverterTarget:
             return x
 
         build_dir_rel = os.path.relpath(self.build_dir, os.path.join(self.env.get_build_dir(), subdir))
+        self.generated = [rel_path(x, False, True) for x in self.generated]
         self.includes = list(OrderedSet([rel_path(x, True, False) for x in OrderedSet(self.includes)] + [build_dir_rel]))
         self.sys_includes = list(OrderedSet([rel_path(x, True, False) for x in OrderedSet(self.sys_includes)]))
         self.sources = [rel_path(x, False, False) for x in self.sources]
-        self.generated = [rel_path(x, False, True) for x in self.generated]
 
         # Resolve custom targets
         self.generated = [custom_target(x) for x in self.generated]

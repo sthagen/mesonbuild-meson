@@ -83,8 +83,10 @@ URLOPEN_TIMEOUT = 5
 def chdir(path: str):
     curdir = os.getcwd()
     os.chdir(path)
-    yield
-    os.chdir(curdir)
+    try:
+        yield
+    finally:
+        os.chdir(curdir)
 
 
 def get_dynamic_section_entry(fname, entry):
@@ -374,6 +376,12 @@ class InternalTests(unittest.TestCase):
         a += ['-I.', '-I./tests2/']
         self.assertEqual(a, ['-I.', '-I./tests2/', '-I./tests/', '-I..'])
 
+    def test_compiler_args_class_d(self):
+        d = mesonbuild.compilers.DCompiler([], 'fake', MachineChoice.HOST, 'info', 'arch', False, None)
+        # check include order is kept when deduplicating
+        a = d.compiler_args(['-Ifirst', '-Isecond', '-Ithird'])
+        a += ['-Ifirst']
+        self.assertEqual(a, ['-Ifirst', '-Isecond', '-Ithird'])
 
     def test_compiler_args_class(self):
         cc = mesonbuild.compilers.CCompiler([], 'fake', False, MachineChoice.HOST, mock.Mock())
@@ -1777,6 +1785,15 @@ class BasePlatformTests(unittest.TestCase):
         '''
         log = self.get_meson_log()
         prefix = 'Command line:'
+        cmds = [l[len(prefix):].split() for l in log if l.startswith(prefix)]
+        return cmds
+
+    def get_meson_log_sanitychecks(self):
+        '''
+        Same as above, but for the sanity checks that were run
+        '''
+        log = self.get_meson_log()
+        prefix = 'Sanity check compiler command line:'
         cmds = [l[len(prefix):].split() for l in log if l.startswith(prefix)]
         return cmds
 
@@ -4264,6 +4281,7 @@ recommended as it is not supported on some platforms''')
             ('suite', list),
             ('is_parallel', bool),
             ('protocol', str),
+            ('depends', list),
         ]
 
         buildoptions_keylist = [
@@ -4321,12 +4339,28 @@ recommended as it is not supported on some platforms''')
 
         assertKeyTypes(root_keylist, res)
 
+        # Match target ids to input and output files for ease of reference
+        src_to_id = {}
+        out_to_id = {}
+        for i in res['targets']:
+            print(json.dump(i, sys.stdout))
+            out_to_id.update({os.path.relpath(out, self.builddir): i['id']
+                              for out in i['filename']})
+            for group in i['target_sources']:
+                src_to_id.update({os.path.relpath(src, testdir): i['id']
+                                  for src in group['sources']})
+
         # Check Tests and benchmarks
         tests_to_find = ['test case 1', 'test case 2', 'benchmark 1']
+        deps_to_find = {'test case 1': [src_to_id['t1.cpp']],
+                        'test case 2': [src_to_id['t2.cpp'], src_to_id['t3.cpp']],
+                        'benchmark 1': [out_to_id['file2'], src_to_id['t3.cpp']]}
         for i in res['benchmarks'] + res['tests']:
             assertKeyTypes(test_keylist, i)
             if i['name'] in tests_to_find:
                 tests_to_find.remove(i['name'])
+            self.assertEqual(sorted(i['depends']),
+                             sorted(deps_to_find[i['name']]))
         self.assertListEqual(tests_to_find, [])
 
         # Check buildoptions
@@ -4467,6 +4501,7 @@ recommended as it is not supported on some platforms''')
         res_nb = self.introspect_directory(testfile, ['--targets'] + self.meson_args)
 
         # Account for differences in output
+        res_wb = [i for i in res_wb if i['type'] != 'custom']
         for i in res_wb:
             i['filename'] = [os.path.relpath(x, self.builddir) for x in i['filename']]
             if 'install_filename' in i:
@@ -5054,6 +5089,34 @@ recommended as it is not supported on some platforms''')
         self.build()
         self.run_tests()
 
+    @unittest.skipUnless(is_linux() and (re.search('^i.86$|^x86$|^x64$|^x86_64$|^amd64$', platform.processor()) is not None),
+        'Requires ASM compiler for x86 or x86_64 platform currently only available on Linux CI runners')
+    def test_nostdlib(self):
+        testdir = os.path.join(self.unit_test_dir, '79 nostdlib')
+        machinefile = os.path.join(self.builddir, 'machine.txt')
+        with open(machinefile, 'w') as f:
+            f.write(textwrap.dedent('''
+                [properties]
+                c_stdlib = 'mylibc'
+                '''))
+
+        # Test native C stdlib
+        self.meson_native_file = machinefile
+        self.init(testdir)
+        self.build()
+
+        # Test cross C stdlib
+        self.new_builddir()
+        self.meson_native_file = None
+        self.meson_cross_file = machinefile
+        self.init(testdir)
+        self.build()
+
+    def test_meson_version_compare(self):
+        testdir = os.path.join(self.unit_test_dir, '82 meson version compare')
+        out = self.init(testdir)
+        self.assertNotRegex(out, r'WARNING')
+
 class FailureTests(BasePlatformTests):
     '''
     Tests that test failure conditions. Build files here should be dynamically
@@ -5398,6 +5461,10 @@ class WindowsTests(BasePlatformTests):
         prog2 = ExternalProgram('cmd.exe')
         self.assertTrue(prog2.found(), msg='cmd.exe not found')
         self.assertPathEqual(prog1.get_path(), prog2.get_path())
+        # Find cmd.exe with args without searching
+        prog = ExternalProgram('cmd', command=['cmd', '/C'])
+        self.assertTrue(prog.found(), msg='cmd not found with args')
+        self.assertPathEqual(prog.get_command()[0], 'cmd')
         # Find cmd with an absolute path that's missing the extension
         cmd_path = prog2.get_path()[:-4]
         prog = ExternalProgram(cmd_path)
@@ -5410,9 +5477,9 @@ class WindowsTests(BasePlatformTests):
         self.assertTrue(prog.found(), msg='test-script-ext.py not found')
         # Finding a script in PATH
         os.environ['PATH'] += os.pathsep + testdir
-        # Finding a script in PATH w/o extension works and adds the interpreter
-        # (check only if `.PY` is in PATHEXT)
+        # If `.PY` is in PATHEXT, scripts can be found as programs
         if '.PY' in [ext.upper() for ext in os.environ['PATHEXT'].split(';')]:
+            # Finding a script in PATH w/o extension works and adds the interpreter
             prog = ExternalProgram('test-script-ext')
             self.assertTrue(prog.found(), msg='test-script-ext not found in PATH')
             self.assertPathEqual(prog.get_command()[0], python_command[0])
@@ -5422,6 +5489,18 @@ class WindowsTests(BasePlatformTests):
         self.assertTrue(prog.found(), msg='test-script-ext.py not found in PATH')
         self.assertPathEqual(prog.get_command()[0], python_command[0])
         self.assertPathBasenameEqual(prog.get_path(), 'test-script-ext.py')
+        # Using a script with an extension directly via command= works and adds the interpreter
+        prog = ExternalProgram('test-script-ext.py', command=[os.path.join(testdir, 'test-script-ext.py'), '--help'])
+        self.assertTrue(prog.found(), msg='test-script-ext.py with full path not picked up via command=')
+        self.assertPathEqual(prog.get_command()[0], python_command[0])
+        self.assertPathEqual(prog.get_command()[2], '--help')
+        self.assertPathBasenameEqual(prog.get_path(), 'test-script-ext.py')
+        # Using a script without an extension directly via command= works and adds the interpreter
+        prog = ExternalProgram('test-script', command=[os.path.join(testdir, 'test-script'), '--help'])
+        self.assertTrue(prog.found(), msg='test-script with full path not picked up via command=')
+        self.assertPathEqual(prog.get_command()[0], python_command[0])
+        self.assertPathEqual(prog.get_command()[2], '--help')
+        self.assertPathBasenameEqual(prog.get_path(), 'test-script')
         # Ensure that WindowsApps gets removed from PATH
         path = os.environ['PATH']
         if 'WindowsApps' not in path:
@@ -5616,6 +5695,50 @@ class WindowsTests(BasePlatformTests):
             contents = f.read()
             m = re.search('build qt5core.exe: cpp_LINKER.*Qt5Cored.lib', contents)
         self.assertIsNotNone(m, msg=contents)
+
+    def test_compiler_checks_vscrt(self):
+        '''
+        Test that the correct VS CRT is used when running compiler checks
+        '''
+        # Verify that the `b_vscrt` option is available
+        env = get_fake_env()
+        cc = env.detect_c_compiler(MachineChoice.HOST)
+        if 'b_vscrt' not in cc.base_options:
+            raise unittest.SkipTest('Compiler does not support setting the VS CRT')
+
+        def sanitycheck_vscrt(vscrt):
+            checks = self.get_meson_log_sanitychecks()
+            self.assertTrue(len(checks) > 0)
+            for check in checks:
+                self.assertIn(vscrt, check)
+
+        testdir = os.path.join(self.common_test_dir, '1 trivial')
+        self.init(testdir)
+        sanitycheck_vscrt('/MDd')
+
+        self.new_builddir()
+        self.init(testdir, extra_args=['-Dbuildtype=debugoptimized'])
+        sanitycheck_vscrt('/MD')
+
+        self.new_builddir()
+        self.init(testdir, extra_args=['-Dbuildtype=release'])
+        sanitycheck_vscrt('/MD')
+
+        self.new_builddir()
+        self.init(testdir, extra_args=['-Db_vscrt=md'])
+        sanitycheck_vscrt('/MD')
+
+        self.new_builddir()
+        self.init(testdir, extra_args=['-Db_vscrt=mdd'])
+        sanitycheck_vscrt('/MDd')
+
+        self.new_builddir()
+        self.init(testdir, extra_args=['-Db_vscrt=mt'])
+        sanitycheck_vscrt('/MT')
+
+        self.new_builddir()
+        self.init(testdir, extra_args=['-Db_vscrt=mtd'])
+        sanitycheck_vscrt('/MTd')
 
 
 @unittest.skipUnless(is_osx(), "requires Darwin")
@@ -6533,7 +6656,7 @@ class LinuxlikeTests(BasePlatformTests):
             if exception:
                 with self.assertRaises(subprocess.CalledProcessError):
                     self.init(testdir, override_envvars=env)
-                break
+                continue
             self.init(testdir, override_envvars=env)
             self.build()
             self.install(use_destdir=False)
