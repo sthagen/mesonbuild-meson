@@ -79,7 +79,7 @@ for details.
 | unity_size {>=2}                     | 4             | Unity file block size                                          | no             | no                |
 | warning_level {0, 1, 2, 3}           | 1             | Set the warning level. From 0 = none to 3 = highest            | no             | yes               |
 | werror                               | false         | Treat warnings as errors                                       | no             | yes               |
-| wrap_mode {default, nofallback,<br>nodownload, forcefallback} | default | Wrap mode to use                            | no             | no                |
+| wrap_mode {default, nofallback,<br>nodownload, forcefallback, nopromote} | default | Wrap mode to use                 | no             | no                |
 | force_fallback_for                   | []            | Force fallback for those dependencies                          | no             | no                |
 
 <a name="build-type-options"></a>
@@ -126,23 +126,23 @@ platforms or with all compilers:
 | b_sanitize  | none          | see below               | Code sanitizer to use |
 | b_staticpic | true          | true, false             | Build static libraries as position independent |
 | b_pie       | false         | true, false             | Build position-independent executables (since 0.49.0)|
-| b_vscrt     | from_buildtype| none, md, mdd, mt, mtd, from_buildtype | VS runtime library to use (since 0.48.0) |
+| b_vscrt     | from_buildtype| none, md, mdd, mt, mtd, from_buildtype, static_from_buildtype | VS runtime library to use (since 0.48.0) (static_from_buildtype since 0.56.0) |
 
 The value of `b_sanitize` can be one of: `none`, `address`, `thread`,
 `undefined`, `memory`, `address,undefined`.
 
 <a name="b_vscrt-from_buildtype"></a>
-The default value of `b_vscrt` is `from_buildtype`. In that case, the following
-table is used internally to pick the CRT compiler arguments based on the value
-of the `buildtype` option:
+The default value of `b_vscrt` is `from_buildtype`. The following table is used
+internally to pick the CRT compiler arguments for `from_buildtype` or
+`static_from_buildtype` *(since 0.56)* based on the value of the `buildtype` option:
 
-| buildtype      | Visual Studio CRT |
-| --------       | ----------------- |
-| debug          | `/MDd`            |
-| debugoptimized | `/MD`             |
-| release        | `/MD`             |
-| minsize        | `/MD`             |
-| custom         | error!            |
+| buildtype      | from_buildtype | static_from_buildtype |
+| --------       | -------------- | --------------------- |
+| debug          | `/MDd`         | `/MTd`                |
+| debugoptimized | `/MD`          | `/MT`                 |
+| release        | `/MD`          | `/MT`                 |
+| minsize        | `/MD`          | `/MT`                 |
+| custom         | error!         | error!                |
 
 ### Notes about Apple Bitcode support
 

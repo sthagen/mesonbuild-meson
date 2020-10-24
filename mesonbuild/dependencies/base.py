@@ -27,14 +27,14 @@ import textwrap
 import platform
 import typing as T
 from enum import Enum
-from pathlib import Path, PurePath
+from .._pathlib import Path, PurePath
 
 from .. import mlog
 from .. import mesonlib
 from ..compilers import clib_langs
 from ..envconfig import get_env_var
 from ..environment import BinaryTable, Environment, MachineInfo
-from ..cmake import CMakeExecutor, CMakeTraceParser, CMakeException
+from ..cmake import CMakeExecutor, CMakeTraceParser, CMakeException, CMakeToolchain, CMakeExecScope, check_cmake_args
 from ..mesonlib import MachineChoice, MesonException, OrderedSet, PerMachine
 from ..mesonlib import Popen_safe, version_compare_many, version_compare, listify, stringlistify, extract_as_list, split_args
 from ..mesonlib import Version, LibType
@@ -114,11 +114,11 @@ class Dependency:
 
     def __init__(self, type_name, kwargs):
         self.name = "null"
-        self.version = None
+        self.version = None  # type: T.Optional[str]
         self.language = None # None means C-like
         self.is_found = False
         self.type_name = type_name
-        self.compile_args = []
+        self.compile_args = []  # type: T.List[str]
         self.link_args = []
         # Raw -L and -l arguments without manual library searching
         # If None, self.link_args will be used
@@ -132,7 +132,7 @@ class Dependency:
         s = '<{0} {1}: {2}>'
         return s.format(self.__class__.__name__, self.name, self.is_found)
 
-    def get_compile_args(self):
+    def get_compile_args(self) -> T.List[str]:
         if self.include_type == 'system':
             converted = []
             for i in self.compile_args:
@@ -156,7 +156,7 @@ class Dependency:
             return self.raw_link_args
         return self.link_args
 
-    def found(self):
+    def found(self) -> bool:
         return self.is_found
 
     def get_sources(self):
@@ -171,7 +171,7 @@ class Dependency:
     def get_name(self):
         return self.name
 
-    def get_version(self):
+    def get_version(self) -> str:
         if self.version:
             return self.version
         else:
@@ -183,7 +183,7 @@ class Dependency:
     def get_exe_args(self, compiler):
         return []
 
-    def get_pkgconfig_variable(self, variable_name, kwargs):
+    def get_pkgconfig_variable(self, variable_name: str, kwargs: T.Dict[str, T.Any]) -> str:
         raise DependencyException('{!r} is not a pkgconfig dependency'.format(self.name))
 
     def get_configtool_variable(self, variable_name):
@@ -207,7 +207,7 @@ class Dependency:
         """
         raise RuntimeError('Unreachable code in partial_dependency called')
 
-    def _add_sub_dependency(self, deplist: T.List['DependencyType']) -> bool:
+    def _add_sub_dependency(self, deplist: T.Iterable[T.Callable[[], 'Dependency']]) -> bool:
         """Add an internal depdency from a list of possible dependencies.
 
         This method is intended to make it easier to add additional
@@ -261,7 +261,7 @@ class InternalDependency(Dependency):
                 setattr(result, k, copy.deepcopy(v, memo))
         return result
 
-    def get_pkgconfig_variable(self, variable_name, kwargs):
+    def get_pkgconfig_variable(self, variable_name: str, kwargs: T.Dict[str, T.Any]) -> str:
         raise DependencyException('Method "get_pkgconfig_variable()" is '
                                   'invalid for an internal dependency')
 
@@ -295,12 +295,17 @@ class InternalDependency(Dependency):
             return val
         raise DependencyException('Could not get an internal variable and no default provided for {!r}'.format(self))
 
+    def generate_link_whole_dependency(self) -> T.Type['Dependency']:
+        new_dep = copy.deepcopy(self)
+        new_dep.whole_libraries += new_dep.libraries
+        new_dep.libraries = []
+        return new_dep
 
 class HasNativeKwarg:
-    def __init__(self, kwargs):
+    def __init__(self, kwargs: T.Dict[str, T.Any]):
         self.for_machine = self.get_for_machine_from_kwargs(kwargs)
 
-    def get_for_machine_from_kwargs(self, kwargs):
+    def get_for_machine_from_kwargs(self, kwargs: T.Dict[str, T.Any]) -> MachineChoice:
         return MachineChoice.BUILD if kwargs.get('native', False) else MachineChoice.HOST
 
 class ExternalDependency(Dependency, HasNativeKwarg):
@@ -504,7 +509,7 @@ class ConfigToolDependency(ExternalDependency):
 
         return self.config is not None
 
-    def get_config_value(self, args, stage):
+    def get_config_value(self, args: T.List[str], stage: str) -> T.List[str]:
         p, out, err = Popen_safe(self.config + args)
         if p.returncode != 0:
             if self.required:
@@ -642,6 +647,25 @@ class PkgConfigDependency(ExternalDependency):
         mlog.debug("Called `{}` -> {}\n{}".format(call, rc, out))
         return rc, out, err
 
+    @staticmethod
+    def setup_env(env, environment, for_machine, extra_path=None):
+        extra_paths = environment.coredata.builtins_per_machine[for_machine]['pkg_config_path'].value
+        if extra_path:
+            extra_paths.append(extra_path)
+        sysroot = environment.properties[for_machine].get_sys_root()
+        if sysroot:
+            env['PKG_CONFIG_SYSROOT_DIR'] = sysroot
+        new_pkg_config_path = ':'.join([p for p in extra_paths])
+        mlog.debug('PKG_CONFIG_PATH: ' + new_pkg_config_path)
+        env['PKG_CONFIG_PATH'] = new_pkg_config_path
+
+        pkg_config_libdir_prop = environment.properties[for_machine].get_pkg_config_libdir()
+        if pkg_config_libdir_prop:
+            new_pkg_config_libdir = ':'.join([p for p in pkg_config_libdir_prop])
+            env['PKG_CONFIG_LIBDIR'] = new_pkg_config_libdir
+            mlog.debug('PKG_CONFIG_LIBDIR: ' + new_pkg_config_libdir)
+
+
     def _call_pkgbin(self, args, env=None):
         # Always copy the environment since we're going to modify it
         # with pkg-config variables
@@ -650,19 +674,7 @@ class PkgConfigDependency(ExternalDependency):
         else:
             env = env.copy()
 
-        extra_paths = self.env.coredata.builtins_per_machine[self.for_machine]['pkg_config_path'].value
-        sysroot = self.env.properties[self.for_machine].get_sys_root()
-        if sysroot:
-            env['PKG_CONFIG_SYSROOT_DIR'] = sysroot
-        new_pkg_config_path = ':'.join([p for p in extra_paths])
-        mlog.debug('PKG_CONFIG_PATH: ' + new_pkg_config_path)
-        env['PKG_CONFIG_PATH'] = new_pkg_config_path
-
-        pkg_config_libdir_prop = self.env.properties[self.for_machine].get_pkg_config_libdir()
-        if pkg_config_libdir_prop:
-            new_pkg_config_libdir = ':'.join([p for p in pkg_config_libdir_prop])
-            env['PKG_CONFIG_LIBDIR'] = new_pkg_config_libdir
-            mlog.debug('PKG_CONFIG_LIBDIR: ' + new_pkg_config_libdir)
+        PkgConfigDependency.setup_env(env, self.env, self.for_machine)
 
         fenv = frozenset(env.items())
         targs = tuple(args)
@@ -877,7 +889,7 @@ class PkgConfigDependency(ExternalDependency):
                                       (self.name, out_raw))
         self.link_args, self.raw_link_args = self._search_libs(out, out_raw)
 
-    def get_pkgconfig_variable(self, variable_name, kwargs):
+    def get_pkgconfig_variable(self, variable_name: str, kwargs: T.Dict[str, T.Any]) -> str:
         options = ['--variable=' + variable_name, self.name]
 
         if 'define_variable' in kwargs:
@@ -1075,10 +1087,10 @@ class CMakeDependency(ExternalDependency):
         # AttributeError exceptions in derived classes
         self.traceparser = None  # type: CMakeTraceParser
 
-        self.cmakebin = CMakeExecutor(environment, CMakeDependency.class_cmake_version, self.for_machine, silent=self.silent)
+        self.cmakebin = CMakeExecutor(environment, CMakeDependency.class_cmake_version, MachineChoice.BUILD, silent=self.silent)
         if not self.cmakebin.found():
             self.cmakebin = None
-            msg = 'No CMake binary for machine %s not found. Giving up.' % self.for_machine
+            msg = 'No CMake binary for machine {} not found. Giving up.'.format(MachineChoice.BUILD)
             if self.required:
                 raise DependencyException(msg)
             mlog.debug(msg)
@@ -1088,6 +1100,7 @@ class CMakeDependency(ExternalDependency):
         self.traceparser = CMakeTraceParser(self.cmakebin.version(), self._get_build_dir())
 
         cm_args = stringlistify(extract_as_list(kwargs, 'cmake_args'))
+        cm_args = check_cmake_args(cm_args)
         if CMakeDependency.class_cmakeinfo[self.for_machine] is None:
             CMakeDependency.class_cmakeinfo[self.for_machine] = self._get_cmake_info(cm_args)
         self.cmakeinfo = CMakeDependency.class_cmakeinfo[self.for_machine]
@@ -1124,12 +1137,14 @@ class CMakeDependency(ExternalDependency):
         gen_list += CMakeDependency.class_cmake_generators
 
         temp_parser = CMakeTraceParser(self.cmakebin.version(), self._get_build_dir())
+        toolchain = CMakeToolchain(self.env, self.for_machine, CMakeExecScope.DEPENDENCY, self._get_build_dir())
+        toolchain.write()
 
         for i in gen_list:
             mlog.debug('Try CMake generator: {}'.format(i if len(i) > 0 else 'auto'))
 
             # Prepare options
-            cmake_opts = temp_parser.trace_args() + ['.']
+            cmake_opts = temp_parser.trace_args() + toolchain.get_cmake_args() + ['.']
             cmake_opts += cm_args
             if len(i) > 0:
                 cmake_opts = ['-G', i] + cmake_opts
@@ -1308,6 +1323,8 @@ class CMakeDependency(ExternalDependency):
 
         # Map the components
         comp_mapped = self._map_component_list(modules, components)
+        toolchain = CMakeToolchain(self.env, self.for_machine, CMakeExecScope.DEPENDENCY, self._get_build_dir())
+        toolchain.write()
 
         for i in gen_list:
             mlog.debug('Try CMake generator: {}'.format(i if len(i) > 0 else 'auto'))
@@ -1319,6 +1336,7 @@ class CMakeDependency(ExternalDependency):
             cmake_opts += ['-DCOMPS={}'.format(';'.join([x[0] for x in comp_mapped]))]
             cmake_opts += args
             cmake_opts += self.traceparser.trace_args()
+            cmake_opts += toolchain.get_cmake_args()
             cmake_opts += self._extra_cmake_opts()
             cmake_opts += ['.']
             if len(i) > 0:
@@ -1516,14 +1534,21 @@ class CMakeDependency(ExternalDependency):
         self.compile_args = compileOptions + compileDefinitions + ['-I{}'.format(x) for x in incDirs]
         self.link_args = libraries
 
-    def _get_build_dir(self) -> str:
+    def _get_build_dir(self) -> Path:
         build_dir = Path(self.cmake_root_dir) / 'cmake_{}'.format(self.name)
         build_dir.mkdir(parents=True, exist_ok=True)
-        return str(build_dir)
+        return build_dir
 
-    def _setup_cmake_dir(self, cmake_file: str) -> str:
+    def _setup_cmake_dir(self, cmake_file: str) -> Path:
         # Setup the CMake build environment and return the "build" directory
         build_dir = self._get_build_dir()
+
+        # Remove old CMake cache so we can try out multiple generators
+        cmake_cache = build_dir / 'CMakeCache.txt'
+        cmake_files = build_dir / 'CMakeFiles'
+        if cmake_cache.exists():
+            cmake_cache.unlink()
+        shutil.rmtree(cmake_files.as_posix(), ignore_errors=True)
 
         # Insert language parameters into the CMakeLists.txt and write new CMakeLists.txt
         cmake_txt = mesondata['dependencies/data/' + cmake_file].data
@@ -1540,12 +1565,12 @@ class CMakeDependency(ExternalDependency):
         if not cmake_language:
             cmake_language += ['NONE']
 
-        cmake_txt = """
-cmake_minimum_required(VERSION ${{CMAKE_VERSION}})
-project(MesonTemp LANGUAGES {})
-""".format(' '.join(cmake_language)) + cmake_txt
+        cmake_txt = textwrap.dedent("""
+            cmake_minimum_required(VERSION ${{CMAKE_VERSION}})
+            project(MesonTemp LANGUAGES {})
+        """).format(' '.join(cmake_language)) + cmake_txt
 
-        cm_file = Path(build_dir) / 'CMakeLists.txt'
+        cm_file = build_dir / 'CMakeLists.txt'
         cm_file.write_text(cmake_txt)
         mlog.cmd_ci_include(cm_file.absolute().as_posix())
 
@@ -1553,7 +1578,7 @@ project(MesonTemp LANGUAGES {})
 
     def _call_cmake(self, args, cmake_file: str, env=None):
         build_dir = self._setup_cmake_dir(cmake_file)
-        return self.cmakebin.call_with_fake_build(args, build_dir, env=env)
+        return self.cmakebin.call(args, build_dir, env=env)
 
     @staticmethod
     def get_methods():
@@ -2037,29 +2062,29 @@ class ExternalProgram:
     def found(self) -> bool:
         return self.command[0] is not None
 
-    def get_command(self):
+    def get_command(self) -> T.List[str]:
         return self.command[:]
 
-    def get_path(self):
+    def get_path(self) -> str:
         return self.path
 
-    def get_name(self):
+    def get_name(self) -> str:
         return self.name
 
 
 class NonExistingExternalProgram(ExternalProgram):  # lgtm [py/missing-call-to-init]
     "A program that will never exist"
 
-    def __init__(self, name='nonexistingprogram'):
+    def __init__(self, name: str = 'nonexistingprogram') -> None:
         self.name = name
         self.command = [None]
         self.path = None
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         r = '<{} {!r} -> {!r}>'
         return r.format(self.__class__.__name__, self.name, self.command)
 
-    def found(self):
+    def found(self) -> bool:
         return False
 
 
@@ -2308,9 +2333,11 @@ def get_dep_identifier(name, kwargs) -> T.Tuple:
         # 'version' is irrelevant for caching; the caller must check version matches
         # 'native' is handled above with `for_machine`
         # 'required' is irrelevant for caching; the caller handles it separately
-        # 'fallback' subprojects cannot be cached -- they must be initialized
+        # 'fallback' and 'allow_fallback' is not part of the cache because,
+        #     once a dependency has been found through a fallback, it should
+        #     be used for the rest of the Meson run.
         # 'default_options' is only used in fallback case
-        if key in ('version', 'native', 'required', 'fallback', 'default_options', 'force_fallback'):
+        if key in ('version', 'native', 'required', 'fallback', 'allow_fallback', 'default_options'):
             continue
         # All keyword arguments are strings, ints, or lists (or lists of lists)
         if isinstance(value, list):
@@ -2550,7 +2577,7 @@ def factory_methods(methods: T.Set[DependencyMethods]) -> T.Callable[['FactoryTy
 
     This helps to make factory functions self documenting
     >>> @factory_methods([DependencyMethods.PKGCONFIG, DependencyMethods.CMAKE])
-    >>> def factory(env: Environment, for_machine: MachineChoice, kwargs: T.Dict[str, T.Any], methods: T.Set[DependencyMethods]) -> T.List[DependencyType]:
+    >>> def factory(env: Environment, for_machine: MachineChoice, kwargs: T.Dict[str, T.Any], methods: T.List[DependencyMethods]) -> T.List[T.Callable[[], 'Dependency']]:
     >>>     pass
     """
 
