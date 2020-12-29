@@ -78,6 +78,7 @@ def main() -> int:
         ####
 
 
+        # TODO: Remember to remove this also from tools/gen_data.py
         from pathlib import Path
         import typing as T
 

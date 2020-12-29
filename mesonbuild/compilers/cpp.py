@@ -150,7 +150,9 @@ class CPPCompiler(CLikeCompiler, Compiler):
             'c++14': 'c++1y',
             'gnu++14': 'gnu++1y',
             'c++17': 'c++1z',
-            'gnu++17': 'gnu++1z'
+            'gnu++17': 'gnu++1z',
+            'c++20': 'c++2a',
+            'gnu++20': 'gnu++2a',
         }
 
         # Currently, remapping is only supported for Clang, Elbrus and GCC
@@ -166,6 +168,17 @@ class CPPCompiler(CLikeCompiler, Compiler):
                 return cpp_std_value
 
         raise MesonException('C++ Compiler does not support -std={}'.format(cpp_std))
+
+    def get_options(self) -> 'OptionDictType':
+        opts = super().get_options()
+        opts.update({
+            'std': coredata.UserComboOption(
+                'C++ language standard to use',
+                ['none'],
+                'none',
+            ),
+        })
+        return opts
 
 
 class ClangCPPCompiler(ClangCompiler, CPPCompiler):
@@ -192,13 +205,12 @@ class ClangCPPCompiler(ClangCompiler, CPPCompiler):
                 'default',
             ),
             'rtti': coredata.UserBooleanOption('Enable RTTI', True),
-            'std': coredata.UserComboOption(
-                'C++ language standard to use',
-                ['none', 'c++98', 'c++03', 'c++11', 'c++14', 'c++17', 'c++1z', 'c++2a',
-                 'gnu++11', 'gnu++14', 'gnu++17', 'gnu++1z', 'gnu++2a'],
-                'none',
-            ),
         })
+        opts['std'].choices = [  # type: ignore
+            'none', 'c++98', 'c++03', 'c++11', 'c++14', 'c++17', 'c++1z',
+            'c++2a', 'c++20', 'gnu++11', 'gnu++14', 'gnu++17', 'gnu++1z',
+            'gnu++2a', 'gnu++20',
+        ]
         if self.info.is_windows() or self.info.is_cygwin():
             opts.update({
                 'winlibs': coredata.UserArrayOption(
@@ -283,15 +295,11 @@ class ArmclangCPPCompiler(ArmclangCompiler, CPPCompiler):
                 ['none', 'default', 'a', 's', 'sc'],
                 'default',
             ),
-            'std': coredata.UserComboOption(
-                'C++ language standard to use',
-                [
-                    'none', 'c++98', 'c++03', 'c++11', 'c++14', 'c++17',
-                    'gnu++98', 'gnu++03', 'gnu++11', 'gnu++14', 'gnu++17',
-                ],
-                'none',
-            ),
         })
+        opts['std'].choices = [  # type: ignore
+            'none', 'c++98', 'c++03', 'c++11', 'c++14', 'c++17', 'gnu++98',
+            'gnu++03', 'gnu++11', 'gnu++14', 'gnu++17',
+        ]
         return opts
 
     def get_option_compile_args(self, options: 'OptionDictType') -> T.List[str]:
@@ -332,17 +340,16 @@ class GnuCPPCompiler(GnuCompiler, CPPCompiler):
                 'default',
             ),
             'rtti': coredata.UserBooleanOption('Enable RTTI', True),
-            'std': coredata.UserComboOption(
-                'C++ language standard to use',
-                ['none', 'c++98', 'c++03', 'c++11', 'c++14', 'c++17', 'c++1z', 'c++2a',
-                 'gnu++03', 'gnu++11', 'gnu++14', 'gnu++17', 'gnu++1z', 'gnu++2a'],
-                'none',
-            ),
             'debugstl': coredata.UserBooleanOption(
                 'STL debug mode',
                 False,
             )
         })
+        opts['std'].choices = [  # type: ignore
+            'none', 'c++98', 'c++03', 'c++11', 'c++14', 'c++17', 'c++1z',
+            'c++2a', 'c++20', 'gnu++03', 'gnu++11', 'gnu++14', 'gnu++17',
+            'gnu++1z', 'gnu++2a', 'gnu++20',
+        ]
         if self.info.is_windows() or self.info.is_cygwin():
             opts.update({
                 'winlibs': coredata.UserArrayOption(
@@ -437,16 +444,12 @@ class ElbrusCPPCompiler(GnuCPPCompiler, ElbrusCompiler):
                 ['none', 'default', 'a', 's', 'sc'],
                 'default',
             ),
-            'std': coredata.UserComboOption(
-                'C++ language standard to use',
-                cpp_stds,
-                'none',
-            ),
             'debugstl': coredata.UserBooleanOption(
                 'STL debug mode',
                 False,
             ),
         })
+        opts['std'].choices = cpp_stds  # type: ignore
         return opts
 
     # Elbrus C++ compiler does not have lchmod, but there is only linker warning, not compiler error.
@@ -515,13 +518,9 @@ class IntelCPPCompiler(IntelGnuLikeCompiler, CPPCompiler):
                 'default',
             ),
             'rtti': coredata.UserBooleanOption('Enable RTTI', True),
-            'std': coredata.UserComboOption(
-                'C++ language standard to use',
-                ['none'] + c_stds + g_stds,
-                'none',
-            ),
             'debugstl': coredata.UserBooleanOption('STL debug mode', False),
         })
+        opts['std'].choices = ['none'] + c_stds + g_stds  # type: ignore
         return opts
 
     def get_option_compile_args(self, options: 'OptionDictType') -> T.List[str]:
@@ -573,16 +572,12 @@ class VisualStudioLikeCPPCompilerMixin(CompilerMixinBase):
                 'default',
             ),
             'rtti': coredata.UserBooleanOption('Enable RTTI', True),
-            'std': coredata.UserComboOption(
-                'C++ language standard to use',
-                cpp_stds,
-                'none',
-            ),
             'winlibs': coredata.UserArrayOption(
                 'Windows libs to link against.',
                 msvc_winlibs,
             ),
         })
+        opts['std'].choices = cpp_stds  # type: ignore
         return opts
 
     def get_option_compile_args(self, options: 'OptionDictType') -> T.List[str]:
@@ -726,13 +721,7 @@ class ArmCPPCompiler(ArmCompiler, CPPCompiler):
 
     def get_options(self) -> 'OptionDictType':
         opts = CPPCompiler.get_options(self)
-        opts.update({
-            'std': coredata.UserComboOption(
-                'C++ language standard to use',
-                ['none', 'c++03', 'c++11'],
-                'none',
-            ),
-        })
+        opts['std'].choices = ['none', 'c++03', 'c++11']  # type: ignore
         return opts
 
     def get_option_compile_args(self, options: 'OptionDictType') -> T.List[str]:
@@ -790,9 +779,7 @@ class C2000CPPCompiler(C2000Compiler, CPPCompiler):
 
     def get_options(self) -> 'OptionDictType':
         opts = CPPCompiler.get_options(self)
-        opts.update({'cpp_std': coredata.UserComboOption('C++ language standard to use',
-                                                         ['none', 'c++03'],
-                                                         'none')})
+        opts['std'].choices = ['none', 'c++03']  # type: ignore
         return opts
 
     def get_always_args(self) -> T.List[str]:

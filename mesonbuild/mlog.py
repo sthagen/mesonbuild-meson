@@ -19,7 +19,7 @@ import time
 import platform
 import typing as T
 from contextlib import contextmanager
-from ._pathlib import Path
+from pathlib import Path
 
 """This is (mostly) a standalone module used to write logging
 information about Meson runs. Some output goes to screen,
@@ -124,7 +124,7 @@ class AnsiDecorator:
 
     def get_text(self, with_codes: bool) -> str:
         text = self.text
-        if with_codes:
+        if with_codes and self.code:
             text = self.code + self.text + AnsiDecorator.plain_code
         if self.quoted:
             text = '"{}"'.format(text)
@@ -132,6 +132,9 @@ class AnsiDecorator:
 
 def bold(text: str, quoted: bool = False) -> AnsiDecorator:
     return AnsiDecorator(text, "\033[1m", quoted=quoted)
+
+def plain(text: str) -> AnsiDecorator:
+    return AnsiDecorator(text, "")
 
 def red(text: str) -> AnsiDecorator:
     return AnsiDecorator(text, "\033[1;31m")
@@ -215,7 +218,15 @@ def _debug_log_cmd(cmd: str, args: T.List[str]) -> None:
 def cmd_ci_include(file: str) -> None:
     _debug_log_cmd('ci_include', [file])
 
+
 def log(*args: T.Union[str, AnsiDecorator], is_error: bool = False,
+        once: bool = False, **kwargs: T.Any) -> None:
+    if once:
+        return log_once(*args, is_error=is_error, **kwargs)
+    return _log(*args, is_error=is_error, **kwargs)
+
+
+def _log(*args: T.Union[str, AnsiDecorator], is_error: bool = False,
         **kwargs: T.Any) -> None:
     arr = process_markup(args, False)
     if log_file is not None:
@@ -237,7 +248,7 @@ def log_once(*args: T.Union[str, AnsiDecorator], is_error: bool = False,
     if t in _logged_once:
         return
     _logged_once.add(t)
-    log(*args, is_error=is_error, **kwargs)
+    _log(*args, is_error=is_error, **kwargs)
 
 # This isn't strictly correct. What we really want here is something like:
 # class StringProtocol(typing_extensions.Protocol):
@@ -277,10 +288,7 @@ def _log_error(severity: str, *rargs: T.Union[str, AnsiDecorator],
         location_list = T.cast(T.List[T.Union[str, AnsiDecorator]], [location_str])
         args = location_list + args
 
-    if once:
-        log_once(*args, **kwargs)
-    else:
-        log(*args, **kwargs)
+    log(*args, once=once, **kwargs)
 
     global log_warnings_counter
     log_warnings_counter += 1

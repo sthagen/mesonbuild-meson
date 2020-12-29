@@ -19,7 +19,8 @@
 ####
 
 
-from ._pathlib import Path
+# TODO: Remember to remove this also from tools/gen_data.py
+from pathlib import Path
 import typing as T
 
 if T.TYPE_CHECKING:
@@ -173,7 +174,11 @@ set(_packageName "${NAME}")
 string(TOUPPER "${_packageName}" PACKAGE_NAME)
 
 while(TRUE)
-  find_package("${NAME}" QUIET COMPONENTS ${COMPS})
+  if ("${VERSION}" STREQUAL "")
+    find_package("${NAME}" QUIET COMPONENTS ${COMPS})
+  else()
+    find_package("${NAME}" "${VERSION}" QUIET COMPONENTS ${COMPS})
+  endif()
 
   # ARCHS has to be set via the CMD interface
   if(${_packageName}_FOUND OR ${PACKAGE_NAME}_FOUND OR "${ARCHS}" STREQUAL "")
@@ -265,11 +270,19 @@ endif()
 
 set(MESON_PS_LOADED ON)
 
+cmake_policy(PUSH)
+cmake_policy(SET CMP0054 NEW) # https://cmake.org/cmake/help/latest/policy/CMP0054.html
+
 # Dummy macros that have a special meaning in the meson code
 macro(meson_ps_execute_delayed_calls)
 endmacro()
 
 macro(meson_ps_reload_vars)
+endmacro()
+
+macro(meson_ps_disabled_function)
+  message(WARNING "The function '${ARGV0}' is disabled in the context of CMake subporjects.\n"
+                  "This should not be an issue but may lead to compilaton errors.")
 endmacro()
 
 # Helper macro to inspect the current CMake state
@@ -324,8 +337,15 @@ function(set_source_files_properties)
   endwhile()
 endfunction()
 
+# Disable some functions that would mess up the CMake meson integration
+macro(target_precompile_headers)
+  meson_ps_disabled_function(target_precompile_headers)
+endmacro()
+
 set(MESON_PS_DELAYED_CALLS add_custom_command;add_custom_target;set_property)
 meson_ps_reload_vars()
+
+cmake_policy(POP)
 '''
 
 
@@ -363,12 +383,12 @@ mesondata = {
     ),
     'dependencies/data/CMakeLists.txt': DataFile(
         Path('dependencies/data/CMakeLists.txt'),
-        '71a2d58381f912bbfb1c8709884d34d721f682edf2fca001e1f582f0bffd0da7',
+        '4dca24afa13e9311f0598a6ac29690490819bd7d82cfdaa0a2fe5eea3c0fa0d5',
         file_2_data_CMakeLists_txt,
     ),
     'cmake/data/preload.cmake': DataFile(
         Path('cmake/data/preload.cmake'),
-        '064d047b18a5c919ad016b838bed50c5d40aebe9e53da0e70eff9d52a2c1ca1f',
+        '2b4e632aeb74acb2b441880cf85c0b6fcab03e75b182d3077715a97e739a7918',
         file_3_data_preload_cmake,
     ),
 }

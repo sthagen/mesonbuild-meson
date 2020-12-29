@@ -36,7 +36,7 @@ from .modules import ModuleReturnValue, ExtensionModule
 from .cmake import CMakeInterpreter
 from .backend.backends import TestProtocol, Backend
 
-from ._pathlib import Path, PurePath
+from pathlib import Path, PurePath
 import os
 import shutil
 import uuid
@@ -49,6 +49,11 @@ import functools
 import typing as T
 
 import importlib
+
+if T.TYPE_CHECKING:
+    from .envconfig import MachineInfo
+    from .environment import Environment
+    from .modules import ExtensionModule
 
 permitted_method_kwargs = {
     'partial_dependency': {'compile_args', 'link_args', 'links', 'includes',
@@ -308,6 +313,7 @@ class ConfigurationDataHolder(MutableInterpreterObject, ObjectHolder):
                              'set_quoted': self.set_quoted_method,
                              'has': self.has_method,
                              'get': self.get_method,
+                             'keys': self.keys_method,
                              'get_unquoted': self.get_unquoted_method,
                              'merge_from': self.merge_from_method,
                              })
@@ -400,6 +406,10 @@ class ConfigurationDataHolder(MutableInterpreterObject, ObjectHolder):
 
     def get(self, name):
         return self.held_object.values[name] # (val, desc)
+
+    @FeatureNew('configuration_data.keys()', '0.57.0')
+    def keys_method(self, args, kwargs):
+        return sorted(self.keys())
 
     def keys(self):
         return self.held_object.values.keys()
@@ -711,34 +721,26 @@ class IncludeDirsHolder(InterpreterObject, ObjectHolder):
         InterpreterObject.__init__(self)
         ObjectHolder.__init__(self, idobj)
 
-class Headers(InterpreterObject):
+class HeadersHolder(InterpreterObject, ObjectHolder):
 
-    def __init__(self, sources, kwargs):
+    def __init__(self, obj: build.Headers):
         InterpreterObject.__init__(self)
-        self.sources = sources
-        self.install_subdir = kwargs.get('subdir', '')
-        if os.path.isabs(self.install_subdir):
-            mlog.deprecation('Subdir keyword must not be an absolute path. This will be a hard error in the next release.')
-        self.custom_install_dir = kwargs.get('install_dir', None)
-        self.custom_install_mode = kwargs.get('install_mode', None)
-        if self.custom_install_dir is not None:
-            if not isinstance(self.custom_install_dir, str):
-                raise InterpreterException('Custom_install_dir must be a string.')
+        ObjectHolder.__init__(self, obj)
 
     def set_install_subdir(self, subdir):
-        self.install_subdir = subdir
+        self.held_object.install_subdir = subdir
 
     def get_install_subdir(self):
-        return self.install_subdir
+        return self.held_object.install_subdir
 
     def get_sources(self):
-        return self.sources
+        return self.held_object.sources
 
     def get_custom_install_dir(self):
-        return self.custom_install_dir
+        return self.held_object.custom_install_dir
 
     def get_custom_install_mode(self):
-        return self.custom_install_mode
+        return self.held_object.custom_install_mode
 
 class DataHolder(InterpreterObject, ObjectHolder):
     def __init__(self, data):
@@ -766,34 +768,20 @@ class InstallDir(InterpreterObject):
         self.strip_directory = strip_directory
         self.from_source_dir = from_source_dir
 
-class Man(InterpreterObject):
+class ManHolder(InterpreterObject, ObjectHolder):
 
-    def __init__(self, sources, kwargs):
+    def __init__(self, obj: build.Man):
         InterpreterObject.__init__(self)
-        self.sources = sources
-        self.validate_sources()
-        self.custom_install_dir = kwargs.get('install_dir', None)
-        self.custom_install_mode = kwargs.get('install_mode', None)
-        if self.custom_install_dir is not None and not isinstance(self.custom_install_dir, str):
-            raise InterpreterException('Custom_install_dir must be a string.')
+        ObjectHolder.__init__(self, obj)
 
-    def validate_sources(self):
-        for s in self.sources:
-            try:
-                num = int(s.split('.')[-1])
-            except (IndexError, ValueError):
-                num = 0
-            if num < 1 or num > 8:
-                raise InvalidArguments('Man file must have a file extension of a number between 1 and 8')
+    def get_custom_install_dir(self) -> T.Optional[str]:
+        return self.held_object.custom_install_dir
 
-    def get_custom_install_dir(self):
-        return self.custom_install_dir
+    def get_custom_install_mode(self) -> T.Optional[FileMode]:
+        return self.held_object.custom_install_mode
 
-    def get_custom_install_mode(self):
-        return self.custom_install_mode
-
-    def get_sources(self):
-        return self.sources
+    def get_sources(self) -> T.List[mesonlib.File]:
+        return self.held_object.sources
 
 class GeneratedObjectsHolder(InterpreterObject, ObjectHolder):
     def __init__(self, held_object):
@@ -873,7 +861,7 @@ class BuildTargetHolder(TargetHolder):
         return self.held_object.name
 
 class ExecutableHolder(BuildTargetHolder):
-    def __init__(self, target, interp):
+    def __init__(self, target: build.Executable, interp: 'Interpreter'):
         super().__init__(target, interp)
 
 class StaticLibraryHolder(BuildTargetHolder):
@@ -1115,14 +1103,18 @@ class CompilerHolder(InterpreterObject):
             return endl
         if endl is None:
             endl = ''
-        tpl = msg_many if len(deps) > 1 else msg_single
         names = []
         for d in deps:
+            if isinstance(d, dependencies.InternalDependency):
+                continue
             if isinstance(d, dependencies.ExternalLibrary):
                 name = '-l' + d.name
             else:
                 name = d.name
             names.append(name)
+        if not names:
+            return None
+        tpl = msg_many if len(names) > 1 else msg_single
         return tpl.format(', '.join(names)) + endl
 
     @noPosargs
@@ -1160,16 +1152,15 @@ class CompilerHolder(InterpreterObject):
     def determine_dependencies(self, kwargs, endl=':'):
         deps = kwargs.get('dependencies', None)
         if deps is not None:
-            deps = listify(deps)
             final_deps = []
-            for d in deps:
-                try:
-                    d = d.held_object
-                except Exception:
-                    pass
-                if isinstance(d, InternalDependency) or not isinstance(d, Dependency):
-                    raise InterpreterException('Dependencies must be external dependencies')
-                final_deps.append(d)
+            while deps:
+                next_deps = []
+                for d in unholder(listify(deps)):
+                    if not isinstance(d, Dependency) or d.is_built():
+                        raise InterpreterException('Dependencies must be external dependencies')
+                    final_deps.append(d)
+                    next_deps.extend(d.ext_deps)
+                deps = next_deps
             deps = final_deps
         return deps, self._dep_msg(deps, endl)
 
@@ -1773,14 +1764,37 @@ class CompilerHolder(InterpreterObject):
         return self.compiler.get_argument_syntax()
 
 
-ModuleState = collections.namedtuple('ModuleState', [
-    'source_root', 'build_to_src', 'subproject', 'subdir', 'current_lineno', 'environment',
-    'project_name', 'project_version', 'backend', 'targets',
-    'data', 'headers', 'man', 'global_args', 'project_args', 'build_machine',
-    'host_machine', 'target_machine', 'current_node'])
+class ModuleState(T.NamedTuple):
+
+    """Object passed to a module when it a method is called.
+
+    holds the current state of the meson process at a given method call in
+    the interpreter.
+    """
+
+    source_root: str
+    build_to_src: str
+    subproject: str
+    subdir: str
+    current_lineno: str
+    environment: 'Environment'
+    project_name: str
+    project_version: str
+    backend: str
+    targets: T.Dict[str, build.Target]
+    data: T.List[build.Data]
+    headers: T.List[build.Headers]
+    man: T.List[build.Man]
+    global_args: T.Dict[str, T.List[str]]
+    project_args: T.Dict[str, T.List[str]]
+    build_machine: 'MachineInfo'
+    host_machine: 'MachineInfo'
+    target_machine: 'MachineInfo'
+    current_node: mparser.BaseNode
+
 
 class ModuleHolder(InterpreterObject, ObjectHolder):
-    def __init__(self, modname, module, interpreter):
+    def __init__(self, modname: str, module: 'ExtensionModule', interpreter: 'Interpreter'):
         InterpreterObject.__init__(self)
         ObjectHolder.__init__(self, module)
         self.modname = modname
@@ -2329,6 +2343,7 @@ permitted_kwargs = {'add_global_arguments': {'language', 'native'},
                                    'version',
                                    'private_headers',
                                    'cmake_args',
+                                   'cmake_package_version',
                                    'include_type',
                                    },
                     'declare_dependency': {'include_directories',
@@ -2383,6 +2398,7 @@ class Interpreter(InterpreterBase):
                 default_project_options: T.Optional[T.Dict[str, str]] = None,
                 mock: bool = False,
                 ast: T.Optional[mparser.CodeBlockNode] = None,
+                is_translated: bool = False,
             ) -> None:
         super().__init__(build.environment.get_source_dir(), subdir, subproject)
         self.an_unpicklable_object = mesonlib.an_unpicklable_object
@@ -2421,8 +2437,16 @@ class Interpreter(InterpreterBase):
             self.default_project_options = {}
         self.project_default_options = {}
         self.build_func_dict()
+
         # build_def_files needs to be defined before parse_project is called
-        self.build_def_files = [os.path.join(self.subdir, environment.build_filename)]
+        #
+        # For non-meson subprojects, we'll be using the ast. Even if it does
+        # exist we don't want to add a dependency on it, it's autogenerated
+        # from the actual build files, and is just for reference.
+        self.build_def_files = []
+        build_filename = os.path.join(self.subdir, environment.build_filename)
+        if not is_translated:
+            self.build_def_files.append(build_filename)
         if not mock:
             self.parse_project()
         self._redetect_machines()
@@ -2690,7 +2714,7 @@ class Interpreter(InterpreterBase):
             varlist = mesonlib.stringlistify(variables)
             if list_new:
                 FeatureNew.single_use('variables as list of strings', '0.56.0', self.subproject)
-            variables = {}
+            variables = collections.OrderedDict()
             for v in varlist:
                 try:
                     (key, value) = v.split('=', 1)
@@ -2941,11 +2965,14 @@ external dependencies (including libraries) must go to "dependencies".''')
                 return self.disabled_subproject(subp_name, exception=e)
             raise e
 
-    def _do_subproject_meson(self, subp_name, subdir, default_options, kwargs, ast=None, build_def_files=None):
+    def _do_subproject_meson(self, subp_name: str, subdir: str, default_options, kwargs,
+                             ast: T.Optional[mparser.CodeBlockNode] = None,
+                             build_def_files: T.Optional[T.List[str]] = None,
+                             is_translated: bool = False) -> SubprojectHolder:
         with mlog.nested():
             new_build = self.build.copy()
             subi = Interpreter(new_build, self.backend, subp_name, subdir, self.subproject_dir,
-                               self.modules, default_options, ast=ast)
+                               self.modules, default_options, ast=ast, is_translated=is_translated)
             subi.subprojects = self.subprojects
 
             subi.subproject_stack = self.subproject_stack + [subp_name]
@@ -2971,8 +2998,8 @@ external dependencies (including libraries) must go to "dependencies".''')
         # Duplicates are possible when subproject uses files from project root
         if build_def_files:
             self.build_def_files = list(set(self.build_def_files + build_def_files))
-        else:
-            self.build_def_files = list(set(self.build_def_files + subi.build_def_files))
+        # We always need the subi.build_def_files, to propgate sub-sub-projects
+        self.build_def_files = list(set(self.build_def_files + subi.build_def_files))
         self.build.merge(subi.build)
         self.build.subprojects[subp_name] = subi.project_version
         self.summary.update(subi.summary)
@@ -3016,7 +3043,7 @@ external dependencies (including libraries) must go to "dependencies".''')
                 mlog.cmd_ci_include(meson_filename)
                 mlog.log()
 
-            result = self._do_subproject_meson(subp_name, subdir, default_options, kwargs, ast, cm_int.bs_files)
+            result = self._do_subproject_meson(subp_name, subdir, default_options, kwargs, ast, cm_int.bs_files, is_translated=True)
             result.cm_interpreter = cm_int
 
         mlog.log()
@@ -3158,6 +3185,8 @@ external dependencies (including libraries) must go to "dependencies".''')
             self.build.project_name = proj_name
         self.active_projectname = proj_name
         self.project_version = kwargs.get('version', 'undefined')
+        if not isinstance(self.project_version, str):
+            raise InvalidCode('The version keyword argument must be a string.')
         if self.build.project_version is None:
             self.build.project_version = self.project_version
         proj_license = mesonlib.stringlistify(kwargs.get('license', 'unknown'))
@@ -3697,6 +3726,7 @@ external dependencies (including libraries) must go to "dependencies".''')
         elif name == 'openmp':
             FeatureNew.single_use('OpenMP Dependency', '0.46.0', self.subproject)
 
+    @FeatureNewKwargs('dependency', '0.57.0', ['cmake_package_version'])
     @FeatureNewKwargs('dependency', '0.54.0', ['components'])
     @FeatureNewKwargs('dependency', '0.52.0', ['include_type'])
     @FeatureNewKwargs('dependency', '0.50.0', ['not_found_message', 'cmake_module_path', 'cmake_args'])
@@ -4165,19 +4195,43 @@ This will become a hard error in the future.''' % kwargs['input'], location=self
     @permittedKwargs(permitted_kwargs['install_headers'])
     def func_install_headers(self, node, args, kwargs):
         source_files = self.source_strings_to_files(args)
-        kwargs['install_mode'] = self._get_kwarg_install_mode(kwargs)
-        h = Headers(source_files, kwargs)
+        install_mode = self._get_kwarg_install_mode(kwargs)
+
+        install_subdir = kwargs.get('subdir', '')
+        if not isinstance(install_subdir, str):
+            raise InterpreterException('subdir keyword argument must be a string')
+        elif os.path.isabs(install_subdir):
+            mlog.deprecation('Subdir keyword must not be an absolute path. This will be a hard error in the next release.')
+
+        install_dir = kwargs.get('install_dir', None)
+        if install_dir is not None and not isinstance(install_dir, str):
+            raise InterpreterException('install_dir keyword argument must be a string if provided')
+
+        h = build.Headers(source_files, install_subdir, install_dir, install_mode)
         self.build.headers.append(h)
-        return h
+
+        return HeadersHolder(h)
 
     @FeatureNewKwargs('install_man', '0.47.0', ['install_mode'])
     @permittedKwargs(permitted_kwargs['install_man'])
     def func_install_man(self, node, args, kwargs):
-        fargs = self.source_strings_to_files(args)
-        kwargs['install_mode'] = self._get_kwarg_install_mode(kwargs)
-        m = Man(fargs, kwargs)
+        sources = self.source_strings_to_files(args)
+        for s in sources:
+            try:
+                num = int(s.split('.')[-1])
+            except (IndexError, ValueError):
+                num = 0
+            if num < 1 or num > 8:
+                raise InvalidArguments('Man file must have a file extension of a number between 1 and 8')
+        custom_install_mode = self._get_kwarg_install_mode(kwargs)
+        custom_install_dir = kwargs.get('install_dir', None)
+        if custom_install_dir is not None and not isinstance(custom_install_dir, str):
+            raise InterpreterException('install_dir must be a string.')
+
+        m = build.Man(sources, custom_install_dir, custom_install_mode)
         self.build.man.append(m)
-        return m
+
+        return ManHolder(m)
 
     @FeatureNewKwargs('subdir', '0.44.0', ['if_found'])
     @permittedKwargs(permitted_kwargs['subdir'])
@@ -4227,10 +4281,10 @@ This will become a hard error in the future.''' % kwargs['input'], location=self
             pass
         self.subdir = prev_subdir
 
-    def _get_kwarg_install_mode(self, kwargs):
+    def _get_kwarg_install_mode(self, kwargs: T.Dict[str, T.Any]) -> T.Optional[FileMode]:
         if kwargs.get('install_mode', None) is None:
             return None
-        install_mode = []
+        install_mode: T.List[str] = []
         mode = mesonlib.typeslistify(kwargs.get('install_mode', []), (str, int))
         for m in mode:
             # We skip any arguments that are set to `false`
@@ -4624,7 +4678,11 @@ different subdirectory.
         self.add_project_arguments(node, self.build.projects_link_args[for_machine], args, kwargs)
 
     def warn_about_builtin_args(self, args):
-        warnargs = ('/W1', '/W2', '/W3', '/W4', '/Wall', '-Wall', '-Wextra', '-Wpedantic')
+        # -Wpedantic is deliberately not included, since some people want to use it but not use -Wextra
+        # see e.g.
+        # https://github.com/mesonbuild/meson/issues/3275#issuecomment-641354956
+        # https://github.com/mesonbuild/meson/issues/3742
+        warnargs = ('/W1', '/W2', '/W3', '/W4', '/Wall', '-Wall', '-Wextra')
         optargs = ('-O0', '-O2', '-O3', '-Os', '/O1', '/O2', '/Os')
         for arg in args:
             if arg in warnargs:
@@ -4632,6 +4690,9 @@ different subdirectory.
                              location=self.current_node)
             elif arg in optargs:
                 mlog.warning('Consider using the built-in optimization level instead of using "{}".'.format(arg),
+                             location=self.current_node)
+            elif arg == '-Werror':
+                mlog.warning('Consider using the built-in werror option instead of using "{}".'.format(arg),
                              location=self.current_node)
             elif arg == '-g':
                 mlog.warning('Consider using the built-in debug option instead of using "{}".'.format(arg),
@@ -4775,11 +4836,11 @@ Try setting b_lundef to false instead.'''.format(self.coredata.base_options['b_s
         if sproj_name != self.subproject_directory_name:
             raise InterpreterException('Sandbox violation: Tried to grab file %s from a different subproject.' % plain_filename)
 
-    def source_strings_to_files(self, sources):
-        results = []
+    def source_strings_to_files(self, sources: T.List[str]) -> T.List[mesonlib.File]:
         mesonlib.check_direntry_issues(sources)
         if not isinstance(sources, list):
             sources = [sources]
+        results: T.List[mesonlib.File] = []
         for s in sources:
             if isinstance(s, (mesonlib.File, GeneratedListHolder,
                               TargetHolder, CustomTargetIndexHolder,

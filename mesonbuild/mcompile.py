@@ -21,7 +21,7 @@ import sys
 import shutil
 import typing as T
 from collections import defaultdict
-from ._pathlib import Path
+from pathlib import Path
 
 from . import mlog
 from . import mesonlib
@@ -141,7 +141,6 @@ def get_parsed_args_ninja(options: 'argparse.Namespace', builddir: Path) -> T.Tu
     runner = detect_ninja()
     if runner is None:
         raise MesonException('Cannot find ninja.')
-    mlog.log('Found runner:', str(runner))
 
     cmd = runner + ['-C', builddir.as_posix()]
 

@@ -27,13 +27,13 @@ import textwrap
 import platform
 import typing as T
 from enum import Enum
-from .._pathlib import Path, PurePath
+from pathlib import Path, PurePath
 
 from .. import mlog
 from .. import mesonlib
 from ..compilers import clib_langs
 from ..envconfig import get_env_var
-from ..environment import BinaryTable, Environment, MachineInfo
+from ..environment import Environment, MachineInfo
 from ..cmake import CMakeExecutor, CMakeTraceParser, CMakeException, CMakeToolchain, CMakeExecScope, check_cmake_args
 from ..mesonlib import MachineChoice, MesonException, OrderedSet, PerMachine
 from ..mesonlib import Popen_safe, version_compare_many, version_compare, listify, stringlistify, extract_as_list, split_args
@@ -84,7 +84,7 @@ def find_external_program(env: Environment, for_machine: MachineChoice, name: st
     potential_path = env.lookup_binary_entry(for_machine, name)
     if potential_path is not None:
         mlog.debug('{} binary for {} specified from cross file, native file, '
-                    'or env var as {}'.format(display_name, for_machine, potential_path))
+                   'or env var as {}'.format(display_name, for_machine, potential_path))
         yield ExternalProgram.from_entry(name, potential_path)
         # We never fallback if the user-specified option is no good, so
         # stop returning options.
@@ -131,6 +131,9 @@ class Dependency:
     def __repr__(self):
         s = '<{0} {1}: {2}>'
         return s.format(self.__class__.__name__, self.name, self.is_found)
+
+    def is_built(self) -> bool:
+        return False
 
     def get_compile_args(self) -> T.List[str]:
         if self.include_type == 'system':
@@ -260,6 +263,11 @@ class InternalDependency(Dependency):
             else:
                 setattr(result, k, copy.deepcopy(v, memo))
         return result
+
+    def is_built(self) -> bool:
+        if self.sources or self.libraries or self.whole_libraries:
+            return True
+        return any(d.is_built() for d in self.ext_deps)
 
     def get_pkgconfig_variable(self, variable_name: str, kwargs: T.Dict[str, T.Any]) -> str:
         raise DependencyException('Method "get_pkgconfig_variable()" is '
@@ -665,7 +673,6 @@ class PkgConfigDependency(ExternalDependency):
             env['PKG_CONFIG_LIBDIR'] = new_pkg_config_libdir
             mlog.debug('PKG_CONFIG_LIBDIR: ' + new_pkg_config_libdir)
 
-
     def _call_pkgbin(self, args, env=None):
         # Always copy the environment since we're going to modify it
         # with pkg-config variables
@@ -869,9 +876,13 @@ class PkgConfigDependency(ExternalDependency):
 
     def _set_libs(self):
         env = None
-        libcmd = [self.name, '--libs']
+        libcmd = ['--libs']
+
         if self.static:
             libcmd.append('--static')
+
+        libcmd.append(self.name)
+
         # Force pkg-config to output -L fields even if they are system
         # paths so we can do manual searching with cc.find_library() later.
         env = os.environ.copy()
@@ -1087,10 +1098,11 @@ class CMakeDependency(ExternalDependency):
         # AttributeError exceptions in derived classes
         self.traceparser = None  # type: CMakeTraceParser
 
-        self.cmakebin = CMakeExecutor(environment, CMakeDependency.class_cmake_version, MachineChoice.BUILD, silent=self.silent)
+        # TODO further evaluate always using MachineChoice.BUILD
+        self.cmakebin = CMakeExecutor(environment, CMakeDependency.class_cmake_version, self.for_machine, silent=self.silent)
         if not self.cmakebin.found():
             self.cmakebin = None
-            msg = 'No CMake binary for machine {} not found. Giving up.'.format(MachineChoice.BUILD)
+            msg = 'No CMake binary for machine {} not found. Giving up.'.format(self.for_machine)
             if self.required:
                 raise DependencyException(msg)
             mlog.debug(msg)
@@ -1107,6 +1119,9 @@ class CMakeDependency(ExternalDependency):
         if self.cmakeinfo is None:
             raise self._gen_exception('Unable to obtain CMake system information')
 
+        package_version = kwargs.get('cmake_package_version', '')
+        if not isinstance(package_version, str):
+            raise DependencyException('Keyword "cmake_package_version" must be a string.')
         components = [(x, True) for x in stringlistify(extract_as_list(kwargs, 'components'))]
         modules = [(x, True) for x in stringlistify(extract_as_list(kwargs, 'modules'))]
         modules += [(x, False) for x in stringlistify(extract_as_list(kwargs, 'optional_modules'))]
@@ -1117,7 +1132,7 @@ class CMakeDependency(ExternalDependency):
         if not self._preliminary_find_check(name, cm_path, self.cmakebin.get_cmake_prefix_paths(), environment.machines[self.for_machine]):
             mlog.debug('Preliminary CMake check failed. Aborting.')
             return
-        self._detect_dep(name, modules, components, cm_args)
+        self._detect_dep(name, package_version, modules, components, cm_args)
 
     def __repr__(self):
         s = '<{0} {1}: {2} {3}>'
@@ -1303,7 +1318,7 @@ class CMakeDependency(ExternalDependency):
 
         return False
 
-    def _detect_dep(self, name: str, modules: T.List[T.Tuple[str, bool]], components: T.List[T.Tuple[str, bool]], args: T.List[str]):
+    def _detect_dep(self, name: str, package_version: str, modules: T.List[T.Tuple[str, bool]], components: T.List[T.Tuple[str, bool]], args: T.List[str]):
         # Detect a dependency with CMake using the '--find-package' mode
         # and the trace output (stderr)
         #
@@ -1333,6 +1348,7 @@ class CMakeDependency(ExternalDependency):
             cmake_opts = []
             cmake_opts += ['-DNAME={}'.format(name)]
             cmake_opts += ['-DARCHS={}'.format(';'.join(self.cmakeinfo['archs']))]
+            cmake_opts += ['-DVERSION={}'.format(package_version)]
             cmake_opts += ['-DCOMPS={}'.format(';'.join([x[0] for x in comp_mapped]))]
             cmake_opts += args
             cmake_opts += self.traceparser.trace_args()

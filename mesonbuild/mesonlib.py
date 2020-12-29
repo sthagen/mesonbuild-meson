@@ -13,7 +13,7 @@
 # limitations under the License.
 
 """A library of random helper functionality."""
-from ._pathlib import Path
+from pathlib import Path
 import sys
 import stat
 import time
@@ -22,6 +22,7 @@ import collections
 from enum import IntEnum
 from functools import lru_cache, wraps
 from itertools import tee, filterfalse
+from tempfile import TemporaryDirectory
 import typing as T
 import uuid
 import textwrap
@@ -70,9 +71,13 @@ meson_command = None
 class MesonException(Exception):
     '''Exceptions thrown by Meson'''
 
-    file = None    # type: T.Optional[str]
-    lineno = None  # type: T.Optional[int]
-    colno = None   # type: T.Optional[int]
+    def __init__(self, *args: object, file: T.Optional[str] = None,
+                 lineno: T.Optional[int] = None, colno: T.Optional[int] = None):
+        super().__init__(*args)
+        self.file = file
+        self.lineno = lineno
+        self.colno = colno
+
 
 class EnvironmentException(MesonException):
     '''Exceptions thrown while processing and creating the build environment'''
@@ -580,6 +585,10 @@ def detect_vcs(source_dir: T.Union[str, Path]) -> T.Optional[T.Dict[str, str]]:
                 vcs['wc_dir'] = str(curdir)
                 return vcs
     return None
+
+def current_vs_supports_modules() -> bool:
+    vsver = os.environ.get('VSCMD_VER', '')
+    return vsver.startswith('16.9.0') and '-pre.' in vsver
 
 # a helper class which implements the same version ordering as RPM
 class Version:
@@ -1211,7 +1220,7 @@ def Popen_safe(args: T.List[str], write: T.Optional[str] = None,
     # up the console and ANSI colors will stop working on Windows.
     if 'stdin' not in kwargs:
         kwargs['stdin'] = subprocess.DEVNULL
-    if sys.version_info < (3, 6) or not sys.stdout.encoding or encoding.upper() != 'UTF-8':
+    if not sys.stdout.encoding or encoding.upper() != 'UTF-8':
         p, o, e = Popen_safe_legacy(args, write=write, stdout=stdout, stderr=stderr, **kwargs)
     else:
         p = subprocess.Popen(args, universal_newlines=True, close_fds=False,
@@ -1448,6 +1457,25 @@ def windows_proof_rm(fpath: str) -> None:
     os.unlink(fpath)
 
 
+class TemporaryDirectoryWinProof(TemporaryDirectory):
+    """
+    Like TemporaryDirectory, but cleans things up using
+    windows_proof_rmtree()
+    """
+
+    def __exit__(self, exc: T.Any, value: T.Any, tb: T.Any) -> None:
+        try:
+            super().__exit__(exc, value, tb)
+        except OSError:
+            windows_proof_rmtree(self.name)
+
+    def cleanup(self) -> None:
+        try:
+            super().cleanup()
+        except OSError:
+            windows_proof_rmtree(self.name)
+
+
 def detect_subprojects(spdir_name: str, current_dir: str = '',
                        result: T.Optional[T.Dict[str, T.List[str]]] = None) -> T.Optional[T.Dict[str, T.List[str]]]:
     if result is None:
@@ -1519,6 +1547,15 @@ class OrderedSet(T.MutableSet[_T]):
     def discard(self, value: _T) -> None:
         if value in self.__container:
             del self.__container[value]
+
+    def move_to_end(self, value: _T, last: bool = True) -> None:
+        # Mypy does not know about move_to_end, because it is not part of MutableMapping
+        self.__container.move_to_end(value, last) # type: ignore
+
+    def pop(self, last: bool = True) -> _T:
+        # Mypy does not know about the last argument, because it is not part of MutableMapping
+        item, _ = self.__container.popitem(last)  # type: ignore
+        return item
 
     def update(self, iterable: T.Iterable[_T]) -> None:
         for item in iterable:

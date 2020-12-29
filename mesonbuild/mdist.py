@@ -21,7 +21,7 @@ import subprocess
 import hashlib
 import json
 from glob import glob
-from ._pathlib import Path
+from pathlib import Path
 from mesonbuild.environment import detect_ninja
 from mesonbuild.mesonlib import windows_proof_rmtree, MesonException
 from mesonbuild.wrap import wrap
@@ -48,8 +48,9 @@ def create_hash(fname):
     m = hashlib.sha256()
     m.update(open(fname, 'rb').read())
     with open(hashname, 'w') as f:
-        f.write('{} {}\n'.format(m.hexdigest(), os.path.basename(fname)))
-    print(os.path.relpath(fname), m.hexdigest())
+        # A space and an asterisk because that is the format defined by GNU coreutils
+        # and accepted by busybox and the Perl shasum tool.
+        f.write('{} *{}\n'.format(m.hexdigest(), os.path.basename(fname)))
 
 
 def del_gitfiles(dirname):
@@ -282,4 +283,5 @@ def run(options):
     if rc == 0:
         for name in names:
             create_hash(name)
+            print('Created', os.path.relpath(name))
     return rc

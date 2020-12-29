@@ -16,14 +16,17 @@ import subprocess, os.path
 import textwrap
 import typing as T
 
-from ..mesonlib import EnvironmentException, MachineChoice, Popen_safe
+from .. import coredata
+from ..mesonlib import EnvironmentException, MachineChoice, MesonException, Popen_safe
 from .compilers import Compiler, rust_buildtype_args, clike_debug_args
 
 if T.TYPE_CHECKING:
+    from ..coredata import OptionDictType
     from ..dependencies import ExternalProgram
     from ..envconfig import MachineInfo
     from ..environment import Environment  # noqa: F401
     from ..linkers import DynamicLinker
+
 
 rust_optimization_args = {
     '0': [],
@@ -49,6 +52,9 @@ class RustCompiler(Compiler):
                          linker=linker)
         self.exe_wrapper = exe_wrapper
         self.id = 'rustc'
+        self.base_options.append('b_colorout')
+        if 'link' in self.linker.id:
+            self.base_options.append('b_vscrt')
 
     def needs_static_linker(self) -> bool:
         return False
@@ -119,6 +125,35 @@ class RustCompiler(Compiler):
     def get_output_args(self, outputname: str) -> T.List[str]:
         return ['-o', outputname]
 
+    @classmethod
+    def use_linker_args(cls, linker: str) -> T.List[str]:
+        return ['-C', 'linker={}'.format(linker)]
+
     # Rust does not have a use_linker_args because it dispatches to a gcc-like
     # C compiler for dynamic linking, as such we invoke the C compiler's
     # use_linker_args method instead.
+
+    def get_options(self) -> 'OptionDictType':
+        return {
+            'std': coredata.UserComboOption(
+                'Rust Eddition to use',
+                ['none', '2015', '2018'],
+                'none',
+            ),
+        }
+
+    def get_option_compile_args(self, options: 'OptionDictType') -> T.List[str]:
+        args = []
+        std = options['std']
+        if std.value != 'none':
+            args.append('--edition=' + std.value)
+        return args
+
+    def get_crt_compile_args(self, crt_val: str, buildtype: str) -> T.List[str]:
+        # Rust handles this for us, we don't need to do anything
+        return []
+
+    def get_colorout_args(self, colortype: str) -> T.List[str]:
+        if colortype in {'always', 'never', 'auto'}:
+            return [f'--color={colortype}']
+        raise MesonException(f'Invalid color type for rust {colortype}')

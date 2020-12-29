@@ -1280,7 +1280,7 @@ them for the default behaviour for each platform.
 
 This function prints its argument to stdout.
 
-*(since 0.54.0)* Can take more more than one argument that will be separated by
+*(since 0.54.0)* Can take more than one argument that will be separated by
 space.
 
 ### warning()
@@ -1293,7 +1293,7 @@ space.
 
 This function prints its argument to stdout prefixed with WARNING:.
 
-*(since 0.54.0)* Can take more more than one argument that will be separated by
+*(since 0.54.0)* Can take more than one argument that will be separated by
 space.
 
 ### summary()
@@ -1398,13 +1398,14 @@ Project supports the following keyword arguments.
   specific options are used normally even in subprojects.
 
 
-- `license`: takes a string or array of strings describing the
-  license(s) the code is under. Usually this would be something like
-  `license : 'GPL2+'`, but if the code has multiple licenses you can
-  specify them as an array like this: `license : ['proprietary',
-  'GPL3']`. Note that the text is informal and is only written to
-  the dependency manifest. Meson does not do any license validation,
-  you are responsible for verifying that you abide by all licensing
+- `license`: takes a string or array of strings describing the license(s) the
+  code is under. To avoid ambiguity it is recommended to use a standardized
+  license identifier from the [SPDX license list](https://spdx.org/licenses/).
+  Usually this would be something like `license : 'GPL-2.0-or-later'`, but if
+  the code has multiple licenses you can specify them as an array like this:
+  `license : ['proprietary', 'GPL-3.0-only']`. Note that the text is informal
+  and is only written to the dependency manifest. Meson does not do any license
+  validation, you are responsible for verifying that you abide by all licensing
   terms. You can access the value in your Meson build files with
   `meson.project_license()`.
 
@@ -1572,6 +1573,10 @@ has one argument the others don't have:
    independent code (so it can be linked into a shared library). This
    option has no effect on Windows and OS X since it doesn't make
    sense on Windows and PIC cannot be disabled on OS X.
+
+- `prelink` *since0.57.0*: if `true` the object files in the target
+  will be prelinked, meaning that it will contain only one prelinked
+  object file rather than the individual object files.
 
 ### subdir()
 
@@ -2407,6 +2412,12 @@ page](Configuration.md) It has three methods:
   not been set returns `default_value` if it is defined and errors out if not.
 
 - `has(varname)`: returns `true` if the specified variable is set
+
+- `keys()`*(since 0.57.0)*: returns an array of keys of
+  the configuration data object.
+
+  You can iterate over this array with the [`foreach`
+  statement](Syntax.md#foreach-statements).
 
 - `merge_from(other)` *(since 0.42.0)*: takes as argument a different
   configuration data object and copies all entries from that object to

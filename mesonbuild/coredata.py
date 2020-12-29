@@ -16,7 +16,7 @@ from . import mlog, mparser
 import pickle, os, uuid
 import sys
 from itertools import chain
-from ._pathlib import PurePath
+from pathlib import PurePath
 from collections import OrderedDict, defaultdict
 from .mesonlib import (
     MesonException, EnvironmentException, MachineChoice, PerMachine,
@@ -39,7 +39,7 @@ if T.TYPE_CHECKING:
     OptionDictType = T.Union[T.Dict[str, 'UserOption[T.Any]'], OptionOverrideProxy]
     CompilerCheckCacheKey = T.Tuple[T.Tuple[str, ...], str, str, T.Tuple[str, ...], str]
 
-version = '0.56.0.rc1'
+version = '0.56.99'
 backendlist = ['ninja', 'vs', 'vs2010', 'vs2015', 'vs2017', 'vs2019', 'xcode']
 
 default_yielding = False
@@ -970,9 +970,9 @@ def write_cmd_line_file(build_dir: str, options: argparse.Namespace) -> None:
 
     properties = OrderedDict()
     if options.cross_file:
-        properties['cross_file'] = options.cross_file
+        properties['cross_file'] = [os.path.abspath(f) for f in options.cross_file]
     if options.native_file:
-        properties['native_file'] = options.native_file
+        properties['native_file'] = [os.path.abspath(f) for f in options.native_file]
 
     config['options'] = cmd_line_options_to_string(options)
     config['properties'] = properties

@@ -477,6 +477,15 @@ class DynamicLinker(LinkerEnvVarsMixin, metaclass=abc.ABCMeta):
         # Only used by the Apple linker
         return []
 
+    def get_gui_app_args(self, value: bool) -> T.List[str]:
+        # Only used by VisualStudioLikeLinkers
+        return []
+
+    def get_win_subsystem_args(self, value: str) -> T.List[str]:
+        # Only used if supported by the dynamic linker and
+        # only when targeting Windows
+        return []
+
     def bitcode_args(self) -> T.List[str]:
         raise mesonlib.MesonException('This linker does not support bitcode bundles')
 
@@ -658,6 +667,18 @@ class GnuLikeDynamicLinkerMixin:
             args.extend(self._apply_prefix('-rpath-link,' + os.path.join(build_dir, p)))
 
         return (args, rpath_dirs_to_remove)
+
+    def get_win_subsystem_args(self, value: str) -> T.List[str]:
+        if 'windows' in value:
+            args = ['--subsystem,windows']
+        elif 'console' in value:
+            args = ['--subsystem,console']
+        else:
+            raise mesonlib.MesonException(f'Only "windows" and "console" are supported for win_subsystem with MinGW, not "{value}".')
+        if ',' in value:
+            args[-1] = args[-1] + ':' + value.split(',')[1]
+
+        return self._apply_prefix(args)
 
 
 class AppleDynamicLinker(PosixDynamicLinkerMixin, DynamicLinker):
@@ -1149,6 +1170,12 @@ class MSVCDynamicLinker(VisualStudioLikeLinkerMixin, DynamicLinker):
     def get_always_args(self) -> T.List[str]:
         return self._apply_prefix(['/nologo', '/release']) + super().get_always_args()
 
+    def get_gui_app_args(self, value: bool) -> T.List[str]:
+        return self.get_win_subsystem_args("windows" if value else "console")
+
+    def get_win_subsystem_args(self, value: str) -> T.List[str]:
+        return self._apply_prefix([f'/SUBSYSTEM:{value.upper()}'])
+
 
 class ClangClDynamicLinker(VisualStudioLikeLinkerMixin, DynamicLinker):
 
@@ -1163,6 +1190,20 @@ class ClangClDynamicLinker(VisualStudioLikeLinkerMixin, DynamicLinker):
                  direct: bool = True):
         super().__init__(exelist or ['lld-link.exe'], for_machine,
                          prefix, always_args, machine=machine, version=version, direct=direct)
+
+    def get_output_args(self, outputname: str) -> T.List[str]:
+        # If we're being driven indirectly by clang just skip /MACHINE
+        # as clang's target triple will handle the machine selection
+        if self.machine is None:
+            return self._apply_prefix([f"/OUT:{outputname}"])
+
+        return super().get_output_args(outputname)
+
+    def get_gui_app_args(self, value: bool) -> T.List[str]:
+        return self.get_win_subsystem_args("windows" if value else "console")
+
+    def get_win_subsystem_args(self, value: str) -> T.List[str]:
+        return self._apply_prefix([f'/SUBSYSTEM:{value.upper()}'])
 
 
 class XilinkDynamicLinker(VisualStudioLikeLinkerMixin, DynamicLinker):
@@ -1219,8 +1260,13 @@ class SolarisDynamicLinker(PosixDynamicLinkerMixin, DynamicLinker):
             return ([], set())
         processed_rpaths = prepare_rpaths(rpath_paths, build_dir, from_dir)
         all_paths = mesonlib.OrderedSet([os.path.join('$ORIGIN', p) for p in processed_rpaths])
+        rpath_dirs_to_remove = set()
+        for p in all_paths:
+            rpath_dirs_to_remove.add(p.encode('utf8'))
         if build_rpath != '':
             all_paths.add(build_rpath)
+            for p in build_rpath.split(':'):
+                rpath_dirs_to_remove.add(p.encode('utf8'))
 
         # In order to avoid relinking for RPATH removal, the binary needs to contain just
         # enough space in the ELF header to hold the final installation RPATH.
@@ -1231,7 +1277,7 @@ class SolarisDynamicLinker(PosixDynamicLinkerMixin, DynamicLinker):
                 paths = padding
             else:
                 paths = paths + ':' + padding
-        return (self._apply_prefix('-rpath,{}'.format(paths)), set())
+        return (self._apply_prefix('-rpath,{}'.format(paths)), rpath_dirs_to_remove)
 
     def get_soname_args(self, env: 'Environment', prefix: str, shlib_name: str,
                         suffix: str, soversion: str, darwin_versions: T.Tuple[str, str],

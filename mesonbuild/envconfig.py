@@ -19,7 +19,7 @@ from enum import Enum
 from . import mesonlib
 from .mesonlib import EnvironmentException, MachineChoice, PerMachine, split_args
 from . import mlog
-from ._pathlib import Path
+from pathlib import Path
 
 _T = T.TypeVar('_T')
 
@@ -114,7 +114,7 @@ def get_env_var_pair(for_machine: MachineChoice,
         formatted = ', '.join(['{!r}'.format(var) for var in candidates])
         mlog.debug('None of {} are defined in the environment, not changing global flags.'.format(formatted))
         return None
-    mlog.log('Using {!r} from environment with value: {!r}'.format(var, value))
+    mlog.debug('Using {!r} from environment with value: {!r}'.format(var, value))
     return var, value
 
 def get_env_var(for_machine: MachineChoice,

@@ -28,10 +28,11 @@ import configparser
 import typing as T
 import textwrap
 
-from .._pathlib import Path
+from pathlib import Path
 from . import WrapMode
 from .. import coredata
-from ..mesonlib import verbose_git, quiet_git, GIT, ProgressBar, MesonException
+from ..mesonlib import quiet_git, GIT, ProgressBar, MesonException
+from  .. import mesonlib
 
 if T.TYPE_CHECKING:
     import http.client
@@ -185,6 +186,15 @@ def get_directory(subdir_root: str, packagename: str) -> str:
         wrap = PackageDefinition(fname)
         return wrap.directory
     return packagename
+
+def verbose_git(cmd: T.List[str], workingdir: str, check: bool = False) -> bool:
+    '''
+    Wrapper to convert GitException to WrapException caught in interpreter.
+    '''
+    try:
+        return mesonlib.verbose_git(cmd, workingdir, check=check)
+    except mesonlib.GitException as e:
+        raise WrapException(str(e))
 
 class Resolver:
     def __init__(self, source_dir: str, subdir: str, wrap_mode: WrapMode = WrapMode.default) -> None:

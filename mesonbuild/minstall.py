@@ -16,10 +16,12 @@ import sys, pickle, os, shutil, subprocess, errno
 import argparse
 import shlex
 from glob import glob
+from pathlib import Path
+
+from . import environment
 from .scripts import depfixer
 from .scripts import destdir_join
 from .mesonlib import is_windows, Popen_safe
-from .mtest import rebuild_all
 from .backend.backends import InstallData
 from .coredata import major_versions_differ, MesonVersionMismatchException
 from .coredata import version as coredata_version
@@ -381,7 +383,7 @@ class Installer:
                     self.log('Preserved {} unchanged files, see {} for the full list'
                              .format(self.preserved_file_count, os.path.normpath(self.lf.name)))
         except PermissionError:
-            if shutil.which('pkexec') is not None and 'PKEXEC_UID' not in os.environ:
+            if shutil.which('pkexec') is not None and 'PKEXEC_UID' not in os.environ and d.destdir is None:
                 print('Installation failed due to insufficient permissions.')
                 print('Attempting to use polkit to gain elevated privileges...')
                 os.execlp('pkexec', 'pkexec', sys.executable, main_file, *sys.argv[1:],
@@ -531,6 +533,23 @@ class Installer:
                         pass
                     else:
                         raise
+
+def rebuild_all(wd: str) -> bool:
+    if not (Path(wd) / 'build.ninja').is_file():
+        print('Only ninja backend is supported to rebuild the project before installation.')
+        return True
+
+    ninja = environment.detect_ninja()
+    if not ninja:
+        print("Can't find ninja, can't rebuild test.")
+        return False
+
+    ret = subprocess.run(ninja + ['-C', wd]).returncode
+    if ret != 0:
+        print('Could not rebuild {}'.format(wd))
+        return False
+
+    return True
 
 def run(opts):
     datafilename = 'meson-private/install.dat'

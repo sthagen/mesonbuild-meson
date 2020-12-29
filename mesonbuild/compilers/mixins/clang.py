@@ -108,7 +108,7 @@ class ClangCompiler(GnuLikeCompiler):
         else:
             # Shouldn't work, but it'll be checked explicitly in the OpenMP dependency.
             return []
-
+    
     @classmethod
     def use_linker_args(cls, linker: str) -> T.List[str]:
         # Clang additionally can use a linker specified as a path, which GCC

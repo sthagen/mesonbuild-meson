@@ -129,6 +129,9 @@ from .compilers import (
     VisualStudioCPPCompiler,
 )
 
+if T.TYPE_CHECKING:
+    from .dependencies import ExternalProgram
+
 build_filename = 'meson.build'
 
 CompilersDict = T.Dict[str, Compiler]
@@ -172,11 +175,11 @@ def find_coverage_tools() -> T.Tuple[T.Optional[str], T.Optional[str], T.Optiona
 
     return gcovr_exe, gcovr_new_rootdir, lcov_exe, genhtml_exe, llvm_cov_exe
 
-def detect_ninja(version: str = '1.7', log: bool = False) -> T.List[str]:
+def detect_ninja(version: str = '1.8.2', log: bool = False) -> T.List[str]:
     r = detect_ninja_command_and_version(version, log)
     return r[0] if r else None
 
-def detect_ninja_command_and_version(version: str = '1.7', log: bool = False) -> (T.List[str], str):
+def detect_ninja_command_and_version(version: str = '1.8.2', log: bool = False) -> (T.List[str], str):
     from .dependencies.base import ExternalProgram
     env_ninja = os.environ.get('NINJA', None)
     for n in [env_ninja] if env_ninja else ['ninja', 'ninja-build', 'samu']:
@@ -374,8 +377,11 @@ def detect_cpu_family(compilers: CompilersDict) -> str:
         trial = 'x86_64'
     elif trial in {'sun4u', 'sun4v'}:
         trial = 'sparc64'
-    elif trial in {'mipsel', 'mips64el'}:
-        trial = trial.rstrip('el')
+    elif trial.startswith('mips'):
+        if '64' not in trial:
+            trial = 'mips'
+        else:
+            trial = 'mips64'
     elif trial in {'ip30', 'ip35'}:
         trial = 'mips64'
 
@@ -430,7 +436,10 @@ def detect_cpu(compilers: CompilersDict):
         # Make more precise CPU detection for Elbrus platform.
         trial = platform.processor().lower()
     elif trial.startswith('mips'):
-        trial = trial.rstrip('el')
+        if '64' not in trial:
+            trial = 'mips'
+        else:
+            trial = 'mips64'
 
     # Add more quirks here as bugs are reported. Keep in sync with
     # detect_cpu_family() above.
@@ -869,7 +878,7 @@ class Environment:
                 defines[rest[0]] = rest[1]
         return defines
 
-    def _get_compilers(self, lang, for_machine):
+    def _get_compilers(self, lang: str, for_machine: MachineChoice) -> T.Tuple[T.List[T.List[str]], T.List[str], T.Optional['ExternalProgram']]:
         '''
         The list of compilers is detected in the exact same way for
         C, C++, ObjC, ObjC++, Fortran, CS so consolidate it here.
@@ -937,6 +946,10 @@ class Environment:
                 return LLVMDynamicLinker(
                     compiler, for_machine, comp_class.LINKER_PREFIX,
                     override, version=search_version(o))
+            elif not invoked_directly:
+                return ClangClDynamicLinker(
+                    for_machine, override, exelist=compiler, prefix=comp_class.LINKER_PREFIX,
+                    version=search_version(o), direct=False, machine=None)
 
         if value is not None and invoked_directly:
             compiler = value
@@ -1034,8 +1047,8 @@ class Environment:
             else:
                 v = 'unknown version'
             linker = AppleDynamicLinker(compiler, for_machine, comp_class.LINKER_PREFIX, override, version=v)
-        elif 'GNU' in o:
-            if 'gold' in o:
+        elif 'GNU' in o or 'GNU' in e:
+            if 'gold' in o or 'gold' in e:
                 cls = GnuGoldDynamicLinker
             else:
                 cls = GnuBFDDynamicLinker
@@ -1062,9 +1075,17 @@ class Environment:
             self.__failed_to_detect_linker(compiler, check_args, o, e)
         return linker
 
-    def _detect_c_or_cpp_compiler(self, lang: str, for_machine: MachineChoice) -> Compiler:
+    def _detect_c_or_cpp_compiler(self, lang: str, for_machine: MachineChoice, *, override_compiler: T.Optional[T.List[str]] = None) -> Compiler:
+        """Shared implementation for finding the C or C++ compiler to use.
+
+        the override_compiler option is provided to allow compilers which use
+        the compiler (GCC or Clang usually) as their shared linker, to find
+        the linker they need.
+        """
         popen_exceptions = {}
         compilers, ccache, exe_wrap = self._get_compilers(lang, for_machine)
+        if override_compiler is not None:
+            compilers = [override_compiler]
         is_cross = self.is_cross_build(for_machine)
         info = self.machines[for_machine]
 
@@ -1225,7 +1246,7 @@ class Environment:
                     # style ld, but for clang on "real" windows we'll use
                     # either link.exe or lld-link.exe
                     try:
-                        linker = self._guess_win_linker(compiler, cls, for_machine)
+                        linker = self._guess_win_linker(compiler, cls, for_machine, invoked_directly=False)
                     except MesonException:
                         pass
                 if linker is None:
@@ -1619,9 +1640,9 @@ class Environment:
             return comp_class(exelist, version, for_machine, info, is_cross)
         raise EnvironmentException('Unknown compiler "' + ' '.join(exelist) + '"')
 
-    def detect_rust_compiler(self, for_machine):
-        popen_exceptions = {}
-        compilers, ccache, exe_wrap = self._get_compilers('rust', for_machine)
+    def detect_rust_compiler(self, for_machine: MachineChoice) -> RustCompiler:
+        popen_exceptions = {}  # type: T.Dict[str, Exception]
+        compilers, _, exe_wrap = self._get_compilers('rust', for_machine)
         is_cross = self.is_cross_build(for_machine)
         info = self.machines[for_machine]
 
@@ -1634,7 +1655,7 @@ class Environment:
                 compiler = [compiler]
             arg = ['--version']
             try:
-                p, out = Popen_safe(compiler + arg)[0:2]
+                out = Popen_safe(compiler + arg)[1]
             except OSError as e:
                 popen_exceptions[' '.join(compiler + arg)] = e
                 continue
@@ -1651,17 +1672,30 @@ class Environment:
                 # the default use that, and second add the necessary arguments
                 # to rust to use -fuse-ld
 
+                if any(a.startswith('linker=') for a in compiler):
+                    mlog.warning(
+                        'Please do not put -C linker= in your compiler '
+                        'command, set rust_ld=command in your cross file '
+                        'or use the RUST_LD environment variable. meson '
+                        'will override your seletion otherwise.')
+
                 if override is None:
                     extra_args = {}
                     always_args = []
                     if is_link_exe:
-                        compiler.extend(['-C', 'linker={}'.format(cc.linker.exelist[0])])
+                        compiler.extend(RustCompiler.use_linker_args(cc.linker.exelist[0]))
                         extra_args['direct'] = True
                         extra_args['machine'] = cc.linker.machine
-                    elif not ((info.is_darwin() and isinstance(cc, AppleClangCCompiler)) or
-                              isinstance(cc, GnuCCompiler)):
-                        c = cc.exelist[1] if cc.exelist[0].endswith('ccache') else cc.exelist[0]
-                        compiler.extend(['-C', 'linker={}'.format(c)])
+                    else:
+                        exelist = cc.linker.exelist.copy()
+                        if 'ccache' in exelist[0]:
+                            del exelist[0]
+                        c = exelist.pop(0)
+                        compiler.extend(RustCompiler.use_linker_args(c))
+
+                        # Also ensure that we pass any extra arguments to the linker
+                        for l in exelist:
+                            compiler.extend(['-C', 'link-arg={}'.format(l)])
 
                     # This trickery with type() gets us the class of the linker
                     # so we can initialize a new copy for the Rust Compiler
@@ -1675,21 +1709,22 @@ class Environment:
                 elif 'link' in override[0]:
                     linker = self._guess_win_linker(
                         override, RustCompiler, for_machine, use_linker_prefix=False)
+                    # rustc takes linker arguments without a prefix, and
+                    # inserts the correct prefix itself.
                     linker.direct = True
+                    compiler.extend(RustCompiler.use_linker_args(linker.exelist[0]))
                 else:
-                    # We're creating a new type of "C" compiler, that has rust
-                    # as it's language. This is gross, but I can't figure out
-                    # another way to handle this, because rustc is actually
-                    # invoking the c compiler as it's linker.
-                    b = type('b', (type(cc), ), {})
-                    b.language = RustCompiler.language
-                    linker = self._guess_nix_linker(cc.exelist, b, for_machine)
+                    # On linux and macos rust will invoke the c compiler for
+                    # linking, on windows it will use lld-link or link.exe.
+                    # we will simply ask for the C compiler that coresponds to
+                    # it, and use that.
+                    cc = self._detect_c_or_cpp_compiler('c', for_machine, override_compiler=override)
+                    linker = cc.linker
 
                     # Of course, we're not going to use any of that, we just
                     # need it to get the proper arguments to pass to rustc
-                    c = cc.exelist[1] if cc.exelist[0].endswith('ccache') else cc.exelist[0]
-                    compiler.extend(['-C', 'linker={}'.format(c)])
-                    compiler.extend(['-C', 'link-args={}'.format(' '.join(cc.use_linker_args(override[0])))])
+                    c = linker.exelist[1] if linker.exelist[0].endswith('ccache') else linker.exelist[0]
+                    compiler.extend(RustCompiler.use_linker_args(c))
 
                 self.coredata.add_lang_args(RustCompiler.language, RustCompiler, for_machine, self)
                 return RustCompiler(

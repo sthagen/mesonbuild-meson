@@ -27,7 +27,7 @@ from ..mesondata import mesondata
 from ..compilers.compilers import lang_suffixes, header_suffixes, obj_suffixes, lib_suffixes, is_header
 from enum import Enum
 from functools import lru_cache
-from .._pathlib import Path
+from pathlib import Path
 import typing as T
 import re
 from os import environ
@@ -435,10 +435,7 @@ class ConverterTarget:
             x = x.resolve()
             assert x.is_absolute()
             if not x.exists() and not any([x.name.endswith(y) for y in obj_suffixes]) and not is_generated:
-                if (
-                    any([path_is_in_root(root_src_dir / y, x.resolve(), resolve=True) for y in self.generated_raw])
-                        and path_is_in_root(x, Path(self.env.get_build_dir()), resolve=True)
-                    ):
+                if path_is_in_root(x, Path(self.env.get_build_dir()), resolve=True):
                     x.mkdir(parents=True, exist_ok=True)
                     return x.relative_to(Path(self.env.get_build_dir()) / subdir)
                 else:
@@ -853,6 +850,7 @@ class CMakeInterpreter:
 
     def configure(self, extra_cmake_options: T.List[str]) -> CMakeExecutor:
         # Find CMake
+        # TODO: Using MachineChoice.BUILD should always be correct here, but also evaluate the use of self.for_machine
         cmake_exe = CMakeExecutor(self.env, '>=3.7', MachineChoice.BUILD)
         if not cmake_exe.found():
             raise CMakeException('Unable to find CMake')
