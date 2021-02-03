@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from collections import OrderedDict, defaultdict
+from collections import OrderedDict
 from functools import lru_cache
 import copy
 import hashlib
@@ -28,16 +28,18 @@ from . import mlog
 from .mesonlib import (
     File, MesonException, MachineChoice, PerMachine, OrderedSet, listify,
     extract_as_list, typeslistify, stringlistify, classify_unity_sources,
-    get_filenames_templates_dict, substitute_values, has_path_sep, unholder
+    get_filenames_templates_dict, substitute_values, has_path_sep, unholder,
+    OptionKey,
 )
 from .compilers import (
-    Compiler, all_languages, is_object, clink_langs, sort_clink, lang_suffixes,
+    Compiler, is_object, clink_langs, sort_clink, lang_suffixes,
     is_known_suffix
 )
 from .linkers import StaticLinker
 from .interpreterbase import FeatureNew
 
 if T.TYPE_CHECKING:
+    from .coredata import KeyedOptionDictType, OptionDictType
     from .interpreter import Test
     from .mesonlib import FileMode, FileOrString
 
@@ -169,6 +171,21 @@ class Man:
         return self.sources
 
 
+class InstallDir:
+
+    def __init__(self, src_subdir: str, inst_subdir: str, install_dir: str,
+                 install_mode: T.Optional['FileMode'],
+                 exclude: T.Tuple[T.Set[str], T.Set[str]],
+                 strip_directory: bool, from_source_dir: bool = True):
+        self.source_subdir = src_subdir
+        self.installable_subdir = inst_subdir
+        self.install_dir = install_dir
+        self.install_mode = install_mode
+        self.exclude = exclude
+        self.strip_directory = strip_directory
+        self.from_source_dir = from_source_dir
+
+
 class Build:
     """A class that holds the status of one build including
     all dependencies and so on.
@@ -196,7 +213,7 @@ class Build:
         self.install_scripts = []
         self.postconf_scripts = []
         self.dist_scripts = []
-        self.install_dirs = []
+        self.install_dirs: T.List[InstallDir] = []
         self.dep_manifest_name = None
         self.dep_manifest = {}
         self.stdlibs = PerMachine({}, {})
@@ -205,6 +222,13 @@ class Build:
         self.find_overrides = {}
         self.searched_programs = set() # The list of all programs that have been searched for.
         self.dependency_overrides = PerMachine({}, {})
+
+    def get_build_targets(self):
+        build_targets = OrderedDict()
+        for name, t in self.targets.items():
+            if isinstance(t, BuildTarget):
+                build_targets[name] = t
+        return build_targets
 
     def copy(self):
         other = Build(self.environment)
@@ -402,7 +426,10 @@ class EnvironmentVariables:
         return env
 
 class Target:
-    def __init__(self, name, subdir, subproject, build_by_default, for_machine: MachineChoice):
+
+    # TODO: should Target be an abc.ABCMeta?
+
+    def __init__(self, name: str, subdir: str, subproject: str, build_by_default: bool, for_machine: MachineChoice):
         if has_path_sep(name):
             # Fix failing test 53 when this becomes an error.
             mlog.warning('''Target "{}" has a path separator in its name.
@@ -415,8 +442,8 @@ a hard error in the future.'''.format(name))
         self.for_machine = for_machine
         self.install = False
         self.build_always_stale = False
-        self.option_overrides_base = {}
-        self.option_overrides_compiler = defaultdict(dict)
+        self.option_overrides_base: T.Dict[OptionKey, str] = {}
+        self.option_overrides_compiler: T.Dict[OptionKey, str] = {}
         self.extra_files = []  # type: T.List[File]
         if not hasattr(self, 'typename'):
             raise RuntimeError('Target type is not set for target class "{}". This is a bug'.format(type(self).__name__))
@@ -441,7 +468,10 @@ a hard error in the future.'''.format(name))
             return NotImplemented
         return self.get_id() >= other.get_id()
 
-    def get_install_dir(self, environment):
+    def get_default_install_dir(self, env: environment.Environment) -> str:
+        raise NotImplementedError
+
+    def get_install_dir(self, environment: environment.Environment) -> T.Tuple[T.Any, bool]:
         # Find the installation directory.
         default_install_dir = self.get_default_install_dir(environment)
         outdirs = self.get_custom_install_dir()
@@ -497,7 +527,7 @@ a hard error in the future.'''.format(name))
         return self.construct_id_from_path(
             self.subdir, self.name, self.type_suffix())
 
-    def process_kwargs_base(self, kwargs):
+    def process_kwargs_base(self, kwargs: T.Dict[str, T.Any]) -> None:
         if 'build_by_default' in kwargs:
             self.build_by_default = kwargs['build_by_default']
             if not isinstance(self.build_by_default, bool):
@@ -510,23 +540,22 @@ a hard error in the future.'''.format(name))
         option_overrides = self.parse_overrides(kwargs)
 
         for k, v in option_overrides.items():
-            if '_' in k:
-                lang, k2 = k.split('_', 1)
-                if lang in all_languages:
-                    self.option_overrides_compiler[lang][k2] = v
-                    continue
+            if k.lang:
+                self.option_overrides_compiler[k.evolve(machine=self.for_machine)] = v
+                continue
             self.option_overrides_base[k] = v
 
-    def parse_overrides(self, kwargs) -> dict:
-        result = {}
+    @staticmethod
+    def parse_overrides(kwargs: T.Dict[str, T.Any]) -> T.Dict[OptionKey, str]:
+        result: T.Dict[OptionKey, str] = {}
         overrides = stringlistify(kwargs.get('override_options', []))
         for o in overrides:
             if '=' not in o:
                 raise InvalidArguments('Overrides must be of form "key=value"')
             k, v = o.split('=', 1)
-            k = k.strip()
+            key = OptionKey.from_string(k.strip())
             v = v.strip()
-            result[k] = v
+            result[key] = v
         return result
 
     def is_linkable_target(self) -> bool:
@@ -544,16 +573,16 @@ class BuildTarget(Target):
     def __init__(self, name: str, subdir: str, subproject: str, for_machine: MachineChoice,
                  sources: T.List[File], objects, environment: environment.Environment, kwargs):
         super().__init__(name, subdir, subproject, True, for_machine)
-        unity_opt = environment.coredata.get_builtin_option('unity')
+        unity_opt = environment.coredata.get_option(OptionKey('unity'))
         self.is_unity = unity_opt == 'on' or (unity_opt == 'subprojects' and subproject != '')
         self.environment = environment
-        self.sources = []
+        self.sources: T.List[File] = []
         self.compilers = OrderedDict() # type: OrderedDict[str, Compiler]
         self.objects = []
         self.external_deps = []
         self.include_dirs = []
         self.link_language = kwargs.get('link_language')
-        self.link_targets = []
+        self.link_targets: T.List[BuildTarget] = []
         self.link_whole_targets = []
         self.link_depends = []
         self.added_deps = set()
@@ -566,12 +595,12 @@ class BuildTarget(Target):
         self.need_install = False
         self.pch = {}
         self.extra_args: T.Dict[str, T.List['FileOrString']] = {}
-        self.generated = []
+        self.generated: T.Sequence[T.Union[GeneratedList, CustomTarget, CustomTargetIndex]] = []
         self.d_features = {}
         self.pic = False
         self.pie = False
         # Track build_rpath entries so we can remove them at install time
-        self.rpath_dirs_to_remove = set()
+        self.rpath_dirs_to_remove: T.Set[bytes] = set()
         # Sources can be:
         # 1. Pre-existing source files in the source tree
         # 2. Pre-existing sources generated by configure_file in the build tree
@@ -883,7 +912,7 @@ class BuildTarget(Target):
             result.update(i.get_link_dep_subdirs())
         return result
 
-    def get_default_install_dir(self, environment):
+    def get_default_install_dir(self, environment: environment.Environment) -> str:
         return environment.get_libdir()
 
     def get_custom_install_dir(self):
@@ -994,7 +1023,7 @@ This will become a hard error in a future Meson release.''')
             if not(os.path.isfile(trial)):
                 raise InvalidArguments('Tried to add non-existing extra file {}.'.format(i))
         self.extra_files = extra_files
-        self.install_rpath = kwargs.get('install_rpath', '')
+        self.install_rpath: str = kwargs.get('install_rpath', '')
         if not isinstance(self.install_rpath, str):
             raise InvalidArguments('Install_rpath is not a string.')
         self.build_rpath = kwargs.get('build_rpath', '')
@@ -1064,17 +1093,18 @@ This will become a hard error in a future Meson release.''')
             raise InvalidArguments('Invalid value for win_subsystem: {}.'.format(value))
         return value
 
-    def _extract_pic_pie(self, kwargs, arg, environment, option):
+    def _extract_pic_pie(self, kwargs, arg: str, environment, option: str):
         # Check if we have -fPIC, -fpic, -fPIE, or -fpie in cflags
         all_flags = self.extra_args['c'] + self.extra_args['cpp']
         if '-f' + arg.lower() in all_flags or '-f' + arg.upper() in all_flags:
             mlog.warning("Use the '{}' kwarg instead of passing '{}' manually to {!r}".format(arg, '-f' + arg, self.name))
             return True
 
+        k = OptionKey(option)
         if arg in kwargs:
             val = kwargs[arg]
-        elif option in environment.coredata.base_options:
-            val = environment.coredata.base_options[option].value
+        elif k in environment.coredata.options:
+            val = environment.coredata.options[k].value
         else:
             val = False
 
@@ -1297,7 +1327,7 @@ You probably should put it in link_with instead.''')
         else:
             self.extra_args[language] = args
 
-    def get_aliases(self):
+    def get_aliases(self) -> T.Dict[str, str]:
         return {}
 
     def get_langs_used_by_deps(self) -> T.List[str]:
@@ -1389,9 +1419,16 @@ You probably should put it in link_with instead.''')
         m = 'Could not get a dynamic linker for build target {!r}'
         raise AssertionError(m.format(self.name))
 
-    def get_using_rustc(self) -> bool:
+    def uses_rust(self) -> bool:
         """Is this target a rust target."""
-        return self.sources and self.sources[0].fname.endswith('.rs')
+        if self.sources:
+            first_file = self.sources[0]
+            if first_file.fname.endswith('.rs'):
+                return True
+        elif self.generated:
+            if self.generated[0].get_outputs()[0].endswith('.rs'):
+                return True
+        return False
 
     def get_using_msvc(self):
         '''
@@ -1411,11 +1448,13 @@ You probably should put it in link_with instead.''')
         2. If the target contains only objects, process_compilers guesses and
            picks the first compiler that smells right.
         '''
-        compiler, _ = self.get_clink_dynamic_linker_and_stdlibs()
+        # Rustc can use msvc style linkers
+        if self.uses_rust():
+            compiler = self.environment.coredata.compilers[self.for_machine]['rust']
+        else:
+            compiler, _ = self.get_clink_dynamic_linker_and_stdlibs()
         # Mixing many languages with MSVC is not supported yet so ignore stdlibs.
-        if compiler and compiler.get_linker_id() in {'link', 'lld-link', 'xilink', 'optlink'}:
-            return True
-        return False
+        return compiler and compiler.get_linker_id() in {'link', 'lld-link', 'xilink', 'optlink'}
 
     def check_module_linking(self):
         '''
@@ -1595,8 +1634,9 @@ class Executable(BuildTarget):
     def __init__(self, name: str, subdir: str, subproject: str, for_machine: MachineChoice,
                  sources: T.List[File], objects, environment: environment.Environment, kwargs):
         self.typename = 'executable'
-        if 'pie' not in kwargs and 'b_pie' in environment.coredata.base_options:
-            kwargs['pie'] = environment.coredata.base_options['b_pie'].value
+        key = OptionKey('b_pie')
+        if 'pie' not in kwargs and key in environment.coredata.options:
+            kwargs['pie'] = environment.coredata.options[key].value
         super().__init__(name, subdir, subproject, for_machine, sources, objects, environment, kwargs)
         # Unless overridden, executables have no suffix or prefix. Except on
         # Windows and with C#/Mono executables where the suffix is 'exe'
@@ -1663,14 +1703,14 @@ class Executable(BuildTarget):
                     self.import_filename = self.gcc_import_filename
 
         if m.is_windows() and ('cs' in self.compilers or
-                               self.get_using_rustc() or
+                               self.uses_rust() or
                                self.get_using_msvc()):
             self.debug_filename = self.name + '.pdb'
 
         # Only linkwithable if using export_dynamic
         self.is_linkwithable = self.export_dynamic
 
-    def get_default_install_dir(self, environment):
+    def get_default_install_dir(self, environment: environment.Environment) -> str:
         return environment.get_bindir()
 
     def description(self):
@@ -1799,8 +1839,8 @@ class SharedLibrary(BuildTarget):
         self.basic_filename_tpl = '{0.prefix}{0.name}.{0.suffix}'
         self.determine_filenames(environment)
 
-    def get_link_deps_mapping(self, prefix, environment):
-        result = {}
+    def get_link_deps_mapping(self, prefix, environment) -> T.Dict[str, str]:
+        result: T.Dict[str, str] = {}
         mappings = self.get_transitive_link_deps_mapping(prefix, environment)
         old = get_target_macos_dylib_install_name(self)
         if old not in mappings:
@@ -1853,7 +1893,7 @@ class SharedLibrary(BuildTarget):
             suffix = 'dll'
             self.vs_import_filename = '{0}{1}.lib'.format(self.prefix if self.prefix is not None else '', self.name)
             self.gcc_import_filename = '{0}{1}.dll.a'.format(self.prefix if self.prefix is not None else 'lib', self.name)
-            if self.get_using_rustc():
+            if self.uses_rust():
                 # Shared library is of the form foo.dll
                 prefix = ''
                 # Import library is called foo.dll.lib
@@ -2050,7 +2090,7 @@ class SharedLibrary(BuildTarget):
     def get_all_link_deps(self):
         return [self] + self.get_transitive_link_deps()
 
-    def get_aliases(self):
+    def get_aliases(self) -> T.Dict[str, str]:
         """
         If the versioned library name is libfoo.so.0.100.0, aliases are:
         * libfoo.so.0 (soversion) -> libfoo.so.0.100.0
@@ -2058,11 +2098,11 @@ class SharedLibrary(BuildTarget):
         Same for dylib:
         * libfoo.dylib (unversioned; for linking) -> libfoo.0.dylib
         """
-        aliases = {}
+        aliases: T.Dict[str, str] = {}
         # Aliases are only useful with .so and .dylib libraries. Also if
         # there's no self.soversion (no versioning), we don't need aliases.
         if self.suffix not in ('so', 'dylib') or not self.soversion:
-            return {}
+            return aliases
         # With .so libraries, the minor and micro versions are also in the
         # filename. If ltversion != soversion we create an soversion alias:
         # libfoo.so.0 -> libfoo.so.0.100.0
@@ -2120,6 +2160,7 @@ class CustomTarget(Target):
         'build_by_default',
         'override_options',
         'console',
+        'env',
     ])
 
     def __init__(self, name, subdir, subproject, kwargs, absolute_paths=False, backend=None):
@@ -2292,6 +2333,7 @@ class CustomTarget(Target):
             else:
                 mlog.debug(i)
                 raise InvalidArguments('Unknown type {!r} in depend_files.'.format(type(i).__name__))
+        self.env = kwargs.get('env')
 
     def get_dependencies(self):
         return self.dependencies
@@ -2564,27 +2606,15 @@ class ConfigurationData:
 # A bit poorly named, but this represents plain data files to copy
 # during install.
 class Data:
-    def __init__(self, sources, install_dir, install_mode=None, rename=None):
+    def __init__(self, sources: T.List[File], install_dir: str,
+                 install_mode: T.Optional['FileMode'] = None, rename: T.List[str] = None):
         self.sources = sources
         self.install_dir = install_dir
         self.install_mode = install_mode
-        self.sources = listify(self.sources)
-        for s in self.sources:
-            assert(isinstance(s, File))
         if rename is None:
             self.rename = [os.path.basename(f.fname) for f in self.sources]
         else:
-            self.rename = stringlistify(rename)
-            if len(self.rename) != len(self.sources):
-                raise MesonException('Size of rename argument is different from number of sources')
-
-class RunScript(dict):
-    def __init__(self, script, args):
-        super().__init__()
-        assert(isinstance(script, list))
-        assert(isinstance(args, list))
-        self['exe'] = script
-        self['args'] = args
+            self.rename = rename
 
 class TestSetup:
     def __init__(self, exe_wrapper: T.Optional[T.List[str]], gdb: bool,

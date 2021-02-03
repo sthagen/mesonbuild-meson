@@ -32,12 +32,11 @@ from pathlib import Path, PurePath
 from .. import mlog
 from .. import mesonlib
 from ..compilers import clib_langs
-from ..envconfig import get_env_var
 from ..environment import Environment, MachineInfo
 from ..cmake import CMakeExecutor, CMakeTraceParser, CMakeException, CMakeToolchain, CMakeExecScope, check_cmake_args
 from ..mesonlib import MachineChoice, MesonException, OrderedSet, PerMachine
 from ..mesonlib import Popen_safe, version_compare_many, version_compare, listify, stringlistify, extract_as_list, split_args
-from ..mesonlib import Version, LibType
+from ..mesonlib import Version, LibType, OptionKey
 from ..mesondata import mesondata
 
 if T.TYPE_CHECKING:
@@ -134,6 +133,13 @@ class Dependency:
 
     def is_built(self) -> bool:
         return False
+
+    def summary_value(self) -> T.Union[str, mlog.AnsiDecorator, mlog.AnsiText]:
+        if not self.found():
+            return mlog.red('NO')
+        if not self.version:
+            return mlog.green('YES')
+        return mlog.AnsiText(mlog.green('YES'), ' ', mlog.cyan(self.version))
 
     def get_compile_args(self) -> T.List[str]:
         if self.include_type == 'system':
@@ -264,6 +270,11 @@ class InternalDependency(Dependency):
                 setattr(result, k, copy.deepcopy(v, memo))
         return result
 
+    def summary_value(self) -> mlog.AnsiDecorator:
+        # Omit the version.  Most of the time it will be just the project
+        # version, which is uninteresting in the summary.
+        return mlog.green('YES')
+
     def is_built(self) -> bool:
         if self.sources or self.libraries or self.whole_libraries:
             return True
@@ -317,7 +328,7 @@ class HasNativeKwarg:
         return MachineChoice.BUILD if kwargs.get('native', False) else MachineChoice.HOST
 
 class ExternalDependency(Dependency, HasNativeKwarg):
-    def __init__(self, type_name, environment, kwargs, language: T.Optional[str] = None):
+    def __init__(self, type_name, environment: Environment, kwargs, language: T.Optional[str] = None):
         Dependency.__init__(self, type_name, kwargs)
         self.env = environment
         self.name = type_name # default
@@ -574,7 +585,7 @@ class PkgConfigDependency(ExternalDependency):
     # We cache all pkg-config subprocess invocations to avoid redundant calls
     pkgbin_cache = {}
 
-    def __init__(self, name, environment, kwargs, language: T.Optional[str] = None):
+    def __init__(self, name, environment: 'Environment', kwargs, language: T.Optional[str] = None):
         super().__init__('pkgconfig', environment, kwargs, language=language)
         self.name = name
         self.is_libtool = False
@@ -656,8 +667,9 @@ class PkgConfigDependency(ExternalDependency):
         return rc, out, err
 
     @staticmethod
-    def setup_env(env, environment, for_machine, extra_path=None):
-        extra_paths = environment.coredata.builtins_per_machine[for_machine]['pkg_config_path'].value
+    def setup_env(env: T.MutableMapping[str, str], environment: 'Environment', for_machine: MachineChoice,
+                  extra_path: T.Optional[str] = None) -> None:
+        extra_paths: T.List[str] = environment.coredata.options[OptionKey('pkg_config_path', machine=for_machine)].value
         if extra_path:
             extra_paths.append(extra_path)
         sysroot = environment.properties[for_machine].get_sys_root()
@@ -697,7 +709,7 @@ class PkgConfigDependency(ExternalDependency):
         with / like /home/foo so leave them as-is so that the user gets an
         error/warning from the compiler/linker.
         '''
-        if not mesonlib.is_windows():
+        if not self.env.machines.build.is_windows():
             return args
         converted = []
         for arg in args:
@@ -783,14 +795,7 @@ class PkgConfigDependency(ExternalDependency):
         #
         # Only prefix_libpaths are reordered here because there should not be
         # too many system_libpaths to cause library version issues.
-        pkg_config_path = get_env_var(
-            self.for_machine,
-            self.env.is_cross_build(),
-            'PKG_CONFIG_PATH')
-        if pkg_config_path:
-            pkg_config_path = pkg_config_path.split(os.pathsep)
-        else:
-            pkg_config_path = []
+        pkg_config_path: T.List[str] = self.env.coredata.options[OptionKey('pkg_config_path', machine=self.for_machine)].value
         pkg_config_path = self._convert_mingw_paths(pkg_config_path)
         prefix_libpaths = sort_libpaths(prefix_libpaths, pkg_config_path)
         system_libpaths = OrderedSet()
@@ -955,7 +960,7 @@ class PkgConfigDependency(ExternalDependency):
             return None
         except PermissionError:
             msg = 'Found pkg-config {!r} but didn\'t have permissions to run it.'.format(' '.join(pkgbin.get_command()))
-            if not mesonlib.is_windows():
+            if not self.env.machines.build.is_windows():
                 msg += '\n\nOn Unix-like systems this is often caused by scripts that are not executable.'
             mlog.warning(msg)
             return None
@@ -986,7 +991,7 @@ class PkgConfigDependency(ExternalDependency):
 
         # Darwin uses absolute paths where possible; since the libtool files never
         # contain absolute paths, use the libdir field
-        if mesonlib.is_osx():
+        if self.env.machines[self.for_machine].is_darwin():
             dlbasename = os.path.basename(dlname)
             libdir = self.extract_libdir_field(la_file)
             if libdir is None:
@@ -1185,7 +1190,12 @@ class CMakeDependency(ExternalDependency):
             return None
 
         def process_paths(l: T.List[str]) -> T.Set[str]:
-            l = [x.split(':') for x in l]
+            if mesonlib.is_windows():
+                # Cannot split on ':' on Windows because its in the drive letter
+                l = [x.split(os.pathsep) for x in l]
+            else:
+                # https://github.com/mesonbuild/meson/issues/7294
+                l = [re.split(r':|;', x) for x in l]
             l = [x for sublist in l for x in sublist]
             return set(l)
 
@@ -1246,7 +1256,7 @@ class CMakeDependency(ExternalDependency):
                 if not self._cached_isdir(i):
                     continue
 
-                # Check the directory case insensitve
+                # Check the directory case insensitive
                 content = self._cached_listdir(i)
                 candidates = ['Find{}.cmake', '{}Config.cmake', '{}-config.cmake']
                 candidates = [x.format(name).lower() for x in candidates]
@@ -1289,8 +1299,17 @@ class CMakeDependency(ExternalDependency):
             if search_lib_dirs(i):
                 return True
 
+        # Check PATH
+        system_env = []  # type: T.List[str]
+        for i in os.environ.get('PATH', '').split(os.pathsep):
+            if i.endswith('/bin') or i.endswith('\\bin'):
+                i = i[:-4]
+            if i.endswith('/sbin') or i.endswith('\\sbin'):
+                i = i[:-5]
+            system_env += [i]
+
         # Check the system paths
-        for i in self.cmakeinfo['module_paths']:
+        for i in self.cmakeinfo['module_paths'] + system_env:
             if find_module(i):
                 return True
 
@@ -1484,12 +1503,12 @@ class CMakeDependency(ExternalDependency):
                     cfgs = [x for x in tgt.properties['IMPORTED_CONFIGURATIONS'] if x]
                     cfg = cfgs[0]
 
-                if 'b_vscrt' in self.env.coredata.base_options:
-                    is_debug = self.env.coredata.get_builtin_option('buildtype') == 'debug'
-                    if self.env.coredata.base_options['b_vscrt'].value in ('mdd', 'mtd'):
+                if OptionKey('b_vscrt') in self.env.coredata.options:
+                    is_debug = self.env.coredata.get_option(OptionKey('buildtype')) == 'debug'
+                    if self.env.coredata.options[OptionKey('b_vscrt')].value in {'mdd', 'mtd'}:
                         is_debug = True
                 else:
-                    is_debug = self.env.coredata.get_builtin_option('debug')
+                    is_debug = self.env.coredata.get_option(OptionKey('debug'))
                 if is_debug:
                     if 'DEBUG' in cfgs:
                         cfg = 'DEBUG'
@@ -1523,7 +1542,7 @@ class CMakeDependency(ExternalDependency):
                         libraries += [j]
                     elif os.path.isabs(j) and os.path.exists(j):
                         libraries += [j]
-                    elif mesonlib.is_windows() and reg_is_maybe_bare_lib.match(j):
+                    elif self.env.machines.build.is_windows() and reg_is_maybe_bare_lib.match(j):
                         # On Windows, CMake library dependencies can be passed as bare library names,
                         # e.g. 'version' should translate into 'version.lib'. CMake brute-forces a
                         # combination of prefix/suffix combinations to find the right library, however
@@ -1880,6 +1899,11 @@ class ExternalProgram:
                          '(%s)' % ' '.join(self.command))
             else:
                 mlog.log('Program', mlog.bold(name), 'found:', mlog.red('NO'))
+
+    def summary_value(self) -> T.Union[str, mlog.AnsiDecorator]:
+        if not self.found():
+            return mlog.red('NO')
+        return self.path
 
     def __repr__(self) -> str:
         r = '<{} {!r} -> {!r}>'
@@ -2497,7 +2521,7 @@ def _build_external_dependency_list(name: str, env: Environment, for_machine: Ma
     # If it's explicitly requested, use the Extraframework detection method (only)
     if 'extraframework' == kwargs.get('method', ''):
         # On OSX, also try framework dependency detector
-        if mesonlib.is_osx():
+        if env.machines[for_machine].is_darwin():
             candidates.append(functools.partial(ExtraFrameworkDependency, name, env, kwargs))
         return candidates
 
@@ -2506,7 +2530,7 @@ def _build_external_dependency_list(name: str, env: Environment, for_machine: Ma
         candidates.append(functools.partial(PkgConfigDependency, name, env, kwargs))
 
         # On OSX, also try framework dependency detector
-        if mesonlib.is_osx():
+        if env.machines[for_machine].is_darwin():
             candidates.append(functools.partial(ExtraFrameworkDependency, name, env, kwargs))
 
         # Only use CMake as a last resort, since it might not work 100% (see #6113)

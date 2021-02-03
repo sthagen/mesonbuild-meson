@@ -22,10 +22,11 @@ from ..mesonlib import (MesonException, Popen_safe, MachineChoice,
                        get_variable_regex, do_replacement)
 from ..interpreterbase import InterpreterObject, InterpreterException, FeatureNew
 from ..interpreterbase import stringArgs, permittedKwargs
-from ..interpreter import Interpreter, DependencyHolder, InstallDir
-from ..compilers.compilers import cflags_mapping, cexe_mapping
+from ..interpreter import Interpreter, DependencyHolder, InstallDirHolder
+from ..compilers.compilers import CFLAGS_MAPPING, CEXE_MAPPING
 from ..dependencies.base import InternalDependency, PkgConfigDependency
 from ..environment import Environment
+from ..mesonlib import OptionKey
 
 class ExternalProject(InterpreterObject):
     def __init__(self,
@@ -62,9 +63,9 @@ class ExternalProject(InterpreterObject):
         self.src_dir = Path(self.env.get_source_dir(), self.subdir)
         self.build_dir = Path(self.env.get_build_dir(), self.subdir, 'build')
         self.install_dir = Path(self.env.get_build_dir(), self.subdir, 'dist')
-        self.prefix = Path(self.env.coredata.get_builtin_option('prefix'))
-        self.libdir = Path(self.env.coredata.get_builtin_option('libdir'))
-        self.includedir = Path(self.env.coredata.get_builtin_option('includedir'))
+        self.prefix = Path(self.env.coredata.get_option(OptionKey('prefix')))
+        self.libdir = Path(self.env.coredata.get_option(OptionKey('libdir')))
+        self.includedir = Path(self.env.coredata.get_option(OptionKey('includedir')))
 
         # On Windows if the prefix is "c:/foo" and DESTDIR is "c:/bar", `make`
         # will install files into "c:/bar/c:/foo" which is an invalid path.
@@ -89,11 +90,11 @@ class ExternalProject(InterpreterObject):
         configure_prog = self.interpreter.find_program_impl(configure_path.as_posix())
         configure_cmd = configure_prog.get_command()
 
-        d = {'PREFIX': self.prefix.as_posix(),
-             'LIBDIR': self.libdir.as_posix(),
-             'INCLUDEDIR': self.includedir.as_posix(),
-             }
-        self._validate_configure_options(d.keys())
+        d = [('PREFIX', '--prefix=@PREFIX@', self.prefix.as_posix()),
+             ('LIBDIR', '--libdir=@PREFIX@/@LIBDIR@', self.libdir.as_posix()),
+             ('INCLUDEDIR', '--includedir=@PREFIX@/@INCLUDEDIR@', self.includedir.as_posix()),
+             ]
+        self._validate_configure_options(d)
 
         configure_cmd += self._format_options(self.configure_options, d)
 
@@ -101,7 +102,7 @@ class ExternalProject(InterpreterObject):
             host = '{}-{}-{}'.format(self.host_machine.cpu_family,
                                      self.build_machine.system,
                                      self.host_machine.system)
-            d = {'HOST': host}
+            d = [('HOST', None, host)]
             configure_cmd += self._format_options(self.cross_configure_options, d)
 
         # Set common env variables like CFLAGS, CC, etc.
@@ -109,16 +110,19 @@ class ExternalProject(InterpreterObject):
         link_args = []
         self.run_env = os.environ.copy()
         for lang, compiler in self.env.coredata.compilers[MachineChoice.HOST].items():
-            if any(lang not in i for i in (cexe_mapping, cflags_mapping)):
+            if any(lang not in i for i in (CEXE_MAPPING, CFLAGS_MAPPING)):
                 continue
             cargs = self.env.coredata.get_external_args(MachineChoice.HOST, lang)
-            self.run_env[cexe_mapping[lang]] = self._quote_and_join(compiler.get_exelist())
-            self.run_env[cflags_mapping[lang]] = self._quote_and_join(cargs)
+            self.run_env[CEXE_MAPPING[lang]] = self._quote_and_join(compiler.get_exelist())
+            self.run_env[CFLAGS_MAPPING[lang]] = self._quote_and_join(cargs)
             if not link_exelist:
                 link_exelist = compiler.get_linker_exelist()
                 link_args = self.env.coredata.get_external_link_args(MachineChoice.HOST, lang)
         if link_exelist:
-            self.run_env['LD'] = self._quote_and_join(link_exelist)
+            # FIXME: Do not pass linker because Meson uses CC as linker wrapper,
+            # but autotools often expects the real linker (e.h. GNU ld).
+            # self.run_env['LD'] = self._quote_and_join(link_exelist)
+            pass
         self.run_env['LDFLAGS'] = self._quote_and_join(link_args)
 
         self.run_env = self.user_env.get_env(self.run_env)
@@ -132,23 +136,23 @@ class ExternalProject(InterpreterObject):
     def _quote_and_join(self, array: T.List[str]) -> str:
         return ' '.join([shlex.quote(i) for i in array])
 
-    def _validate_configure_options(self, required_keys: T.List[str]):
+    def _validate_configure_options(self, variables: T.List[T.Tuple[str, str, str]]):
         # Ensure the user at least try to pass basic info to the build system,
         # like the prefix, libdir, etc.
-        for key in required_keys:
+        for key, default, val in variables:
             key_format = '@{}@'.format(key)
             for option in self.configure_options:
                 if key_format in option:
                     break
             else:
-                m = 'At least one configure option must contain "{}" key'
-                raise InterpreterException(m.format(key_format))
+                FeatureNew('Default configure_option', '0.57.0').use(self.subproject)
+                self.configure_options.append(default)
 
-    def _format_options(self, options: T.List[str], variables: T.Dict[str, str]) -> T.List[str]:
+    def _format_options(self, options: T.List[str], variables: T.List[T.Tuple[str, str, str]]) -> T.List[str]:
         out = []
         missing = set()
         regex = get_variable_regex('meson')
-        confdata = {k: (v, None) for k, v in variables.items()}
+        confdata = {k: (v, None) for k, d, v in variables}
         for o in options:
             arg, missing_vars = do_replacement(regex, o, 'meson', confdata)
             missing.update(missing_vars)
@@ -161,12 +165,22 @@ class ExternalProject(InterpreterObject):
 
     def _run(self, step: str, command: T.List[str]):
         mlog.log('External project {}:'.format(self.name), mlog.bold(step))
-        output = None if self.verbose else subprocess.DEVNULL
+        m = 'Running command ' + str(command) + ' in directory ' + str(self.build_dir) + '\n'
+        log_filename = Path(mlog.log_dir, '{}-{}.log'.format(self.name, step))
+        output = None
+        if not self.verbose:
+            output = open(log_filename, 'w')
+            output.write(m + '\n')
+            output.flush()
+        else:
+            mlog.log(m)
         p, o, e = Popen_safe(command, cwd=str(self.build_dir), env=self.run_env,
                                       stderr=subprocess.STDOUT,
                                       stdout=output)
         if p.returncode != 0:
-            m = '{} step failed:\n{}'.format(step, e)
+            m = '{} step returned error code {}.'.format(step, p.returncode)
+            if not self.verbose:
+                m += '\nSee logs: ' + str(log_filename)
             raise MesonException(m)
 
     def _create_targets(self):
@@ -176,6 +190,7 @@ class ExternalProject(InterpreterObject):
                 '--srcdir', self.src_dir.as_posix(),
                 '--builddir', self.build_dir.as_posix(),
                 '--installdir', self.install_dir.as_posix(),
+                '--logdir', mlog.log_dir,
                 '--make', self.make,
                 ]
         if self.verbose:
@@ -191,15 +206,15 @@ class ExternalProject(InterpreterObject):
                                          self.subproject,
                                          target_kwargs)
 
-        idir = InstallDir(self.subdir.as_posix(),
-                          Path('dist', self.rel_prefix).as_posix(),
-                          install_dir='.',
-                          install_mode=None,
-                          exclude=None,
-                          strip_directory=True,
-                          from_source_dir=False)
+        idir = build.InstallDir(self.subdir.as_posix(),
+                                Path('dist', self.rel_prefix).as_posix(),
+                                install_dir='.',
+                                install_mode=None,
+                                exclude=None,
+                                strip_directory=True,
+                                from_source_dir=False)
 
-        return [self.target, idir]
+        return [self.target, InstallDirHolder(idir)]
 
     @stringArgs
     @permittedKwargs({'subdir'})

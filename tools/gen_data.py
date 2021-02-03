@@ -43,12 +43,12 @@ def main() -> int:
     mesonbuild_dir = root_dir / 'mesonbuild'
     out_file = mesonbuild_dir / 'mesondata.py'
 
-    data_dirs = mesonbuild_dir.glob('**/data')
+    data_dirs = sorted(mesonbuild_dir.glob('**/data'))
 
     data_files: T.List[DataFile] = []
 
     for d in data_dirs:
-        for p in d.iterdir():
+        for p in sorted(d.iterdir()):
             data_files += [DataFile(p, mesonbuild_dir)]
 
     print(f'Found {len(data_files)} data files')

@@ -22,7 +22,7 @@ from .executor import CMakeExecutor
 from .toolchain import CMakeToolchain, CMakeExecScope
 from .traceparser import CMakeTraceParser, CMakeGeneratorTarget
 from .. import mlog, mesonlib
-from ..mesonlib import MachineChoice, OrderedSet, version_compare, path_is_in_root, relative_to_if_possible
+from ..mesonlib import MachineChoice, OrderedSet, version_compare, path_is_in_root, relative_to_if_possible, OptionKey
 from ..mesondata import mesondata
 from ..compilers.compilers import lang_suffixes, header_suffixes, obj_suffixes, lib_suffixes, is_header
 from enum import Enum
@@ -231,7 +231,7 @@ class ConverterTarget:
         if target.install_paths:
             self.install_dir = target.install_paths[0]
 
-        self.languages           = []  # type: T.List[str]
+        self.languages           = set() # type: T.Set[str]
         self.sources             = []  # type: T.List[Path]
         self.generated           = []  # type: T.List[Path]
         self.generated_ctgt      = []  # type: T.List[CustomTargetReference]
@@ -250,19 +250,40 @@ class ConverterTarget:
         self.name = _sanitize_cmake_name(self.name)
 
         self.generated_raw = []  # type: T.List[Path]
+
         for i in target.files:
-            # Determine the meson language
+            languages    = set()  #  type: T.Set[str]
+            src_suffixes = set()  #  type: T.Set[str]
+
+            # Insert suffixes
+            for j in i.sources:
+                if not j.suffix:
+                    continue
+                src_suffixes.add(j.suffix[1:])
+
+            # Determine the meson language(s)
+            # Extract the default language from the explicit CMake field
             lang_cmake_to_meson = {val.lower(): key for key, val in language_map.items()}
-            lang = lang_cmake_to_meson.get(i.language.lower(), 'c')
-            if lang not in self.languages:
-                self.languages += [lang]
-            if lang not in self.compile_opts:
-                self.compile_opts[lang] = []
+            languages.add(lang_cmake_to_meson.get(i.language.lower(), 'c'))
+
+            # Determine missing languages from the source suffixes
+            for sfx in src_suffixes:
+                for key, val in lang_suffixes.items():
+                    if sfx in val:
+                        languages.add(key)
+                        break
+
+            # Register the new languages and initialize the compile opts array
+            for lang in languages:
+                self.languages.add(lang)
+                if lang not in self.compile_opts:
+                    self.compile_opts[lang] = []
 
             # Add arguments, but avoid duplicates
             args = i.flags
             args += ['-D{}'.format(x) for x in i.defines]
-            self.compile_opts[lang] += [x for x in args if x not in self.compile_opts[lang]]
+            for lang in languages:
+                self.compile_opts[lang] += [x for x in args if x not in self.compile_opts[lang]]
 
             # Handle include directories
             self.includes += [x.path for x in i.includes if x.path not in self.includes and not x.isSystem]
@@ -362,7 +383,7 @@ class ConverterTarget:
                     cfgs += [x for x in tgt.properties['CONFIGURATIONS'] if x]
                     cfg = cfgs[0]
 
-                is_debug = self.env.coredata.get_builtin_option('debug');
+                is_debug = self.env.coredata.get_option(OptionKey('debug'));
                 if is_debug:
                     if 'DEBUG' in cfgs:
                         cfg = 'DEBUG'
@@ -502,6 +523,20 @@ class ConverterTarget:
         self.link_libraries = [x for x in self.link_libraries if x.lower() not in blacklist_link_libs]
         self.link_flags = [x for x in self.link_flags if check_flag(x)]
 
+        # Handle OSX frameworks
+        def handle_frameworks(flags: T.List[str]) -> T.List[str]:
+            res: T.List[str] = []
+            for i in flags:
+                p = Path(i)
+                if not p.exists() or not p.name.endswith('.framework'):
+                    res += [i]
+                    continue
+                res += ['-framework', p.stem]
+            return res
+
+        self.link_libraries = handle_frameworks(self.link_libraries)
+        self.link_flags     = handle_frameworks(self.link_flags)
+
         # Handle explicit CMake add_dependency() calls
         for i in self.depends_raw:
             dep_tgt = output_target_map.target(i)
@@ -563,12 +598,12 @@ class ConverterTarget:
 
     @lru_cache(maxsize=None)
     def _all_lang_stds(self, lang: str) -> T.List[str]:
-        lang_opts = self.env.coredata.compiler_options.build.get(lang, None)
-        if not lang_opts or 'std' not in lang_opts:
+        try:
+            res = self.env.coredata.options[OptionKey('std', machine=MachineChoice.BUILD, lang=lang)].choices
+        except KeyError:
             return []
-        res = lang_opts['std'].choices
 
-        # TODO: Get rid of this once we have propper typing for options
+        # TODO: Get rid of this once we have proper typing for options
         assert isinstance(res, list)
         for i in res:
             assert isinstance(i, str)
@@ -1287,7 +1322,7 @@ class CMakeInterpreter:
 
             # Generate the command list
             command = []  # type: T.List[T.Union[str, IdNode, IndexNode]]
-            command += mesonlib.meson_command
+            command += mesonlib.get_meson_command()
             command += ['--internal', 'cmake_run_ctgt']
             command += ['-o', '@OUTPUT@']
             if tgt.original_outputs:

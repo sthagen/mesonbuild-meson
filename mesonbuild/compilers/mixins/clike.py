@@ -35,6 +35,7 @@ from ... import mesonlib
 from ... import mlog
 from ...linkers import GnuLikeDynamicLinkerMixin, SolarisDynamicLinker, CompCertDynamicLinker
 from ...mesonlib import LibType
+from ...coredata import OptionKey
 from .. import compilers
 from ..compilers import CompileCheckMode
 from .visualstudio import VisualStudioLikeCompiler
@@ -235,7 +236,7 @@ class CLikeCompiler(Compiler):
                             retval.append(d)
                         # at this point, it's an ELF file which doesn't match the
                         # appropriate elf_class, so skip this one
-                    # stop scanning after the first sucessful read
+                    # stop scanning after the first successful read
                     break
                 except OSError:
                     # Skip the file if we can't read it
@@ -393,14 +394,16 @@ class CLikeCompiler(Compiler):
             # linking with static libraries since MSVC won't select a CRT for
             # us in that case and will error out asking us to pick one.
             try:
-                crt_val = env.coredata.base_options['b_vscrt'].value
-                buildtype = env.coredata.builtins['buildtype'].value
+                crt_val = env.coredata.options[OptionKey('b_vscrt')].value
+                buildtype = env.coredata.options[OptionKey('buildtype')].value
                 cargs += self.get_crt_compile_args(crt_val, buildtype)
             except (KeyError, AttributeError):
                 pass
 
         # Add CFLAGS/CXXFLAGS/OBJCFLAGS/OBJCXXFLAGS and CPPFLAGS from the env
         sys_args = env.coredata.get_external_args(self.for_machine, self.language)
+        if isinstance(sys_args, str):
+            sys_args = [sys_args]
         # Apparently it is a thing to inject linker flags both
         # via CFLAGS _and_ LDFLAGS, even though the former are
         # also used during linking. These flags can break
@@ -1268,7 +1271,7 @@ class CLikeCompiler(Compiler):
 
     def get_has_func_attribute_extra_args(self, name: str) -> T.List[str]:
         # Most compilers (such as GCC and Clang) only warn about unknown or
-        # ignored attributes, so force an error. Overriden in GCC and Clang
+        # ignored attributes, so force an error. Overridden in GCC and Clang
         # mixins.
         return ['-Werror']
 

@@ -1,6 +1,5 @@
 project('custom install script', 'c')
 
-executable('prog', 'prog.c', install : true)
 meson.add_install_script('myinstall.py', 'diiba/daaba', 'file.dat')
 meson.add_install_script('myinstall.py', 'this/should', 'also-work.dat')
 
@@ -25,3 +24,22 @@ t = custom_target(
 
 meson.add_install_script('myinstall.py', 'customtarget', t, '--mode=copy')
 meson.add_install_script('myinstall.py', 'customtargetindex', t[0], '--mode=copy')
+
+installer = configure_file(
+  input : 'myinstall.py',
+  output : 'myinstall_copy.py',
+  copy : true,
+)
+
+meson.add_install_script(installer, 'otherdir', afile, '--mode=copy')
+
+# This executable links on a library built in src/ directory. On Windows this
+# means meson must add src/ into $PATH to find the DLL when running it as
+# install script.
+myexe = executable('prog', 'prog.c',
+  link_with: mylib,
+  install : true,
+)
+if meson.can_run_host_binaries()
+  meson.add_install_script(myexe)
+endif

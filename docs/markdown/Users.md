@@ -22,6 +22,7 @@ topic](https://github.com/topics/meson).
  - [Bzip2](https://gitlab.com/federicomenaquintero/bzip2), the bzip2 compressor/decompressor
  - [Cage](https://github.com/Hjdskes/cage), a Wayland kiosk
  - [casync](https://github.com/systemd/casync), Content-Addressable Data Synchronization Tool
+ - [Chicken Libraries](https://github.com/chicken-libraries), Collection of C libraries. Data structures, algorithms, and more.
  - [cinnamon-desktop](https://github.com/linuxmint/cinnamon-desktop), the cinnamon desktop library
  - [Cozy](https://github.com/geigi/cozy), a modern audio book player for Linux and macOS using GTK+ 3
  - [dav1d](https://code.videolan.org/videolan/dav1d), an AV1 decoder
@@ -104,7 +105,7 @@ format files
  - [OpenTitan](https://github.com/lowRISC/opentitan), an open source silicon Root of Trust (RoT) project.
  - [Orc](https://gitlab.freedesktop.org/gstreamer/orc), the Optimized Inner Loop Runtime Compiler
  - [OTS](https://github.com/khaledhosny/ots), the OpenType Sanitizer, parses and serializes OpenType files (OTF, TTF) and WOFF and WOFF2 font files, validating and sanitizing them as it goes. Used by Chromium and Firefox
- - [Outlier](https://github.com/kerolasa/outlier), a small Hello World style meson example project
+ - [Outlier](https://github.com/kerolasa/outlier), a small Hello World style Meson example project
  - [p11-kit](https://github.com/p11-glue/p11-kit), PKCS#11 module aggregator
  - [Pacman](https://git.archlinux.org/pacman.git/tree/), a package manager for Arch Linux
  - [Pango](https://git.gnome.org/browse/pango/), an Internationalized text layout and rendering library

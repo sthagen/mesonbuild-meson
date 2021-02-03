@@ -18,12 +18,11 @@ import typing as T
 
 from . import mesonlib
 from .arglist import CompilerArgs
-from .envconfig import get_env_var
 
 if T.TYPE_CHECKING:
-    from .coredata import OptionDictType
-    from .envconfig import MachineChoice
+    from .coredata import KeyedOptionDictType
     from .environment import Environment
+    from .mesonlib import MachineChoice
 
 
 class StaticLinker:
@@ -40,7 +39,7 @@ class StaticLinker:
         """
         return mesonlib.is_windows()
 
-    def get_base_link_args(self, options: 'OptionDictType') -> T.List[str]:
+    def get_base_link_args(self, options: 'KeyedOptionDictType') -> T.List[str]:
         """Like compilers.get_base_link_args, but for the static linker."""
         return []
 
@@ -70,7 +69,7 @@ class StaticLinker:
     def openmp_flags(self) -> T.List[str]:
         return []
 
-    def get_option_link_args(self, options: 'OptionDictType') -> T.List[str]:
+    def get_option_link_args(self, options: 'KeyedOptionDictType') -> T.List[str]:
         return []
 
     @classmethod
@@ -301,21 +300,7 @@ def evaluate_rpath(p: str, build_dir: str, from_dir: str) -> str:
     else:
         return os.path.relpath(os.path.join(build_dir, p), os.path.join(build_dir, from_dir))
 
-
-class LinkerEnvVarsMixin(metaclass=abc.ABCMeta):
-
-    """Mixin reading LDFLAGS from the environment."""
-
-    @staticmethod
-    def get_args_from_envvars(for_machine: mesonlib.MachineChoice,
-                              is_cross: bool) -> T.List[str]:
-        raw_value = get_env_var(for_machine, is_cross, 'LDFLAGS')
-        if raw_value is not None:
-            return mesonlib.split_args(raw_value)
-        else:
-            return []
-
-class DynamicLinker(LinkerEnvVarsMixin, metaclass=abc.ABCMeta):
+class DynamicLinker(metaclass=abc.ABCMeta):
 
     """Base class for dynamic linkers."""
 
@@ -378,7 +363,7 @@ class DynamicLinker(LinkerEnvVarsMixin, metaclass=abc.ABCMeta):
 
     # XXX: is use_ldflags a compiler or a linker attribute?
 
-    def get_option_args(self, options: 'OptionDictType') -> T.List[str]:
+    def get_option_args(self, options: 'KeyedOptionDictType') -> T.List[str]:
         return []
 
     def has_multi_arguments(self, args: T.List[str], env: 'Environment') -> T.Tuple[bool, bool]:
@@ -401,7 +386,7 @@ class DynamicLinker(LinkerEnvVarsMixin, metaclass=abc.ABCMeta):
     def get_std_shared_lib_args(self) -> T.List[str]:
         return []
 
-    def get_std_shared_module_args(self, options: 'OptionDictType') -> T.List[str]:
+    def get_std_shared_module_args(self, options: 'KeyedOptionDictType') -> T.List[str]:
         return self.get_std_shared_lib_args()
 
     def get_pie_args(self) -> T.List[str]:
@@ -693,7 +678,7 @@ class AppleDynamicLinker(PosixDynamicLinkerMixin, DynamicLinker):
     def get_allow_undefined_args(self) -> T.List[str]:
         return self._apply_prefix('-undefined,dynamic_lookup')
 
-    def get_std_shared_module_args(self, options: 'OptionDictType') -> T.List[str]:
+    def get_std_shared_module_args(self, options: 'KeyedOptionDictType') -> T.List[str]:
         return ['-bundle'] + self._apply_prefix('-undefined,dynamic_lookup')
 
     def get_pie_args(self) -> T.List[str]:

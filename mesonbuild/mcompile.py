@@ -47,7 +47,7 @@ def get_backend_from_coredata(builddir: Path) -> str:
     """
     Gets `backend` option value from coredata
     """
-    backend = coredata.load(str(builddir)).get_builtin_option('backend')
+    backend = coredata.load(str(builddir)).get_option(mesonlib.OptionKey('backend'))
     assert isinstance(backend, str)
     return backend
 
@@ -89,7 +89,7 @@ class ParsedTargetName:
 
     @staticmethod
     def _is_valid_type(type: str) -> bool:
-        # Ammend docs in Commands.md when editing this list
+        # Amend docs in Commands.md when editing this list
         allowed_types = {
             'executable',
             'static_library',

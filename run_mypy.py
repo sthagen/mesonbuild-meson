@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 
-import sys
-import subprocess
-import argparse
 from pathlib import Path
+import argparse
+import os
+import subprocess
+import sys
 import typing as T
 
 modules = [
@@ -24,11 +25,14 @@ modules = [
     'mesonbuild/interpreterbase.py',
     'mesonbuild/linkers.py',
     'mesonbuild/mcompile.py',
-    'mesonbuild/mesonlib.py',
+    'mesonbuild/mesonlib/platform.py',
+    'mesonbuild/mesonlib/universal.py',
     'mesonbuild/minit.py',
+    'mesonbuild/minstall.py',
     'mesonbuild/mintro.py',
     'mesonbuild/mlog.py',
     'mesonbuild/modules/fs.py',
+    'mesonbuild/modules/unstable_rust.py',
     'mesonbuild/mparser.py',
     'mesonbuild/msetup.py',
     'mesonbuild/mtest.py',
@@ -37,6 +41,11 @@ modules = [
     'run_mypy.py',
     'tools'
 ]
+
+if os.name == 'posix':
+    modules.append('mesonbuild/mesonlib/posix.py')
+elif os.name == 'nt':
+    modules.append('mesonbuild/mesonlib/win32.py')
 
 def check_mypy() -> None:
     try:

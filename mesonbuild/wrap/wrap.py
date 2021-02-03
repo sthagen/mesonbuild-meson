@@ -114,11 +114,11 @@ class PackageDefinition:
 
     def parse_wrap(self) -> None:
         try:
-            self.config = configparser.ConfigParser(interpolation=None)
-            self.config.read(self.filename)
-        except configparser.Error:
-            raise WrapException('Failed to parse {}'.format(self.basename))
-        self.parse_wrap_section()
+            config = configparser.ConfigParser(interpolation=None)
+            config.read(self.filename)
+        except configparser.Error as e:
+            raise WrapException('Failed to parse {}: {}'.format(self.basename, str(e)))
+        self.parse_wrap_section(config)
         if self.type == 'redirect':
             # [wrap-redirect] have a `filename` value pointing to the real wrap
             # file we should parse instead. It must be relative to the current
@@ -140,21 +140,21 @@ class PackageDefinition:
             self.filename = str(fname)
             self.parse_wrap()
             return
-        self.parse_provide_section()
+        self.parse_provide_section(config)
 
-    def parse_wrap_section(self) -> None:
-        if len(self.config.sections()) < 1:
+    def parse_wrap_section(self, config: configparser.ConfigParser) -> None:
+        if len(config.sections()) < 1:
             raise WrapException('Missing sections in {}'.format(self.basename))
-        self.wrap_section = self.config.sections()[0]
+        self.wrap_section = config.sections()[0]
         if not self.wrap_section.startswith('wrap-'):
             m = '{!r} is not a valid first section in {}'
             raise WrapException(m.format(self.wrap_section, self.basename))
         self.type = self.wrap_section[5:]
-        self.values = dict(self.config[self.wrap_section])
+        self.values = dict(config[self.wrap_section])
 
-    def parse_provide_section(self) -> None:
-        if self.config.has_section('provide'):
-            for k, v in self.config['provide'].items():
+    def parse_provide_section(self, config: configparser.ConfigParser) -> None:
+        if config.has_section('provide'):
+            for k, v in config['provide'].items():
                 if k == 'dependency_names':
                     # A comma separated list of dependency names that does not
                     # need a variable name
@@ -251,6 +251,9 @@ class Resolver:
             self.provided_programs.setdefault(k, v)
 
     def find_dep_provider(self, packagename: str) -> T.Optional[T.Union[str, T.List[str]]]:
+        # Python's ini parser converts all key values to lowercase.
+        # Thus the query name must also be in lower case.
+        packagename = packagename.lower()
         # Return value is in the same format as fallback kwarg:
         # ['subproject_name', 'variable_name'], or 'subproject_name'.
         wrap = self.provided_deps.get(packagename)
@@ -350,8 +353,10 @@ class Resolver:
             raise WrapException(m)
 
     def resolve_git_submodule(self) -> bool:
+        # Is git installed? If not, we're probably not in a git repository and
+        # definitely cannot try to conveniently set up a submodule.
         if not GIT:
-            raise WrapException('Git program not found.')
+            return False
         # Are we in a git repository?
         ret, out = quiet_git(['rev-parse'], self.subdir_root)
         if not ret:

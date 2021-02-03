@@ -23,9 +23,10 @@ import json
 from glob import glob
 from pathlib import Path
 from mesonbuild.environment import detect_ninja
-from mesonbuild.mesonlib import windows_proof_rmtree, MesonException
+from mesonbuild.mesonlib import windows_proof_rmtree, MesonException, quiet_git
 from mesonbuild.wrap import wrap
 from mesonbuild import mlog, build
+from .scripts.meson_exe import run_exe
 
 archive_choices = ['gztar', 'xztar', 'zip']
 archive_extension = {'gztar': '.tar.gz',
@@ -79,26 +80,36 @@ def process_submodules(dirname):
 
 def run_dist_scripts(src_root, bld_root, dist_root, dist_scripts):
     assert(os.path.isabs(dist_root))
-    env = os.environ.copy()
+    env = {}
     env['MESON_DIST_ROOT'] = dist_root
     env['MESON_SOURCE_ROOT'] = src_root
     env['MESON_BUILD_ROOT'] = bld_root
     for d in dist_scripts:
-        script = d['exe']
-        args = d['args']
-        name = ' '.join(script + args)
+        name = ' '.join(d.cmd_args)
         print('Running custom dist script {!r}'.format(name))
         try:
-            rc = subprocess.call(script + args, env=env)
+            rc = run_exe(d, env)
             if rc != 0:
                 sys.exit('Dist script errored out')
         except OSError:
             print('Failed to run dist script {!r}'.format(name))
             sys.exit(1)
 
+def git_root(src_root):
+    # Cannot use --show-toplevel here because git in our CI prints cygwin paths
+    # that python cannot resolve. Workaround this by taking parent of src_root.
+    prefix = quiet_git(['rev-parse', '--show-prefix'], src_root, check=True)[1].strip()
+    if not prefix:
+        return Path(src_root)
+    prefix_level = len(Path(prefix).parents)
+    return Path(src_root).parents[prefix_level - 1]
+
 def is_git(src_root):
-    _git = os.path.join(src_root, '.git')
-    return os.path.isdir(_git) or os.path.isfile(_git)
+    '''
+    Checks if meson.build file at the root source directory is tracked by git.
+    It could be a subproject part of the parent project git repository.
+    '''
+    return quiet_git(['ls-files', '--error-unmatch', 'meson.build'], src_root)[0]
 
 def git_have_dirty_index(src_root):
     '''Check whether there are uncommitted changes in git'''
@@ -109,9 +120,21 @@ def git_clone(src_root, distdir):
     if git_have_dirty_index(src_root):
         mlog.warning('Repository has uncommitted changes that will not be included in the dist tarball')
     if os.path.exists(distdir):
-        shutil.rmtree(distdir)
-    os.makedirs(distdir)
-    subprocess.check_call(['git', 'clone', '--shared', src_root, distdir])
+        windows_proof_rmtree(distdir)
+    repo_root = git_root(src_root)
+    if repo_root.samefile(src_root):
+        os.makedirs(distdir)
+        subprocess.check_call(['git', 'clone', '--shared', src_root, distdir])
+    else:
+        subdir = Path(src_root).relative_to(repo_root)
+        tmp_distdir = distdir + '-tmp'
+        if os.path.exists(tmp_distdir):
+            windows_proof_rmtree(tmp_distdir)
+        os.makedirs(tmp_distdir)
+        subprocess.check_call(['git', 'clone', '--shared', '--no-checkout', str(repo_root), tmp_distdir])
+        subprocess.check_call(['git', 'checkout', 'HEAD', '--', str(subdir)], cwd=tmp_distdir)
+        Path(tmp_distdir, subdir).rename(distdir)
+        windows_proof_rmtree(tmp_distdir)
     process_submodules(distdir)
     del_gitfiles(distdir)
 
@@ -133,7 +156,7 @@ def create_dist_git(dist_name, archives, src_root, bld_root, dist_sub, dist_scri
         compressed_name = distdir + archive_extension[a]
         shutil.make_archive(distdir, a, root_dir=dist_sub, base_dir=dist_name)
         output_names.append(compressed_name)
-    shutil.rmtree(distdir)
+    windows_proof_rmtree(distdir)
     return output_names
 
 def is_hg(src_root):
@@ -245,7 +268,7 @@ def run(options):
     b = build.load(options.wd)
     # This import must be load delayed, otherwise it will get the default
     # value of None.
-    from mesonbuild.mesonlib import meson_command
+    from mesonbuild.mesonlib import get_meson_command
     src_root = b.environment.source_dir
     bld_root = b.environment.build_dir
     priv_dir = os.path.join(bld_root, 'meson-private')
@@ -279,7 +302,7 @@ def run(options):
     rc = 0
     if not options.no_tests:
         # Check only one.
-        rc = check_dist(names[0], meson_command, extra_meson_args, bld_root, priv_dir)
+        rc = check_dist(names[0], get_meson_command(), extra_meson_args, bld_root, priv_dir)
     if rc == 0:
         for name in names:
             create_hash(name)

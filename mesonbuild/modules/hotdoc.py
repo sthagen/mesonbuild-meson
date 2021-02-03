@@ -281,7 +281,7 @@ class HotdocTargetBuilder:
 
         return os.path.relpath(_dir, os.path.join(self.builddir, self.subdir))
 
-    def check_forbiden_args(self):
+    def check_forbidden_args(self):
         for arg in ['conf_file']:
             if arg in self.kwargs:
                 raise InvalidArguments('Argument "%s" is forbidden.' % arg)
@@ -290,7 +290,7 @@ class HotdocTargetBuilder:
         self.include_paths[path] = path
 
     def make_targets(self):
-        self.check_forbiden_args()
+        self.check_forbidden_args()
         file_types = (str, mesonlib.File)
         self.process_known_arg("--index", file_types, mandatory=True, value_processor=self.ensure_file)
         self.process_known_arg("--project-version", str, mandatory=True)
@@ -326,7 +326,7 @@ class HotdocTargetBuilder:
         for path in self.include_paths.keys():
             self.cmd.extend(['--include-path', path])
 
-        if self.state.environment.coredata.get_builtin_option('werror', self.state.subproject):
+        if self.state.environment.coredata.get_option(mesonlib.OptionKey('werror', subproject=self.state.subproject)):
             self.cmd.append('--fatal-warning')
         self.generate_hotdoc_config()
 
@@ -350,7 +350,7 @@ class HotdocTargetBuilder:
 
         install_script = None
         if install is True:
-            install_script = HotdocRunScript(self.build_command, [
+            install_script = self.state.backend.get_executable_serialisation(self.build_command + [
                 "--internal", "hotdoc",
                 "--install", os.path.join(fullname, 'html'),
                 '--name', self.name,
@@ -389,11 +389,6 @@ class HotdocTarget(build.CustomTarget):
         res['subprojects'] = []
 
         return res
-
-
-class HotdocRunScript(build.RunScript):
-    def __init__(self, script, args):
-        super().__init__(script, args)
 
 
 class HotDocModule(ExtensionModule):

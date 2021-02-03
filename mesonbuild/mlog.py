@@ -130,6 +130,24 @@ class AnsiDecorator:
             text = '"{}"'.format(text)
         return text
 
+    def __len__(self) -> int:
+        return len(self.text)
+
+    def __str__(self) -> str:
+        return self.get_text(colorize_console())
+
+
+class AnsiText:
+    def __init__(self, *args: T.List[T.Union[str, AnsiDecorator]]):
+        self.args = args
+
+    def __len__(self) -> int:
+        return sum((len(x) for x in self.args))
+
+    def __str__(self) -> str:
+        return ''.join((str(x) for x in self.args))
+
+
 def bold(text: str, quoted: bool = False) -> AnsiDecorator:
     return AnsiDecorator(text, "\033[1m", quoted=quoted)
 

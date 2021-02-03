@@ -23,8 +23,7 @@ import re
 import os
 
 from .. import mlog
-from ..mesonlib import PerMachine, Popen_safe, version_compare, MachineChoice, is_windows
-from ..envconfig import get_env_var
+from ..mesonlib import PerMachine, Popen_safe, version_compare, MachineChoice, is_windows, OptionKey
 
 if T.TYPE_CHECKING:
     from ..environment import Environment
@@ -62,24 +61,7 @@ class CMakeExecutor:
             self.cmakebin = None
             return
 
-        self.prefix_paths = self.environment.coredata.builtins_per_machine[self.for_machine]['cmake_prefix_path'].value
-        env_pref_path_raw = get_env_var(
-            self.for_machine,
-            self.environment.is_cross_build(),
-            'CMAKE_PREFIX_PATH')
-        if env_pref_path_raw is not None:
-            env_pref_path = []  # type: T.List[str]
-            if is_windows():
-                # Cannot split on ':' on Windows because its in the drive letter
-                env_pref_path = env_pref_path_raw.split(os.pathsep)
-            else:
-                # https://github.com/mesonbuild/meson/issues/7294
-                env_pref_path = re.split(r':|;', env_pref_path_raw)
-            env_pref_path = [x for x in env_pref_path if x]  # Filter out empty strings
-            if not self.prefix_paths:
-                self.prefix_paths = []
-            self.prefix_paths += env_pref_path
-
+        self.prefix_paths = self.environment.coredata.options[OptionKey('cmake_prefix_path', machine=self.for_machine)].value
         if self.prefix_paths:
             self.extra_cmake_args += ['-DCMAKE_PREFIX_PATH={}'.format(';'.join(self.prefix_paths))]
 
