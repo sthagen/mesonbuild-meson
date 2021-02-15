@@ -4,8 +4,11 @@ project('run target', 'c')
 # In cross builds exe_wrapper should be added if it exists.
 
 exe = executable('helloprinter', 'helloprinter.c')
-run_target('runhello',
-  command : [exe, 'argument'])
+
+if not meson.is_cross_build() or meson.can_run_host_binaries()
+  run_target('runhello',
+    command : [exe, 'argument'])
+endif
 
 converter = find_program('converter.py')
 
@@ -66,9 +69,20 @@ run_target('configure_script',
   command : conf
 )
 
+custom_target('configure_script_ct',
+  command: conf,
+  output: 'dummy.txt',
+  capture: true)
+
 # Target names that clash with potential builtin functionality.
 run_target('ctags',
   command : converter)
 
 run_target('clang-format',
   command : converter)
+
+# Check we can pass env to the program
+run_target('check-env',
+  command: [find_program('check-env.py')],
+  env: {'MY_ENV': '1'},
+)

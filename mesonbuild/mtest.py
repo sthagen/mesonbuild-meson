@@ -141,7 +141,8 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
                         '"subprojname:" to run all tests defined by "subprojname".')
 
 
-def print_safe(s: str, end: str = '\n') -> None:
+def print_safe(s: str) -> None:
+    end = '' if s[-1] == '\n' else '\n'
     try:
         print(s, end=end)
     except UnicodeEncodeError:
@@ -537,14 +538,19 @@ class ConsoleLogger(TestLogger):
         left = '[{}] {} '.format(count, self.SPINNER[self.spinner_index])
         self.spinner_index = (self.spinner_index + 1) % len(self.SPINNER)
 
-        right = '{spaces} {dur:{durlen}}/{timeout:{durlen}}s'.format(
+        right = '{spaces} {dur:{durlen}}'.format(
             spaces=' ' * TestResult.maxlen(),
             dur=int(time.time() - self.progress_test.starttime),
-            durlen=harness.duration_max_len,
-            timeout=int(self.progress_test.timeout or -1))
+            durlen=harness.duration_max_len)
+        if self.progress_test.timeout:
+            right += '/{timeout:{durlen}}'.format(
+                timeout=self.progress_test.timeout,
+                durlen=harness.duration_max_len)
+        right += 's'
         detail = self.progress_test.detail
         if detail:
             right += '   ' + detail
+
         line = harness.format(self.progress_test, colorize=True,
                               max_left_width=self.max_left_width,
                               left=left, right=right)
@@ -598,7 +604,7 @@ class ConsoleLogger(TestLogger):
             print(test.res.get_command_marker() + test.cmdline)
             if test.needs_parsing:
                 pass
-            elif harness.options.num_processes == 1:
+            elif not test.is_parallel:
                 print(self.output_start, flush=True)
             else:
                 print(flush=True)
@@ -634,9 +640,8 @@ class ConsoleLogger(TestLogger):
         log = self.shorten_log(harness, result)
         if log:
             print(self.output_start)
-            print_safe(log, end='')
+            print_safe(log)
             print(self.output_end)
-        print(flush=True)
 
     def log_subtest(self, harness: 'TestHarness', test: 'TestRun', s: str, result: TestResult) -> None:
         if harness.options.verbose or (harness.options.print_errorlogs and result.is_bad()):
@@ -656,16 +661,17 @@ class ConsoleLogger(TestLogger):
 
         if not harness.options.quiet or not result.res.is_ok():
             self.flush()
-            if harness.options.verbose and harness.options.num_processes == 1 and result.cmdline:
+            if harness.options.verbose and not result.is_parallel and result.cmdline:
                 if not result.needs_parsing:
                     print(self.output_end)
                 print(harness.format(result, mlog.colorize_console(), max_left_width=self.max_left_width))
-                print(flush=True)
             else:
                 print(harness.format(result, mlog.colorize_console(), max_left_width=self.max_left_width),
                       flush=True)
                 if harness.options.verbose or result.res.is_bad():
                     self.print_log(harness, result)
+            if harness.options.verbose or result.res.is_bad():
+                print(flush=True)
 
         self.request_update()
 
@@ -783,7 +789,9 @@ class JunitBuilder(TestLogger):
             )
 
             for subtest in test.results:
-                testcase = et.SubElement(suite, 'testcase', name=str(subtest))
+                # Both name and classname are required. Use the suite name as
+                # the class name, so that e.g. GitLab groups testcases correctly.
+                testcase = et.SubElement(suite, 'testcase', name=str(subtest), classname=suitename)
                 if subtest.result is TestResult.SKIP:
                     et.SubElement(testcase, 'skipped')
                 elif subtest.result is TestResult.ERROR:
@@ -817,7 +825,7 @@ class JunitBuilder(TestLogger):
                 suite.attrib['tests'] = str(int(suite.attrib['tests']) + 1)
 
             testcase = et.SubElement(suite, 'testcase', name=test.name,
-                                     time=str(test.duration))
+                                     classname=test.project, time=str(test.duration))
             if test.res is TestResult.SKIP:
                 et.SubElement(testcase, 'skipped')
                 suite.attrib['skipped'] = str(int(suite.attrib['skipped']) + 1)
@@ -855,7 +863,7 @@ class TestRun:
         return super().__new__(TestRun.PROTOCOL_TO_CLASS[test.protocol])
 
     def __init__(self, test: TestSerialisation, test_env: T.Dict[str, str],
-                 name: str, timeout: T.Optional[int]):
+                 name: str, timeout: T.Optional[int], is_parallel: bool):
         self.res = TestResult.PENDING
         self.test = test
         self._num = None       # type: T.Optional[int]
@@ -872,6 +880,7 @@ class TestRun:
         self.should_fail = test.should_fail
         self.project = test.project_name
         self.junit = None      # type: T.Optional[et.ElementTree]
+        self.is_parallel = is_parallel
 
     def start(self, cmd: T.List[str]) -> None:
         self.res = TestResult.RUNNING
@@ -1071,21 +1080,6 @@ def decode(stream: T.Union[None, bytes]) -> str:
         return stream.decode('iso-8859-1', errors='ignore')
 
 async def read_decode(reader: asyncio.StreamReader, console_mode: ConsoleUser) -> str:
-    if console_mode is not ConsoleUser.STDOUT:
-        return decode(await reader.read(-1))
-
-    stdo_lines = []
-    while not reader.at_eof():
-        line = decode(await reader.readline())
-        stdo_lines.append(line)
-        print(line, end='', flush=True)
-    return ''.join(stdo_lines)
-
-# Extract lines out of the StreamReader.  Print them
-# along the way if requested, and at the end collect
-# them all into a future.
-async def read_decode_lines(reader: asyncio.StreamReader, f: 'asyncio.Future[str]',
-                            console_mode: ConsoleUser) -> T.AsyncIterator[str]:
     stdo_lines = []
     try:
         while not reader.at_eof():
@@ -1093,11 +1087,28 @@ async def read_decode_lines(reader: asyncio.StreamReader, f: 'asyncio.Future[str
             stdo_lines.append(line)
             if console_mode is ConsoleUser.STDOUT:
                 print(line, end='', flush=True)
-            yield line
-    except Exception as e:
-        f.set_exception(e)
+        return ''.join(stdo_lines)
+    except asyncio.CancelledError:
+        return ''.join(stdo_lines)
+
+# Extract lines out of the StreamReader.  Print them
+# along the way if requested, and at the end collect
+# them all into a future.
+async def read_decode_lines(reader: asyncio.StreamReader, q: 'asyncio.Queue[T.Optional[str]]',
+                            console_mode: ConsoleUser) -> str:
+    stdo_lines = []
+    try:
+        while not reader.at_eof():
+            line = decode(await reader.readline())
+            stdo_lines.append(line)
+            if console_mode is ConsoleUser.STDOUT:
+                print(line, end='', flush=True)
+            await q.put(line)
+        return ''.join(stdo_lines)
+    except asyncio.CancelledError:
+        return ''.join(stdo_lines)
     finally:
-        f.set_result(''.join(stdo_lines))
+        await q.put(None)
 
 def run_with_mono(fname: str) -> bool:
     return fname.endswith('.exe') and not (is_windows() or is_cygwin())
@@ -1114,22 +1125,6 @@ def check_testdata(objs: T.List[TestSerialisation]) -> T.List[TestSerialisation]
             raise MesonVersionMismatchException(obj.version, coredata_version)
     return objs
 
-def load_benchmarks(build_dir: str) -> T.List[TestSerialisation]:
-    datafile = Path(build_dir) / 'meson-private' / 'meson_benchmark_setup.dat'
-    if not datafile.is_file():
-        raise TestException('Directory {!r} does not seem to be a Meson build directory.'.format(build_dir))
-    with datafile.open('rb') as f:
-        objs = check_testdata(pickle.load(f))
-    return objs
-
-def load_tests(build_dir: str) -> T.List[TestSerialisation]:
-    datafile = Path(build_dir) / 'meson-private' / 'meson_test_setup.dat'
-    if not datafile.is_file():
-        raise TestException('Directory {!r} does not seem to be a Meson build directory.'.format(build_dir))
-    with datafile.open('rb') as f:
-        objs = check_testdata(pickle.load(f))
-    return objs
-
 # Custom waiting primitives for asyncio
 
 async def try_wait_one(*awaitables: T.Any, timeout: T.Optional[T.Union[int, float]]) -> None:
@@ -1138,6 +1133,14 @@ async def try_wait_one(*awaitables: T.Any, timeout: T.Optional[T.Union[int, floa
                            timeout=timeout, return_when=asyncio.FIRST_COMPLETED)
     except asyncio.TimeoutError:
         pass
+
+async def queue_iter(q: 'asyncio.Queue[T.Optional[str]]') -> T.AsyncIterator[str]:
+    while True:
+        item = await q.get()
+        q.task_done()
+        if item is None:
+            break
+        yield item
 
 async def complete(future: asyncio.Future) -> None:
     """Wait for completion of the given future, ignoring cancellation."""
@@ -1162,24 +1165,26 @@ class TestSubprocess:
         self._process = p
         self.stdout = stdout
         self.stderr = stderr
-        self.stdo_task = None            # type: T.Optional[T.Awaitable[str]]
-        self.stde_task = None            # type: T.Optional[T.Awaitable[str]]
+        self.stdo_task = None            # type: T.Optional[asyncio.Future[str]]
+        self.stde_task = None            # type: T.Optional[asyncio.Future[str]]
         self.postwait_fn = postwait_fn   # type: T.Callable[[], None]
 
     def stdout_lines(self, console_mode: ConsoleUser) -> T.AsyncIterator[str]:
-        self.stdo_task = asyncio.get_event_loop().create_future()
-        return read_decode_lines(self._process.stdout, self.stdo_task, console_mode)
+        q = asyncio.Queue()              # type: asyncio.Queue[T.Optional[str]]
+        decode_coro = read_decode_lines(self._process.stdout, q, console_mode)
+        self.stdo_task = asyncio.ensure_future(decode_coro)
+        return queue_iter(q)
 
     def communicate(self, console_mode: ConsoleUser) -> T.Tuple[T.Optional[T.Awaitable[str]],
                                                                 T.Optional[T.Awaitable[str]]]:
         # asyncio.ensure_future ensures that printing can
         # run in the background, even before it is awaited
         if self.stdo_task is None and self.stdout is not None:
-            decode_task = read_decode(self._process.stdout, console_mode)
-            self.stdo_task = asyncio.ensure_future(decode_task)
+            decode_coro = read_decode(self._process.stdout, console_mode)
+            self.stdo_task = asyncio.ensure_future(decode_coro)
         if self.stderr is not None and self.stderr != asyncio.subprocess.STDOUT:
-            decode_task = read_decode(self._process.stderr, console_mode)
-            self.stde_task = asyncio.ensure_future(decode_task)
+            decode_coro = read_decode(self._process.stderr, console_mode)
+            self.stde_task = asyncio.ensure_future(decode_coro)
 
         return self.stdo_task, self.stde_task
 
@@ -1222,6 +1227,11 @@ class TestSubprocess:
             # for the event loop to pick that up.
             await p.wait()
             return None
+        finally:
+            if self.stdo_task:
+                self.stdo_task.cancel()
+            if self.stde_task:
+                self.stde_task.cancel()
 
     async def wait(self, timeout: T.Optional[int]) -> T.Tuple[int, TestResult, T.Optional[str]]:
         p = self._process
@@ -1279,12 +1289,12 @@ class SingleTestRunner:
         else:
             timeout = self.test.timeout * self.options.timeout_multiplier
 
-        self.runobj = TestRun(test, env, name, timeout)
+        is_parallel = test.is_parallel and self.options.num_processes > 1 and not self.options.gdb
+        self.runobj = TestRun(test, env, name, timeout, is_parallel)
 
         if self.options.gdb:
             self.console_mode = ConsoleUser.GDB
-        elif self.options.verbose and self.options.num_processes == 1 and \
-                not self.runobj.needs_parsing:
+        elif self.options.verbose and not is_parallel and not self.runobj.needs_parsing:
             self.console_mode = ConsoleUser.STDOUT
         else:
             self.console_mode = ConsoleUser.LOGGER
@@ -1314,6 +1324,10 @@ class SingleTestRunner:
         if not test_cmd:
             return None
         return TestHarness.get_wrapper(self.options) + test_cmd
+
+    @property
+    def is_parallel(self) -> bool:
+        return self.runobj.is_parallel
 
     @property
     def visible_name(self) -> str:
@@ -1394,7 +1408,8 @@ class SingleTestRunner:
 
         parse_task = None
         if self.runobj.needs_parsing:
-            parse_task = self.runobj.parse(harness, p.stdout_lines(self.console_mode))
+            parse_coro = self.runobj.parse(harness, p.stdout_lines(self.console_mode))
+            parse_task = asyncio.ensure_future(parse_coro)
 
         stdo_task, stde_task = p.communicate(self.console_mode)
         returncode, result, additional_error = await p.wait(self.runobj.timeout)
@@ -1428,15 +1443,46 @@ class TestHarness:
         self.loggers.append(ConsoleLogger())
         self.need_console = False
 
-        if self.options.benchmark:
-            self.tests = load_benchmarks(options.wd)
-        else:
-            self.tests = load_tests(options.wd)
+        self.logfile_base = None  # type: T.Optional[str]
+        if self.options.logbase and not self.options.gdb:
+            namebase = None
+            self.logfile_base = os.path.join(self.options.wd, 'meson-logs', self.options.logbase)
+
+            if self.options.wrapper:
+                namebase = os.path.basename(self.get_wrapper(self.options)[0])
+            elif self.options.setup:
+                namebase = self.options.setup.replace(":", "_")
+
+            if namebase:
+                self.logfile_base += '-' + namebase.replace(' ', '_')
+
+        startdir = os.getcwd()
+        try:
+            if self.options.wd:
+                os.chdir(self.options.wd)
+            self.build_data = build.load(os.getcwd())
+            if not self.options.setup:
+                self.options.setup = self.build_data.test_setup_default_name
+            if self.options.benchmark:
+                self.tests = self.load_tests('meson_benchmark_setup.dat')
+            else:
+                self.tests = self.load_tests('meson_test_setup.dat')
+        finally:
+            os.chdir(startdir)
+
         ss = set()
         for t in self.tests:
             for s in t.suite:
                 ss.add(s)
         self.suites = list(ss)
+
+    def load_tests(self, file_name: str) -> T.List[TestSerialisation]:
+        datafile = Path('meson-private') / file_name
+        if not datafile.is_file():
+            raise TestException('Directory {!r} does not seem to be a Meson build directory.'.format(self.options.wd))
+        with datafile.open('rb') as f:
+            objs = check_testdata(pickle.load(f))
+        return objs
 
     def __enter__(self) -> 'TestHarness':
         return self
@@ -1448,16 +1494,19 @@ class TestHarness:
         for l in self.loggers:
             l.close()
 
-    def merge_suite_options(self, options: argparse.Namespace, test: TestSerialisation) -> T.Dict[str, str]:
-        if ':' in options.setup:
-            if options.setup not in self.build_data.test_setups:
-                sys.exit("Unknown test setup '{}'.".format(options.setup))
-            current = self.build_data.test_setups[options.setup]
+    def get_test_setup(self, test: T.Optional[TestSerialisation]) -> build.TestSetup:
+        if ':' in self.options.setup:
+            if self.options.setup not in self.build_data.test_setups:
+                sys.exit("Unknown test setup '{}'.".format(self.options.setup))
+            return self.build_data.test_setups[self.options.setup]
         else:
-            full_name = test.project_name + ":" + options.setup
+            full_name = test.project_name + ":" + self.options.setup
             if full_name not in self.build_data.test_setups:
-                sys.exit("Test setup '{}' not found from project '{}'.".format(options.setup, test.project_name))
-            current = self.build_data.test_setups[full_name]
+                sys.exit("Test setup '{}' not found from project '{}'.".format(self.options.setup, test.project_name))
+            return self.build_data.test_setups[full_name]
+
+    def merge_setup_options(self, options: argparse.Namespace, test: TestSerialisation) -> T.Dict[str, str]:
+        current = self.get_test_setup(test)
         if not options.gdb:
             options.gdb = current.gdb
         if options.gdb:
@@ -1466,19 +1515,17 @@ class TestHarness:
             options.timeout_multiplier = current.timeout_multiplier
     #    if options.env is None:
     #        options.env = current.env # FIXME, should probably merge options here.
-        if options.wrapper is not None and current.exe_wrapper is not None:
-            sys.exit('Conflict: both test setup and command line specify an exe wrapper.')
         if options.wrapper is None:
             options.wrapper = current.exe_wrapper
+        elif current.exe_wrapper:
+            sys.exit('Conflict: both test setup and command line specify an exe wrapper.')
         return current.env.get_env(os.environ.copy())
 
     def get_test_runner(self, test: TestSerialisation) -> SingleTestRunner:
         name = self.get_pretty_suite(test)
         options = deepcopy(self.options)
-        if not options.setup:
-            options.setup = self.build_data.test_setup_default_name
-        if options.setup:
-            env = self.merge_suite_options(options, test)
+        if self.options.setup:
+            env = self.merge_setup_options(options, test)
         else:
             env = os.environ.copy()
         test_env = test.env.get_env(env)
@@ -1564,14 +1611,14 @@ class TestHarness:
     def total_failure_count(self) -> int:
         return self.fail_count + self.unexpectedpass_count + self.timeout_count
 
-    def doit(self, options: argparse.Namespace) -> int:
+    def doit(self) -> int:
         if self.is_run:
             raise RuntimeError('Test harness object can only be used once.')
         self.is_run = True
         tests = self.get_tests()
         if not tests:
             return 0
-        if not options.no_rebuild and not rebuild_deps(options.wd, tests):
+        if not self.options.no_rebuild and not rebuild_deps(self.options.wd, tests):
             # We return 125 here in case the build failed.
             # The reason is that exit code 125 tells `git bisect run` that the current
             # commit should be skipped.  Thus users can directly use `meson test` to
@@ -1585,7 +1632,6 @@ class TestHarness:
         try:
             if self.options.wd:
                 os.chdir(self.options.wd)
-            self.build_data = build.load(os.getcwd())
             runners = [self.get_test_runner(test) for test in tests]
             self.duration_max_len = max([len(str(int(runner.timeout or 99)))
                                          for runner in runners])
@@ -1639,9 +1685,20 @@ class TestHarness:
         return False
 
     def test_suitable(self, test: TestSerialisation) -> bool:
-        return ((not self.options.include_suites or
-                TestHarness.test_in_suites(test, self.options.include_suites)) and not
-                TestHarness.test_in_suites(test, self.options.exclude_suites))
+        if TestHarness.test_in_suites(test, self.options.exclude_suites):
+            return False
+
+        if self.options.include_suites:
+            # Both force inclusion (overriding add_test_setup) and exclude
+            # everything else
+            return TestHarness.test_in_suites(test, self.options.include_suites)
+
+        if self.options.setup:
+            setup = self.get_test_setup(test)
+            if TestHarness.test_in_suites(test, setup.exclude_suites):
+                return False
+
+        return True
 
     def tests_from_args(self, tests: T.List[TestSerialisation]) -> T.Generator[TestSerialisation, None, None]:
         '''
@@ -1670,14 +1727,7 @@ class TestHarness:
             print('No tests defined.')
             return []
 
-        if self.options.include_suites or self.options.exclude_suites:
-            tests = []
-            for tst in self.tests:
-                if self.test_suitable(tst):
-                    tests.append(tst)
-        else:
-            tests = self.tests
-
+        tests = [t for t in self.tests if self.test_suitable(t)]
         if self.options.args:
             tests = list(self.tests_from_args(tests))
 
@@ -1692,23 +1742,12 @@ class TestHarness:
             l.flush()
 
     def open_logfiles(self) -> None:
-        if not self.options.logbase or self.options.gdb:
+        if not self.logfile_base:
             return
 
-        namebase = None
-        logfile_base = os.path.join(self.options.wd, 'meson-logs', self.options.logbase)
-
-        if self.options.wrapper:
-            namebase = os.path.basename(self.get_wrapper(self.options)[0])
-        elif self.options.setup:
-            namebase = self.options.setup.replace(":", "_")
-
-        if namebase:
-            logfile_base += '-' + namebase.replace(' ', '_')
-
-        self.loggers.append(JunitBuilder(logfile_base + '.junit.xml'))
-        self.loggers.append(JsonLogfileBuilder(logfile_base + '.json'))
-        self.loggers.append(TextLogfileBuilder(logfile_base + '.txt', errors='surrogateescape'))
+        self.loggers.append(JunitBuilder(self.logfile_base + '.junit.xml'))
+        self.loggers.append(JsonLogfileBuilder(self.logfile_base + '.json'))
+        self.loggers.append(TextLogfileBuilder(self.logfile_base + '.txt', errors='surrogateescape'))
 
     @staticmethod
     def get_wrapper(options: argparse.Namespace) -> T.List[str]:
@@ -1822,15 +1861,13 @@ class TestHarness:
         try:
             for _ in range(self.options.repeat):
                 for runner in runners:
-                    test = runner.test
-
-                    if not test.is_parallel or runner.options.gdb:
+                    if not runner.is_parallel:
                         await complete_all(futures)
                     future = asyncio.ensure_future(run_test(runner))
                     futures.append(future)
                     running_tests[future] = runner.visible_name
                     future.add_done_callback(test_done)
-                    if not test.is_parallel or runner.options.gdb:
+                    if not runner.is_parallel:
                         await complete(future)
                 if self.options.repeat > 1 and self.fail_count:
                     break
@@ -1913,7 +1950,7 @@ def run(options: argparse.Namespace) -> int:
         try:
             if options.list:
                 return list_tests(th)
-            return th.doit(options)
+            return th.doit()
         except TestException as e:
             print('Meson test encountered an error:\n')
             if os.environ.get('MESON_FORCE_BACKTRACE'):

@@ -409,6 +409,7 @@ class ConfigurationDataHolder(MutableInterpreterObject, ObjectHolder):
         return self.held_object.values[name] # (val, desc)
 
     @FeatureNew('configuration_data.keys()', '0.57.0')
+    @noPosargs
     def keys_method(self, args, kwargs):
         return sorted(self.keys())
 
@@ -917,7 +918,7 @@ class CustomTargetIndexHolder(TargetHolder):
         return self.interpreter.backend.get_target_filename_abs(self.held_object)
 
 class CustomTargetHolder(TargetHolder):
-    def __init__(self, target, interp):
+    def __init__(self, target: 'build.CustomTarget', interp: 'Interpreter'):
         super().__init__(target, interp)
         self.methods.update({'full_path': self.full_path_method,
                              'to_list': self.to_list_method,
@@ -1131,9 +1132,7 @@ class CompilerHolder(InterpreterObject):
         for i in incdirs:
             if not isinstance(i, IncludeDirsHolder):
                 raise InterpreterException('Include directories argument must be an include_directories object.')
-            for idir in i.held_object.get_incdirs():
-                idir = os.path.join(self.environment.get_source_dir(),
-                                    i.held_object.get_curdir(), idir)
+            for idir in i.held_object.to_string_list(self.environment.get_source_dir()):
                 args += self.compiler.get_include_args(idir, False)
         if not nobuiltins:
             opts = self.environment.coredata.options
@@ -2300,7 +2299,8 @@ permitted_kwargs = {'add_global_arguments': {'language', 'native'},
                     'add_languages': {'required', 'native'},
                     'add_project_link_arguments': {'language', 'native'},
                     'add_project_arguments': {'language', 'native'},
-                    'add_test_setup': {'exe_wrapper', 'gdb', 'timeout_multiplier', 'env', 'is_default'},
+                    'add_test_setup': {'exe_wrapper', 'gdb', 'timeout_multiplier', 'env', 'is_default',
+                                       'exclude_suites'},
                     'benchmark': _base_test_args,
                     'build_target': known_build_target_kwargs,
                     'configure_file': {'input',
@@ -2377,7 +2377,7 @@ permitted_kwargs = {'add_global_arguments': {'language', 'native'},
                     'jar': build.known_jar_kwargs,
                     'project': {'version', 'meson_version', 'default_options', 'license', 'subproject_dir'},
                     'run_command': {'check', 'capture', 'env'},
-                    'run_target': {'command', 'depends'},
+                    'run_target': {'command', 'depends', 'env'},
                     'shared_library': build.known_shlib_kwargs,
                     'shared_module': build.known_shmod_kwargs,
                     'static_library': build.known_stlib_kwargs,
@@ -2617,7 +2617,7 @@ class Interpreter(InterpreterBase):
     def get_build_def_files(self) -> T.List[str]:
         return self.build_def_files
 
-    def add_build_def_file(self, f):
+    def add_build_def_file(self, f: mesonlib.FileOrString) -> None:
         # Use relative path for files within source directory, and absolute path
         # for system files. Skip files within build directory. Also skip not regular
         # files (e.g. /dev/stdout) Normalize the path to avoid duplicates, this
@@ -3365,8 +3365,8 @@ external dependencies (including libraries) must go to "dependencies".''')
         raise InterpreterException('Problem encountered: ' + args[0])
 
     @noKwargs
+    @noPosargs
     def func_exception(self, node, args, kwargs):
-        self.validate_arguments(args, 0, [])
         raise Exception()
 
     def add_languages(self, args: T.Sequence[str], required: bool, for_machine: MachineChoice) -> bool:
@@ -3983,6 +3983,7 @@ external dependencies (including libraries) must go to "dependencies".''')
     @permittedKwargs(permitted_kwargs['vcs_tag'])
     @FeatureDeprecatedKwargs('custom_target', '0.47.0', ['build_always'],
                              'combine build_by_default and build_always_stale instead.')
+    @noPosargs
     def func_vcs_tag(self, node, args, kwargs):
         if 'input' not in kwargs or 'output' not in kwargs:
             raise InterpreterException('Keyword arguments input and output must exist')
@@ -4023,12 +4024,9 @@ external dependencies (including libraries) must go to "dependencies".''')
         return self._func_custom_target_impl(node, [kwargs['output']], kwargs)
 
     @FeatureNew('subdir_done', '0.46.0')
-    @stringArgs
+    @noPosargs
+    @noKwargs
     def func_subdir_done(self, node, args, kwargs):
-        if len(kwargs) > 0:
-            raise InterpreterException('exit does not take named arguments')
-        if len(args) > 0:
-            raise InterpreterException('exit does not take any arguments')
         raise SubdirDoneRequest()
 
     @stringArgs
@@ -4059,6 +4057,7 @@ This will become a hard error in the future.''' % kwargs['input'], location=self
         self.add_target(name, tg.held_object)
         return tg
 
+    @FeatureNewKwargs('run_target', '0.57.0', ['env'])
     @permittedKwargs(permitted_kwargs['run_target'])
     def func_run_target(self, node, args, kwargs):
         if len(args) > 1:
@@ -4087,8 +4086,8 @@ This will become a hard error in the future.''' % kwargs['input'], location=self
             if not isinstance(d, (build.BuildTarget, build.CustomTarget)):
                 raise InterpreterException('Depends items must be build targets.')
             cleaned_deps.append(d)
-        command, *cmd_args = cleaned_args
-        tg = RunTargetHolder(build.RunTarget(name, command, cmd_args, cleaned_deps, self.subdir, self.subproject), self)
+        env = self.unpack_env_kwarg(kwargs)
+        tg = RunTargetHolder(build.RunTarget(name, cleaned_args, cleaned_deps, self.subdir, self.subproject, env), self)
         self.add_target(name, tg.held_object)
         full_name = (self.subproject, name)
         assert(full_name not in self.build.run_target_names)
@@ -4411,9 +4410,8 @@ This will become a hard error in the future.''' % kwargs['input'], location=self
     @FeatureNewKwargs('configure_file', '0.50.0', ['install'])
     @FeatureNewKwargs('configure_file', '0.52.0', ['depfile'])
     @permittedKwargs(permitted_kwargs['configure_file'])
+    @noPosargs
     def func_configure_file(self, node, args, kwargs):
-        if len(args) > 0:
-            raise InterpreterException("configure_file takes only keyword arguments.")
         if 'output' not in kwargs:
             raise InterpreterException('Required keyword argument "output" not defined.')
         actions = set(['configuration', 'command', 'copy']).intersection(kwargs.keys())
@@ -4687,8 +4685,10 @@ different subdirectory.
                 raise InterpreterException('\'%s\' is already set as default. '
                                            'is_default can be set to true only once' % self.build.test_setup_default_name)
             self.build.test_setup_default_name = setup_name
+        exclude_suites = mesonlib.stringlistify(kwargs.get('exclude_suites', []))
         env = self.unpack_env_kwarg(kwargs)
-        self.build.test_setups[setup_name] = build.TestSetup(exe_wrapper, gdb, timeout_multiplier, env)
+        self.build.test_setups[setup_name] = build.TestSetup(exe_wrapper, gdb, timeout_multiplier, env,
+                                                             exclude_suites)
 
     @permittedKwargs(permitted_kwargs['add_global_arguments'])
     @stringArgs

@@ -734,6 +734,9 @@ class XCodeBackend(backends.Backend):
                 else:
                     product_name = target.get_basename()
                 ldargs += target.link_args
+                linker, stdlib_args = self.determine_linker_and_stdlib_args(target)
+                ldargs += self.build.get_project_link_args(linker, target.subproject, target.for_machine)
+                ldargs += self.build.get_global_link_args(linker, target.for_machine)
                 cargs = []
                 for dep in target.get_external_deps():
                     cargs += dep.get_compile_args()
@@ -752,8 +755,13 @@ class XCodeBackend(backends.Backend):
                     targs = target.get_extra_args(lang)
                     args = pargs + gargs + targs
                     if args:
-                        langargs[langnamemap[lang]] = args
-                langargs['C'] += cargs
+                        langname = langnamemap[lang]
+                        compiler = target.compilers.get(lang)
+                        lang_cargs = cargs
+                        if compiler and target.implicit_include_directories:
+                            lang_cargs += self.get_build_dir_include_args(target, compiler)
+                        langargs[langname] = args
+                        langargs[langname] += lang_cargs
                 symroot = os.path.join(self.environment.get_build_dir(), target.subdir)
                 self.write_line('%s /* %s */ = {' % (valid, buildtype))
                 self.indent_level += 1

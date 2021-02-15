@@ -21,8 +21,6 @@ import json
 import os
 import pickle
 import re
-import shlex
-import textwrap
 import typing as T
 import hashlib
 import copy
@@ -34,7 +32,7 @@ from .. import mlog
 from ..compilers import LANGUAGES_USING_LDFLAGS
 from ..mesonlib import (
     File, MachineChoice, MesonException, OptionType, OrderedSet, OptionOverrideProxy,
-    classify_unity_sources, unholder, OptionKey
+    classify_unity_sources, unholder, OptionKey, join_args
 )
 
 if T.TYPE_CHECKING:
@@ -49,7 +47,7 @@ if T.TYPE_CHECKING:
 # Languages that can mix with C or C++ but don't support unity builds yet
 # because the syntax we use for unity builds is specific to C/++/ObjC/++.
 # Assembly files cannot be unitified and neither can LLVM IR files
-LANGS_CANT_UNITY = ('d', 'fortran')
+LANGS_CANT_UNITY = ('d', 'fortran', 'vala')
 
 class TestProtocol(enum.Enum):
 
@@ -138,6 +136,7 @@ class ExecutableSerialisation:
         self.capture = capture
         self.pickled = False
         self.skip_if_destdir = False
+        self.verbose = False
 
 class TestSerialisation:
     def __init__(self, name: str, project: str, suite: str, fname: T.List[str],
@@ -247,6 +246,17 @@ class Backend:
             override = target.option_overrides_base[option_name]
             return self.environment.coredata.validate_option_value(option_name, override)
         return self.environment.coredata.get_option(option_name.evolve(subproject=target.subproject))
+
+    def get_source_dir_include_args(self, target, compiler):
+        curdir = target.get_subdir()
+        tmppath = os.path.normpath(os.path.join(self.build_to_src, curdir))
+        return compiler.get_include_args(tmppath, False)
+
+    def get_build_dir_include_args(self, target, compiler):
+        curdir = target.get_subdir()
+        if curdir == '':
+            curdir = '.'
+        return compiler.get_include_args(curdir, False)
 
     def get_target_filename_for_linking(self, target):
         # On some platforms (msvc for instance), the file that is used for
@@ -387,9 +397,20 @@ class Backend:
         if isinstance(exe, dependencies.ExternalProgram):
             exe_cmd = exe.get_command()
             exe_for_machine = exe.for_machine
-        elif isinstance(exe, (build.BuildTarget, build.CustomTarget)):
+        elif isinstance(exe, build.BuildTarget):
             exe_cmd = [self.get_target_filename_abs(exe)]
             exe_for_machine = exe.for_machine
+        elif isinstance(exe, build.CustomTarget):
+            # The output of a custom target can either be directly runnable
+            # or not, that is, a script, a native binary or a cross compiled
+            # binary when exe wrapper is available and when it is not.
+            # This implementation is not exhaustive but it works in the
+            # common cases.
+            exe_cmd = [self.get_target_filename_abs(exe)]
+            exe_for_machine = MachineChoice.BUILD
+        elif isinstance(exe, mesonlib.File):
+            exe_cmd = [exe.rel_to_builddir(self.environment.source_dir)]
+            exe_for_machine = MachineChoice.BUILD
         else:
             exe_cmd = [exe]
             exe_for_machine = MachineChoice.BUILD
@@ -421,12 +442,14 @@ class Backend:
 
     def as_meson_exe_cmdline(self, tname, exe, cmd_args, workdir=None,
                              extra_bdeps=None, capture=None, force_serialize=False,
-                             env: T.Optional[build.EnvironmentVariables] = None):
+                             env: T.Optional[build.EnvironmentVariables] = None,
+                             verbose: bool = False):
         '''
         Serialize an executable for running with a generator or a custom target
         '''
         cmd = [exe] + cmd_args
         es = self.get_executable_serialisation(cmd, workdir, extra_bdeps, capture, env)
+        es.verbose = verbose
         reasons = []
         if es.extra_paths:
             reasons.append('to set PATH')
@@ -437,10 +460,10 @@ class Backend:
         if workdir:
             reasons.append('to set workdir')
 
-        if any('\n' in c for c in cmd_args):
+        if any('\n' in c for c in es.cmd_args):
             reasons.append('because command contains newlines')
 
-        if env and env.varnames:
+        if es.env and es.env.varnames:
             reasons.append('to set env')
 
         force_serialize = force_serialize or bool(reasons)
@@ -450,7 +473,7 @@ class Backend:
 
         if not force_serialize:
             if not capture:
-                return None, ''
+                return es.cmd_args, ''
             return ((self.environment.get_build_command() +
                     ['--internal', 'exe', '--capture', capture, '--'] + es.cmd_args),
                     ', '.join(reasons))
@@ -458,6 +481,8 @@ class Backend:
         if isinstance(exe, (dependencies.ExternalProgram,
                             build.BuildTarget, build.CustomTarget)):
             basename = exe.name
+        elif isinstance(exe, mesonlib.File):
+            basename = os.path.basename(exe.fname)
         else:
             basename = os.path.basename(exe)
 
@@ -465,7 +490,7 @@ class Backend:
         # Take a digest of the cmd args, env, workdir, and capture. This avoids
         # collisions and also makes the name deterministic over regenerations
         # which avoids a rebuild by Ninja because the cmdline stays the same.
-        data = bytes(str(env) + str(cmd_args) + str(es.workdir) + str(capture),
+        data = bytes(str(es.env) + str(es.cmd_args) + str(es.workdir) + str(capture),
                      encoding='utf-8')
         digest = hashlib.sha1(data).hexdigest()
         scratch_file = 'meson_exe_{0}_{1}.dat'.format(basename, digest)
@@ -976,18 +1001,8 @@ class Backend:
             if delta > 0.001:
                 raise MesonException('Clock skew detected. File {} has a time stamp {:.4f}s in the future.'.format(absf, delta))
 
-    def build_target_to_cmd_array(self, bt, check_cross):
+    def build_target_to_cmd_array(self, bt):
         if isinstance(bt, build.BuildTarget):
-            if check_cross and isinstance(bt, build.Executable) and bt.for_machine is not MachineChoice.BUILD:
-                if (self.environment.is_cross_build() and
-                        self.environment.exe_wrapper is None and
-                        self.environment.need_exe_wrapper()):
-                    s = textwrap.dedent('''
-                        Cannot use target {} as a generator because it is built for the
-                        host machine and no exe wrapper is defined or needs_exe_wrapper is
-                        true. You might want to set `native: true` instead to build it for
-                        the build machine.'''.format(bt.name))
-                    raise MesonException(s)
             arr = [os.path.join(self.environment.get_build_dir(), self.get_target_filename(bt))]
         else:
             arr = bt.get_command()
@@ -1118,11 +1133,9 @@ class Backend:
         inputs = self.get_custom_target_sources(target)
         # Evaluate the command list
         cmd = []
-        index = -1
         for i in target.command:
-            index += 1
             if isinstance(i, build.BuildTarget):
-                cmd += self.build_target_to_cmd_array(i, (index == 0))
+                cmd += self.build_target_to_cmd_array(i)
                 continue
             elif isinstance(i, build.CustomTarget):
                 # GIR scanner will attempt to execute this binary but
@@ -1135,10 +1148,7 @@ class Backend:
                     i = os.path.join(self.environment.get_build_dir(), i)
             # FIXME: str types are blindly added ignoring 'target.absolute_paths'
             # because we can't know if they refer to a file or just a string
-            elif not isinstance(i, str):
-                err_msg = 'Argument {0} is of unknown type {1}'
-                raise RuntimeError(err_msg.format(str(i), str(type(i))))
-            else:
+            elif isinstance(i, str):
                 if '@SOURCE_ROOT@' in i:
                     i = i.replace('@SOURCE_ROOT@', source_root)
                 if '@BUILD_ROOT@' in i:
@@ -1168,6 +1178,9 @@ class Backend:
                     else:
                         lead_dir = self.environment.get_build_dir()
                     i = i.replace(source, os.path.join(lead_dir, outdir))
+            else:
+                err_msg = 'Argument {0} is of unknown type {1}'
+                raise RuntimeError(err_msg.format(str(i), str(type(i))))
             cmd.append(i)
         # Substitute the rest of the template strings
         values = mesonlib.get_filenames_templates_dict(inputs, outputs)
@@ -1193,11 +1206,21 @@ class Backend:
         cmd = [i.replace('\\', '/') for i in cmd]
         return inputs, outputs, cmd
 
+    def get_run_target_env(self, target: build.RunTarget) -> build.EnvironmentVariables:
+        env = target.env if target.env else build.EnvironmentVariables()
+        introspect_cmd = join_args(self.environment.get_build_command() + ['introspect'])
+        env.add_var(env.set, 'MESON_SOURCE_ROOT', [self.environment.get_source_dir()], {})
+        env.add_var(env.set, 'MESON_BUILD_ROOT', [self.environment.get_build_dir()], {})
+        env.add_var(env.set, 'MESON_SUBDIR', [target.subdir], {})
+        env.add_var(env.set, 'MESONINTROSPECT', [introspect_cmd], {})
+        return env
+
     def run_postconf_scripts(self) -> None:
         from ..scripts.meson_exe import run_exe
+        introspect_cmd = join_args(self.environment.get_build_command() + ['introspect'])
         env = {'MESON_SOURCE_ROOT': self.environment.get_source_dir(),
                'MESON_BUILD_ROOT': self.environment.get_build_dir(),
-               'MESONINTROSPECT': ' '.join([shlex.quote(x) for x in self.environment.get_build_command() + ['introspect']]),
+               'MESONINTROSPECT': introspect_cmd,
                }
 
         for s in self.build.postconf_scripts:

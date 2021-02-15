@@ -51,12 +51,13 @@ import mesonbuild.mesonlib
 import mesonbuild.coredata
 import mesonbuild.modules.gnome
 from mesonbuild.interpreter import Interpreter, ObjectHolder
+from mesonbuild.interpreterbase import typed_pos_args, InvalidArguments
 from mesonbuild.ast import AstInterpreter
 from mesonbuild.mesonlib import (
     BuildDirLock, LibType, MachineChoice, PerMachine, Version, is_windows,
     is_osx, is_cygwin, is_dragonflybsd, is_openbsd, is_haiku, is_sunos,
     windows_proof_rmtree, python_command, version_compare, split_args,
-    quote_arg, relpath, is_linux, git, GIT
+    quote_arg, relpath, is_linux, git
 )
 from mesonbuild.environment import detect_ninja
 from mesonbuild.mesonlib import MesonException, EnvironmentException, OptionKey
@@ -335,7 +336,6 @@ class InternalTests(unittest.TestCase):
         self.assertEqual(searchfunc('oops v1.2.3'), '1.2.3')
         self.assertEqual(searchfunc('2016.oops 1.2.3'), '1.2.3')
         self.assertEqual(searchfunc('2016.x'), 'unknown version')
-
 
     def test_mode_symbolic_to_bits(self):
         modefunc = mesonbuild.mesonlib.FileMode.perms_s_to_bits
@@ -1294,6 +1294,195 @@ class InternalTests(unittest.TestCase):
 
         self.assertFalse(errors)
 
+    def test_typed_pos_args_types(self) -> None:
+        @typed_pos_args('foo', str, int, bool)
+        def _(obj, node, args: T.Tuple[str, int, bool], kwargs) -> None:
+            self.assertIsInstance(args, tuple)
+            self.assertIsInstance(args[0], str)
+            self.assertIsInstance(args[1], int)
+            self.assertIsInstance(args[2], bool)
+
+        _(None, mock.Mock(), ['string', 1, False], None)
+
+    def test_typed_pos_args_types_invalid(self) -> None:
+        @typed_pos_args('foo', str, int, bool)
+        def _(obj, node, args: T.Tuple[str, int, bool], kwargs) -> None:
+            self.assertTrue(False)  # should not be reachable
+
+        with self.assertRaises(InvalidArguments) as cm:
+            _(None, mock.Mock(), ['string', 1.0, False], None)
+        self.assertEqual(str(cm.exception), 'foo argument 2 was of type "float" but should have been "int"')
+
+    def test_typed_pos_args_types_wrong_number(self) -> None:
+        @typed_pos_args('foo', str, int, bool)
+        def _(obj, node, args: T.Tuple[str, int, bool], kwargs) -> None:
+            self.assertTrue(False)  # should not be reachable
+
+        with self.assertRaises(InvalidArguments) as cm:
+            _(None, mock.Mock(), ['string', 1], None)
+        self.assertEqual(str(cm.exception), 'foo takes exactly 3 arguments, but got 2.')
+
+        with self.assertRaises(InvalidArguments) as cm:
+            _(None, mock.Mock(), ['string', 1, True, True], None)
+        self.assertEqual(str(cm.exception), 'foo takes exactly 3 arguments, but got 4.')
+
+    def test_typed_pos_args_varargs(self) -> None:
+        @typed_pos_args('foo', str, varargs=str)
+        def _(obj, node, args: T.Tuple[str, T.List[str]], kwargs) -> None:
+            self.assertIsInstance(args, tuple)
+            self.assertIsInstance(args[0], str)
+            self.assertIsInstance(args[1], list)
+            self.assertIsInstance(args[1][0], str)
+            self.assertIsInstance(args[1][1], str)
+
+        _(None, mock.Mock(), ['string', 'var', 'args'], None)
+
+    def test_typed_pos_args_varargs_not_given(self) -> None:
+        @typed_pos_args('foo', str, varargs=str)
+        def _(obj, node, args: T.Tuple[str, T.List[str]], kwargs) -> None:
+            self.assertIsInstance(args, tuple)
+            self.assertIsInstance(args[0], str)
+            self.assertIsInstance(args[1], list)
+            self.assertEqual(args[1], [])
+
+        _(None, mock.Mock(), ['string'], None)
+
+    def test_typed_pos_args_varargs_invalid(self) -> None:
+        @typed_pos_args('foo', str, varargs=str)
+        def _(obj, node, args: T.Tuple[str, T.List[str]], kwargs) -> None:
+            self.assertTrue(False)  # should not be reachable
+
+        with self.assertRaises(InvalidArguments) as cm:
+            _(None, mock.Mock(), ['string', 'var', 'args', 0], None)
+        self.assertEqual(str(cm.exception), 'foo argument 4 was of type "int" but should have been "str"')
+
+    def test_typed_pos_args_varargs_invalid_mulitple_types(self) -> None:
+        @typed_pos_args('foo', str, varargs=(str, list))
+        def _(obj, node, args: T.Tuple[str, T.List[str]], kwargs) -> None:
+            self.assertTrue(False)  # should not be reachable
+
+        with self.assertRaises(InvalidArguments) as cm:
+            _(None, mock.Mock(), ['string', 'var', 'args', 0], None)
+        self.assertEqual(str(cm.exception), 'foo argument 4 was of type "int" but should have been one of: "str", "list"')
+
+    def test_typed_pos_args_max_varargs(self) -> None:
+        @typed_pos_args('foo', str, varargs=str, max_varargs=5)
+        def _(obj, node, args: T.Tuple[str, T.List[str]], kwargs) -> None:
+            self.assertIsInstance(args, tuple)
+            self.assertIsInstance(args[0], str)
+            self.assertIsInstance(args[1], list)
+            self.assertIsInstance(args[1][0], str)
+            self.assertIsInstance(args[1][1], str)
+
+        _(None, mock.Mock(), ['string', 'var', 'args'], None)
+
+    def test_typed_pos_args_max_varargs_exceeded(self) -> None:
+        @typed_pos_args('foo', str, varargs=str, max_varargs=1)
+        def _(obj, node, args: T.Tuple[str, T.Tuple[str, ...]], kwargs) -> None:
+            self.assertTrue(False)  # should not be reachable
+
+        with self.assertRaises(InvalidArguments) as cm:
+            _(None, mock.Mock(), ['string', 'var', 'args'], None)
+        self.assertEqual(str(cm.exception), 'foo takes between 1 and 2 arguments, but got 3.')
+
+    def test_typed_pos_args_min_varargs(self) -> None:
+        @typed_pos_args('foo', varargs=str, max_varargs=2, min_varargs=1)
+        def _(obj, node, args: T.Tuple[str, T.List[str]], kwargs) -> None:
+            self.assertIsInstance(args, tuple)
+            self.assertIsInstance(args[0], list)
+            self.assertIsInstance(args[0][0], str)
+            self.assertIsInstance(args[0][1], str)
+
+        _(None, mock.Mock(), ['string', 'var'], None)
+
+    def test_typed_pos_args_min_varargs_not_met(self) -> None:
+        @typed_pos_args('foo', str, varargs=str, min_varargs=1)
+        def _(obj, node, args: T.Tuple[str, T.List[str]], kwargs) -> None:
+            self.assertTrue(False)  # should not be reachable
+
+        with self.assertRaises(InvalidArguments) as cm:
+            _(None, mock.Mock(), ['string'], None)
+        self.assertEqual(str(cm.exception), 'foo takes at least 2 arguments, but got 1.')
+
+    def test_typed_pos_args_min_and_max_varargs_exceeded(self) -> None:
+        @typed_pos_args('foo', str, varargs=str, min_varargs=1, max_varargs=2)
+        def _(obj, node, args: T.Tuple[str, T.Tuple[str, ...]], kwargs) -> None:
+            self.assertTrue(False)  # should not be reachable
+
+        with self.assertRaises(InvalidArguments) as cm:
+            _(None, mock.Mock(), ['string', 'var', 'args', 'bar'], None)
+        self.assertEqual(str(cm.exception), 'foo takes between 2 and 3 arguments, but got 4.')
+
+    def test_typed_pos_args_min_and_max_varargs_not_met(self) -> None:
+        @typed_pos_args('foo', str, varargs=str, min_varargs=1, max_varargs=2)
+        def _(obj, node, args: T.Tuple[str, T.Tuple[str, ...]], kwargs) -> None:
+            self.assertTrue(False)  # should not be reachable
+
+        with self.assertRaises(InvalidArguments) as cm:
+            _(None, mock.Mock(), ['string'], None)
+        self.assertEqual(str(cm.exception), 'foo takes between 2 and 3 arguments, but got 1.')
+
+    def test_typed_pos_args_variadic_and_optional(self) -> None:
+        @typed_pos_args('foo', str, optargs=[str], varargs=str, min_varargs=0)
+        def _(obj, node, args: T.Tuple[str, T.List[str]], kwargs) -> None:
+            self.assertTrue(False)  # should not be reachable
+
+        with self.assertRaises(AssertionError) as cm:
+            _(None, mock.Mock(), ['string'], None)
+        self.assertEqual(
+            str(cm.exception),
+            'varargs and optargs not supported together as this would be ambiguous')
+
+    def test_typed_pos_args_min_optargs_not_met(self) -> None:
+        @typed_pos_args('foo', str, str, optargs=[str])
+        def _(obj, node, args: T.Tuple[str, T.Optional[str]], kwargs) -> None:
+            self.assertTrue(False)  # should not be reachable
+
+        with self.assertRaises(InvalidArguments) as cm:
+            _(None, mock.Mock(), ['string'], None)
+        self.assertEqual(str(cm.exception), 'foo takes at least 2 arguments, but got 1.')
+
+    def test_typed_pos_args_min_optargs_max_exceeded(self) -> None:
+        @typed_pos_args('foo', str, optargs=[str])
+        def _(obj, node, args: T.Tuple[str, T.Optional[str]], kwargs) -> None:
+            self.assertTrue(False)  # should not be reachable
+
+        with self.assertRaises(InvalidArguments) as cm:
+            _(None, mock.Mock(), ['string', '1', '2'], None)
+        self.assertEqual(str(cm.exception), 'foo takes at most 2 arguments, but got 3.')
+
+    def test_typed_pos_args_optargs_not_given(self) -> None:
+        @typed_pos_args('foo', str, optargs=[str])
+        def _(obj, node, args: T.Tuple[str, T.Optional[str]], kwargs) -> None:
+            self.assertEqual(len(args), 2)
+            self.assertIsInstance(args[0], str)
+            self.assertEqual(args[0], 'string')
+            self.assertIsNone(args[1])
+
+        _(None, mock.Mock(), ['string'], None)
+
+    def test_typed_pos_args_optargs_some_given(self) -> None:
+        @typed_pos_args('foo', str, optargs=[str, int])
+        def _(obj, node, args: T.Tuple[str, T.Optional[str], T.Optional[int]], kwargs) -> None:
+            self.assertEqual(len(args), 3)
+            self.assertIsInstance(args[0], str)
+            self.assertEqual(args[0], 'string')
+            self.assertIsInstance(args[1], str)
+            self.assertEqual(args[1], '1')
+            self.assertIsNone(args[2])
+
+        _(None, mock.Mock(), ['string', '1'], None)
+
+    def test_typed_pos_args_optargs_all_given(self) -> None:
+        @typed_pos_args('foo', str, optargs=[str])
+        def _(obj, node, args: T.Tuple[str, T.Optional[str]], kwargs) -> None:
+            self.assertEqual(len(args), 2)
+            self.assertIsInstance(args[0], str)
+            self.assertEqual(args[0], 'string')
+            self.assertIsInstance(args[1], str)
+
+        _(None, mock.Mock(), ['string', '1'], None)
+
 @unittest.skipIf(is_tarball(), 'Skipping because this is a tarball release')
 class DataTests(unittest.TestCase):
 
@@ -1459,6 +1648,7 @@ class DataTests(unittest.TestCase):
             res = re.search(r'syn keyword mesonBuiltin(\s+\\\s\w+)+', f.read(), re.MULTILINE)
             defined = set([a.strip() for a in res.group().split('\\')][1:])
             self.assertEqual(defined, set(chain(interp.funcs.keys(), interp.builtin.keys())))
+
     def test_all_functions_defined_in_ast_interpreter(self):
         '''
         Ensure that the all functions defined in the Interpreter are also defined
@@ -1490,7 +1680,6 @@ class DataTests(unittest.TestCase):
             for p in i.iterdir():
                 data_files += [(p.relative_to(mesonbuild_dir).as_posix(), hashlib.sha256(p.read_bytes()).hexdigest())]
 
-        from pprint import pprint
         current_files = set(mesondata.keys())
         scanned_files = set([x[0] for x in data_files])
 
@@ -2192,6 +2381,7 @@ class AllPlatformTests(BasePlatformTests):
         testdir = os.path.join(self.common_test_dir, '52 run target')
         self.init(testdir)
         self.run_target('check_exists')
+        self.run_target('check-env')
 
     def test_install_introspection(self):
         '''
@@ -2224,6 +2414,7 @@ class AllPlatformTests(BasePlatformTests):
             'sub/sub1': 'share/sub1',
             'sub_elided': 'share',
             'nested_elided/sub': 'share',
+            'new_directory': 'share/new_directory',
         }
 
         self.assertEqual(len(intro), len(expected))
@@ -2270,11 +2461,13 @@ class AllPlatformTests(BasePlatformTests):
         expected = {installpath: 0}
         for name in installpath.rglob('*'):
             expected[name] = 0
-        # Find logged files and directories
-        with Path(self.builddir, 'meson-logs', 'install-log.txt').open() as f:
-            logged = list(map(lambda l: Path(l.strip()),
-                              filter(lambda l: not l.startswith('#'),
-                                     f.readlines())))
+        def read_logs():
+            # Find logged files and directories
+            with Path(self.builddir, 'meson-logs', 'install-log.txt').open() as f:
+                return list(map(lambda l: Path(l.strip()),
+                                  filter(lambda l: not l.startswith('#'),
+                                         f.readlines())))
+        logged = read_logs()
         for name in logged:
             self.assertTrue(name in expected, 'Log contains extra entry {}'.format(name))
             expected[name] += 1
@@ -2282,6 +2475,13 @@ class AllPlatformTests(BasePlatformTests):
         for name, count in expected.items():
             self.assertGreater(count, 0, 'Log is missing entry for {}'.format(name))
             self.assertLess(count, 2, 'Log has multiple entries for {}'.format(name))
+
+        # Verify that with --dry-run we obtain the same logs but with nothing
+        # actually installed
+        windows_proof_rmtree(self.installdir)
+        self._run(self.meson_command + ['install', '--dry-run', '--destdir', self.installdir], workdir=self.builddir)
+        self.assertEqual(logged, read_logs())
+        self.assertFalse(os.path.exists(self.installdir))
 
     def test_uninstall(self):
         exename = os.path.join(self.installdir, 'usr/bin/prog' + exe_suffix)
@@ -2351,6 +2551,18 @@ class AllPlatformTests(BasePlatformTests):
         self._run(self.mtest_command + ['--setup=onlyenv3'])
         # Setup with only a timeout works
         self._run(self.mtest_command + ['--setup=timeout'])
+        # Setup that does not define a wrapper works with --wrapper
+        self._run(self.mtest_command + ['--setup=timeout', '--wrapper', shutil.which('valgrind')])
+        # Setup that skips test works
+        self._run(self.mtest_command + ['--setup=good'])
+        with open(os.path.join(self.logdir, 'testlog-good.txt')) as f:
+            exclude_suites_log = f.read()
+        self.assertFalse('buggy' in exclude_suites_log)
+        # --suite overrides add_test_setup(xclude_suites)
+        self._run(self.mtest_command + ['--setup=good', '--suite', 'buggy'])
+        with open(os.path.join(self.logdir, 'testlog-good.txt')) as f:
+            include_suites_log = f.read()
+        self.assertTrue('buggy' in include_suites_log)
 
     def test_testsetup_selection(self):
         testdir = os.path.join(self.unit_test_dir, '14 testsetup selection')
@@ -2753,7 +2965,7 @@ class AllPlatformTests(BasePlatformTests):
         for env_var in ['CPPFLAGS', 'CFLAGS']:
             env = {}
             env[env_var] = '-D{}="{}"'.format(define, value)
-            env['LDFLAGS'] = '-DMESON_FAIL_VALUE=cflags-read'.format(define)
+            env['LDFLAGS'] = '-DMESON_FAIL_VALUE=cflags-read'
             self.init(testdir, extra_args=['-D{}={}'.format(define, value)], override_envvars=env)
 
     def test_custom_target_exe_data_deterministic(self):
@@ -2917,7 +3129,6 @@ class AllPlatformTests(BasePlatformTests):
             return True
         except FileNotFoundError:
             return False
-
 
     def test_dist_hg(self):
         if not self.has_working_hg():
@@ -6269,6 +6480,26 @@ class LinuxlikeTests(BasePlatformTests):
         self.assertRegex('\n'.join(mesonlog),
                          r'Run-time dependency qt5 \(modules: Core\) found: YES .* \((qmake|qmake-qt5)\)\n')
 
+    def test_qt6dependency_qmake_detection(self):
+        '''
+        Test that qt6 detection with qmake works. This can't be an ordinary
+        test case because it involves setting the environment.
+        '''
+        # Verify that qmake is for Qt5
+        if not shutil.which('qmake-qt6'):
+            if not shutil.which('qmake'):
+                raise unittest.SkipTest('QMake not found')
+            output = subprocess.getoutput('qmake --version')
+            if 'Qt version 6' not in output:
+                raise unittest.SkipTest('Qmake found, but it is not for Qt 6.')
+        # Disable pkg-config codepath and force searching with qmake/qmake-qt6
+        testdir = os.path.join(self.framework_test_dir, '4 qt')
+        self.init(testdir, extra_args=['-Dmethod=qmake'])
+        # Confirm that the dependency was found with qmake
+        mesonlog = self.get_meson_log()
+        self.assertRegex('\n'.join(mesonlog),
+                         r'Run-time dependency qt6 \(modules: Core\) found: YES .* \((qmake|qmake-qt6)\)\n')
+
     def glob_sofiles_without_privdir(self, g):
         files = glob(g)
         return [f for f in files if not f.endswith('.p')]
@@ -6408,7 +6639,7 @@ class LinuxlikeTests(BasePlatformTests):
         elif compiler.language == 'cpp':
             env_flag_name = 'CXXFLAGS'
         else:
-            raise NotImplementedError('Language {} not defined.'.format(p))
+            raise NotImplementedError('Language {} not defined.'.format(compiler.language))
         env = {}
         env[env_flag_name] = cmd_std
         with self.assertRaises((subprocess.CalledProcessError, mesonbuild.mesonlib.EnvironmentException),
@@ -6788,7 +7019,7 @@ class LinuxlikeTests(BasePlatformTests):
         '''
         if is_cygwin():
             raise unittest.SkipTest('Windows PE/COFF binaries do not use RPATH')
-        testdir = os.path.join(self.unit_test_dir, '89 pkgconfig build rpath order')
+        testdir = os.path.join(self.unit_test_dir, '90 pkgconfig build rpath order')
         self.init(testdir, override_envvars={'PKG_CONFIG_PATH': testdir})
         self.build()
         build_rpath = get_rpath(os.path.join(self.builddir, 'prog'))
@@ -7504,7 +7735,7 @@ class LinuxlikeTests(BasePlatformTests):
         gccver = subprocess.check_output(['cc', '--version'])
         if b'7.5.0' in gccver:
             raise unittest.SkipTest('GCC on Bionic is too old to be supported.')
-        testdir = os.path.join(self.unit_test_dir, '87 prelinking')
+        testdir = os.path.join(self.unit_test_dir, '88 prelinking')
         self.init(testdir)
         self.build()
         outlib = os.path.join(self.builddir, 'libprelinked.a')
@@ -7610,7 +7841,7 @@ class LinuxCrossArmTests(BaseLinuxCrossTests):
         https://github.com/mesonbuild/meson/issues/7997
         check run native test in crossbuild without exe wrapper
         '''
-        testdir = os.path.join(self.unit_test_dir, '88 run native test')
+        testdir = os.path.join(self.unit_test_dir, '89 run native test')
         stamp_file = os.path.join(self.builddir, 'native_test_has_run.stamp')
         self.init(testdir)
         self.build()
@@ -7651,22 +7882,31 @@ class LinuxCrossMingwTests(BaseLinuxCrossTests):
         self.meson_cross_file = os.path.join(testdir, 'broken-cross.txt')
         # Force tracebacks so we can detect them properly
         env = {'MESON_FORCE_BACKTRACE': '1'}
-        with self.assertRaisesRegex(MesonException, 'exe_wrapper.*target.*use-exe-wrapper'):
+        error_message = "An exe_wrapper is needed but was not found. Please define one in cross file and check the command and/or add it to PATH."
+
+        with self.assertRaises(MesonException) as cm:
             # Must run in-process or we'll get a generic CalledProcessError
             self.init(testdir, extra_args='-Drun-target=false',
                       inprocess=True,
                       override_envvars=env)
-        with self.assertRaisesRegex(MesonException, 'exe_wrapper.*run target.*run-prog'):
+        self.assertEqual(str(cm.exception), error_message)
+
+        with self.assertRaises(MesonException) as cm:
             # Must run in-process or we'll get a generic CalledProcessError
             self.init(testdir, extra_args='-Dcustom-target=false',
                       inprocess=True,
                       override_envvars=env)
+        self.assertEqual(str(cm.exception), error_message)
+
         self.init(testdir, extra_args=['-Dcustom-target=false', '-Drun-target=false'],
                   override_envvars=env)
         self.build()
-        with self.assertRaisesRegex(MesonException, 'exe_wrapper.*PATH'):
+
+        with self.assertRaises(MesonException) as cm:
             # Must run in-process or we'll get a generic CalledProcessError
             self.run_tests(inprocess=True, override_envvars=env)
+        self.assertEqual(str(cm.exception),
+                         "The exe_wrapper defined in the cross file 'broken' was not found. Please check the command and/or add it to PATH.")
 
     @skipIfNoPkgconfig
     def test_cross_pkg_config_option(self):
@@ -8593,22 +8833,6 @@ class NativeFileTests(BasePlatformTests):
         for each in configuration:
             if each['name'] == 'bindir':
                 self.assertEqual(each['value'], 'foo')
-                break
-        else:
-            self.fail('Did not find bindir in build options?')
-
-    def test_builtin_options_paths_legacy(self):
-        testcase = os.path.join(self.common_test_dir, '1 trivial')
-        config = self.helper_create_native_file({
-            'built-in options': {'default_library': 'static'},
-            'paths': {'bindir': 'bar'},
-        })
-
-        self.init(testcase, extra_args=['--native-file', config])
-        configuration = self.introspect('--buildoptions')
-        for each in configuration:
-            if each['name'] == 'bindir':
-                self.assertEqual(each['value'], 'bar')
                 break
         else:
             self.fail('Did not find bindir in build options?')

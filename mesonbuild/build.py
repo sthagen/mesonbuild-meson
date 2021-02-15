@@ -29,7 +29,7 @@ from .mesonlib import (
     File, MesonException, MachineChoice, PerMachine, OrderedSet, listify,
     extract_as_list, typeslistify, stringlistify, classify_unity_sources,
     get_filenames_templates_dict, substitute_values, has_path_sep, unholder,
-    OptionKey,
+    OptionKey
 )
 from .compilers import (
     Compiler, is_object, clink_langs, sort_clink, lang_suffixes,
@@ -39,7 +39,6 @@ from .linkers import StaticLinker
 from .interpreterbase import FeatureNew
 
 if T.TYPE_CHECKING:
-    from .coredata import KeyedOptionDictType, OptionDictType
     from .interpreter import Test
     from .mesonlib import FileMode, FileOrString
 
@@ -322,6 +321,13 @@ class IncludeDirs:
 
     def get_extra_build_dirs(self):
         return self.extra_build_dirs
+
+    def to_string_list(self, sourcedir: str) -> T.List[str]:
+        """Convert IncludeDirs object to a list of strings."""
+        strlist: T.List[str] = []
+        for idir in self.incdirs:
+            strlist.append(os.path.join(sourcedir, self.curdir, idir))
+        return strlist
 
 class ExtractedObjects:
     '''
@@ -2142,8 +2148,35 @@ class SharedModule(SharedLibrary):
     def get_default_install_dir(self, environment):
         return environment.get_shared_module_dir()
 
+class CommandBase:
+    def flatten_command(self, cmd):
+        cmd = unholder(listify(cmd))
+        final_cmd = []
+        for c in cmd:
+            if isinstance(c, str):
+                final_cmd.append(c)
+            elif isinstance(c, File):
+                self.depend_files.append(c)
+                final_cmd.append(c)
+            elif isinstance(c, dependencies.ExternalProgram):
+                if not c.found():
+                    raise InvalidArguments('Tried to use not-found external program in "command"')
+                path = c.get_path()
+                if os.path.isabs(path):
+                    # Can only add a dependency on an external program which we
+                    # know the absolute path of
+                    self.depend_files.append(File.from_absolute_file(path))
+                final_cmd += c.get_command()
+            elif isinstance(c, (BuildTarget, CustomTarget)):
+                self.dependencies.append(c)
+                final_cmd.append(c)
+            elif isinstance(c, list):
+                final_cmd += self.flatten_command(c)
+            else:
+                raise InvalidArguments('Argument {!r} in "command" is invalid'.format(c))
+        return final_cmd
 
-class CustomTarget(Target):
+class CustomTarget(Target, CommandBase):
     known_kwargs = set([
         'input',
         'output',
@@ -2163,7 +2196,8 @@ class CustomTarget(Target):
         'env',
     ])
 
-    def __init__(self, name, subdir, subproject, kwargs, absolute_paths=False, backend=None):
+    def __init__(self, name: str, subdir: str, subproject: str, kwargs: T.Dict[str, T.Any],
+                 absolute_paths: bool = False, backend: T.Optional[str] = None):
         self.typename = 'custom'
         # TODO expose keyword arg to make MachineChoice.HOST configurable
         super().__init__(name, subdir, subproject, False, MachineChoice.HOST)
@@ -2178,7 +2212,7 @@ class CustomTarget(Target):
         for k in kwargs:
             if k not in CustomTarget.known_kwargs:
                 unknowns.append(k)
-        if len(unknowns) > 0:
+        if unknowns:
             mlog.warning('Unknown keyword arguments in target {}: {}'.format(self.name, ', '.join(unknowns)))
 
     def get_default_install_dir(self, environment):
@@ -2213,33 +2247,6 @@ class CustomTarget(Target):
             elif isinstance(d, CustomTarget):
                 bdeps.update(d.get_transitive_build_target_deps())
         return bdeps
-
-    def flatten_command(self, cmd):
-        cmd = unholder(listify(cmd))
-        final_cmd = []
-        for c in cmd:
-            if isinstance(c, str):
-                final_cmd.append(c)
-            elif isinstance(c, File):
-                self.depend_files.append(c)
-                final_cmd.append(c)
-            elif isinstance(c, dependencies.ExternalProgram):
-                if not c.found():
-                    raise InvalidArguments('Tried to use not-found external program in "command"')
-                path = c.get_path()
-                if os.path.isabs(path):
-                    # Can only add a dependency on an external program which we
-                    # know the absolute path of
-                    self.depend_files.append(File.from_absolute_file(path))
-                final_cmd += c.get_command()
-            elif isinstance(c, (BuildTarget, CustomTarget)):
-                self.dependencies.append(c)
-                final_cmd.append(c)
-            elif isinstance(c, list):
-                final_cmd += self.flatten_command(c)
-            else:
-                raise InvalidArguments('Argument {!r} in "command" is invalid'.format(c))
-        return final_cmd
 
     def process_kwargs(self, kwargs, backend):
         self.process_kwargs_base(kwargs)
@@ -2325,7 +2332,7 @@ class CustomTarget(Target):
         for ed in unholder(extra_deps):
             if not isinstance(ed, (CustomTarget, BuildTarget)):
                 raise InvalidArguments('Can only depend on toplevel targets: custom_target or build_target (executable or a library) got: {}({})'
-                                      .format(type(ed), ed))
+                                       .format(type(ed), ed))
             self.extra_depends.append(ed)
         for i in depend_files:
             if isinstance(i, (File, str)):
@@ -2422,18 +2429,20 @@ class CustomTarget(Target):
         for i in self.outputs:
             yield CustomTargetIndex(self, i)
 
-class RunTarget(Target):
-    def __init__(self, name, command, args, dependencies, subdir, subproject):
+class RunTarget(Target, CommandBase):
+    def __init__(self, name, command, dependencies, subdir, subproject, env=None):
         self.typename = 'run'
         # These don't produce output artifacts
         super().__init__(name, subdir, subproject, False, MachineChoice.BUILD)
-        self.command = command
-        self.args = args
         self.dependencies = dependencies
+        self.depend_files = []
+        self.command = self.flatten_command(command)
+        self.absolute_paths = False
+        self.env = env
 
     def __repr__(self):
         repr_str = "<{0} {1}: {2}>"
-        return repr_str.format(self.__class__.__name__, self.get_id(), self.command)
+        return repr_str.format(self.__class__.__name__, self.get_id(), self.command[0])
 
     def process_kwargs(self, kwargs):
         return self.process_kwargs_base(kwargs)
@@ -2466,7 +2475,7 @@ class RunTarget(Target):
 
 class AliasTarget(RunTarget):
     def __init__(self, name, dependencies, subdir, subproject):
-        super().__init__(name, '', [], dependencies, subdir, subproject)
+        super().__init__(name, [], dependencies, subdir, subproject)
 
 class Jar(BuildTarget):
     known_kwargs = known_jar_kwargs
@@ -2618,11 +2627,13 @@ class Data:
 
 class TestSetup:
     def __init__(self, exe_wrapper: T.Optional[T.List[str]], gdb: bool,
-                 timeout_multiplier: int, env: EnvironmentVariables):
+                 timeout_multiplier: int, env: EnvironmentVariables,
+                 exclude_suites: T.List[str]):
         self.exe_wrapper = exe_wrapper
         self.gdb = gdb
         self.timeout_multiplier = timeout_multiplier
         self.env = env
+        self.exclude_suites = exclude_suites
 
 def get_sources_string_names(sources, backend):
     '''

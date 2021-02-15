@@ -125,6 +125,9 @@ the following:
 - `is_default` *(since 0.49.0)*: a bool to set whether this is the default test setup.
   If `true`, the setup will be used whenever `meson test` is run
   without the `--setup` option.
+- `exclude_suites` *(since 0.57.0)*: a list of test suites that should be
+  excluded when using this setup.  Suites specified in the `--suite` option
+  to `meson test` will always run, overriding `add_test_setup` if necessary.
 
 To use the test setup, run `meson test --setup=*name*` inside the
 build dir.
@@ -1140,6 +1143,10 @@ Installs the entire given subdirectory and its contents from the
 source tree to the location specified by the keyword argument
 `install_dir`.
 
+If the subdirectory does not exist in the source tree, an empty directory is
+created in the specified location. *(since 0.45.0)* A newly created
+subdirectory may only be created in the keyword argument `install_dir`.
+
 The following keyword arguments are supported:
 
 - `exclude_files`: a list of file names that should not be installed.
@@ -1187,6 +1194,12 @@ share/
 ```text
 share/
   file1
+```
+
+`install_subdir('new_directory', install_dir : 'share')` creates
+```text
+share/
+  new_directory/
 ```
 
 ### is_disabler()
@@ -1504,6 +1517,10 @@ and subdirectory the target was defined in, respectively.
 - `depends` is a list of targets that this target depends on but which
   are not listed in the command array (because, for example, the
   script does file globbing internally)
+- `env` *(since 0.57.0)*: environment variables to set, such as
+  `{'NAME1': 'value1', 'NAME2': 'value2'}` or `['NAME1=value1', 'NAME2=value2']`,
+  or an [`environment()` object](#environment-object) which allows more
+  sophisticated environment juggling.
 
 ### set_variable()
 
