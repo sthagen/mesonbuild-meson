@@ -769,13 +769,20 @@ class Environment:
                 subproject = ''
             if section == 'built-in options':
                 for k, v in values.items():
-                    key = OptionKey.from_string(k).evolve(subproject=subproject, machine=machine)
-                    self.options[key] = v
+                    key = OptionKey.from_string(k)
+                    # If we're in the cross file, and there is a `build.foo` warn about that. Later we'll remove it.
+                    if machine is MachineChoice.HOST and key.machine is not machine:
+                        mlog.deprecation('Setting build machine options in cross files, please use a native file instead, this will be removed in meson 0.60', once=True)
+                    if key.subproject:
+                        raise MesonException('Do not set subproject options in [built-in options] section, use [subproject:built-in options] instead.')
+                    self.options[key.evolve(subproject=subproject, machine=machine)] = v
             elif section == 'project options':
                 for k, v in values.items():
                     # Project options are always for the machine machine
-                    key = OptionKey.from_string(k).evolve(subproject=subproject)
-                    self.options[key] = v
+                    key = OptionKey.from_string(k)
+                    if key.subproject:
+                        raise MesonException('Do not set subproject options in [built-in options] section, use [subproject:built-in options] instead.')
+                    self.options[key.evolve(subproject=subproject)] = v
 
     def _set_default_options_from_env(self) -> None:
         opts: T.List[T.Tuple[str, str]] = (
@@ -787,6 +794,8 @@ class Environment:
                 ('CPPFLAGS', 'cppflags'),
             ]
         )
+
+        env_opts: T.DefaultDict[OptionKey, T.List[str]] = collections.defaultdict(list)
 
         for (evar, keyname), for_machine in itertools.product(opts, MachineChoice):
             p_env = _get_env_var(for_machine, self.is_cross_build(), evar)
@@ -805,7 +814,7 @@ class Environment:
                     p_list = list(mesonlib.OrderedSet(p_env.split(':')))
                 else:
                     p_list = split_args(p_env)
-                p_list = [e for e in p_list if e]  # filter out any empty eelemnts
+                p_list = [e for e in p_list if e]  # filter out any empty elements
 
                 # Take env vars only on first invocation, if the env changes when
                 # reconfiguring it gets ignored.
@@ -816,18 +825,21 @@ class Environment:
                         key = OptionKey('link_args', machine=for_machine, lang='c')  # needs a language to initialize properly
                         for lang in compilers.compilers.LANGUAGES_USING_LDFLAGS:
                             key = key.evolve(lang=lang)
-                            v = mesonlib.listify(self.options.get(key, []))
-                            self.options.setdefault(key, v + p_list)
+                            env_opts[key].extend(p_list)
                     elif keyname == 'cppflags':
                         key = OptionKey('args', machine=for_machine, lang='c')
                         for lang in compilers.compilers.LANGUAGES_USING_CPPFLAGS:
                             key = key.evolve(lang=lang)
-                            v = mesonlib.listify(self.options.get(key, []))
-                            self.options.setdefault(key, v + p_list)
+                            env_opts[key].extend(p_list)
                     else:
                         key = OptionKey.from_string(keyname).evolve(machine=for_machine)
-                        v = mesonlib.listify(self.options.get(key, []))
-                        self.options.setdefault(key, v + p_list)
+                        env_opts[key].extend(p_list)
+
+        # Only store options that are not already in self.options,
+        # otherwise we'd override the machine files
+        for k, v in env_opts.items():
+            if k not in self.options:
+                self.options[k] = v
 
     def _set_default_binaries_from_env(self) -> None:
         """Set default binaries from the environment.

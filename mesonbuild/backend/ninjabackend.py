@@ -880,7 +880,8 @@ int dummy;
         cpp = target.compilers['cpp']
         if cpp.get_id() != 'msvc':
             return False
-        if self.environment.coredata.options[OptionKey('std', machine=target.for_machine, lang='cpp')] != 'latest':
+        cppversion = self.environment.coredata.options[OptionKey('std', machine=target.for_machine, lang='cpp')].value
+        if  cppversion not in ('latest', 'c++latest', 'vc++latest'):
             return False
         if not mesonlib.current_vs_supports_modules():
             return False
@@ -2512,14 +2513,17 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
         element.add_item('DEPFILE', dep_file)
         element.add_item('ARGS', commands)
 
-        self.add_dependency_scanner_entries_to_element(target, compiler, element)
+        self.add_dependency_scanner_entries_to_element(target, compiler, element, src)
         self.add_build(element)
         assert(isinstance(rel_obj, str))
         assert(isinstance(rel_src, str))
         return (rel_obj, rel_src.replace('\\', '/'))
 
-    def add_dependency_scanner_entries_to_element(self, target, compiler, element):
+    def add_dependency_scanner_entries_to_element(self, target, compiler, element, src):
         if not self.should_use_dyndeps_for_target(target):
+            return
+        extension = os.path.splitext(src.fname)[1][1:]
+        if not (extension in compilers.lang_suffixes['fortran'] or extension in compilers.lang_suffixes['cpp']):
             return
         dep_scan_file = self.get_dep_scan_file_for(target)
         element.add_item('dyndep', dep_scan_file)

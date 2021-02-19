@@ -175,8 +175,8 @@ class CompileCheckMode(enum.Enum):
 
 
 cuda_buildtype_args = {'plain': [],
-                       'debug': [],
-                       'debugoptimized': [],
+                       'debug': ['-g', '-G'],
+                       'debugoptimized': ['-g', '-lineinfo'],
                        'release': [],
                        'minsize': [],
                        'custom': [],
@@ -375,7 +375,9 @@ def get_base_link_args(options: 'KeyedOptionDictType', linker: 'Compiler',
     args = []  # type: T.List[str]
     try:
         if options[OptionKey('b_lto')].value:
-            args.extend(linker.get_lto_link_args())
+            args.extend(linker.get_lto_link_args(
+                threads=get_option_value(options, OptionKey('b_lto_threads'), 0),
+                mode=get_option_value(options, OptionKey('b_lto_mode'), 'default')))
     except KeyError:
         pass
     try:
@@ -950,7 +952,7 @@ class Compiler(metaclass=abc.ABCMeta):
     def get_lto_compile_args(self, *, threads: int = 0, mode: str = 'default') -> T.List[str]:
         return []
 
-    def get_lto_link_args(self) -> T.List[str]:
+    def get_lto_link_args(self, *, threads: int = 0, mode: str = 'default') -> T.List[str]:
         return self.linker.get_lto_args()
 
     def sanitizer_compile_args(self, value: str) -> T.List[str]:
@@ -1225,22 +1227,18 @@ def get_global_options(lang: str,
     argkey = OptionKey('args', lang=lang, machine=for_machine)
     largkey = argkey.evolve('link_args')
 
-    # We shouldn't need listify here, but until we have a separate
-    # linker-driver representation and can have that do the combine we have to
-    # do it this way.
-    compile_args = mesonlib.listify(env.options.get(argkey, []))
-    link_args = mesonlib.listify(env.options.get(largkey, []))
+    cargs = coredata.UserArrayOption(
+        description + ' compiler',
+        env.options.get(argkey, []), split_args=True, user_input=True, allow_dups=True)
+    largs = coredata.UserArrayOption(
+        description + ' linker',
+        env.options.get(largkey, []), split_args=True, user_input=True, allow_dups=True)
 
+    # This needs to be done here, so that if we have string values in the env
+    # options that we can safely combine them *after* they've been split
     if comp.INVOKES_LINKER:
-        link_args = compile_args + link_args
+        largs.set_value(largs.value + cargs.value)
 
-    opts: 'KeyedOptionDictType' = {
-        argkey: coredata.UserArrayOption(
-            description + ' compiler',
-            compile_args, split_args=True, user_input=True, allow_dups=True),
-        largkey: coredata.UserArrayOption(
-            description + ' linker',
-            link_args, split_args=True, user_input=True, allow_dups=True),
-    }
+    opts: 'KeyedOptionDictType' = {argkey: cargs, largkey: largs}
 
     return opts

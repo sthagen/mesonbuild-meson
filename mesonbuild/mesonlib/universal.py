@@ -1910,7 +1910,6 @@ def _classify_argument(key: 'OptionKey') -> OptionType:
     """Classify arguments into groups so we know which dict to assign them to."""
 
     if key.name.startswith('b_'):
-        assert key.machine is MachineChoice.HOST, str(key)
         return OptionType.BASE
     elif key.lang is not None:
         return OptionType.COMPILER
@@ -2023,14 +2022,13 @@ class OptionKey:
         This takes strings like `mysubproject:build.myoption` and Creates an
         OptionKey out of them.
         """
-
         try:
             subproject, raw2 = raw.split(':')
         except ValueError:
             subproject, raw2 = '', raw
 
         if raw2.startswith('build.'):
-            raw3 = raw2.lstrip('build.')
+            raw3 = raw2.split('.', 1)[1]
             for_machine = MachineChoice.BUILD
         else:
             raw3 = raw2

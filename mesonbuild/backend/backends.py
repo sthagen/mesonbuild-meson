@@ -69,11 +69,12 @@ class TestProtocol(enum.Enum):
         raise MesonException('unknown test format {}'.format(string))
 
     def __str__(self) -> str:
-        if self is self.EXITCODE:
+        cls = type(self)
+        if self is cls.EXITCODE:
             return 'exitcode'
-        elif self is self.GTEST:
+        elif self is cls.GTEST:
             return 'gtest'
-        elif self is self.RUST:
+        elif self is cls.RUST:
             return 'rust'
         return 'tap'
 
@@ -1153,6 +1154,8 @@ class Backend:
                     i = i.replace('@SOURCE_ROOT@', source_root)
                 if '@BUILD_ROOT@' in i:
                     i = i.replace('@BUILD_ROOT@', build_root)
+                if '@CURRENT_SOURCE_DIR@' in i:
+                    i = i.replace('@CURRENT_SOURCE_DIR@', os.path.join(source_root, target.subdir))
                 if '@DEPFILE@' in i:
                     if target.depfile is None:
                         msg = 'Custom target {!r} has @DEPFILE@ but no depfile ' \
