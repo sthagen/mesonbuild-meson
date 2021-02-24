@@ -142,14 +142,9 @@ def get_parsed_args_ninja(options: 'argparse.Namespace', builddir: Path) -> T.Tu
     if runner is None:
         raise MesonException('Cannot find ninja.')
 
-    cmd = runner + ['-C', builddir.as_posix()]
-
-    if options.targets:
-        intro_data = parse_introspect_data(builddir)
-        for t in options.targets:
-            cmd.extend(generate_target_names_ninja(ParsedTargetName(t), builddir, intro_data))
-    if options.clean:
-        cmd.append('clean')
+    cmd = runner
+    if not builddir.samefile('.'):
+        cmd.extend(['-C', builddir.as_posix()])
 
     # If the value is set to < 1 then don't set anything, which let's
     # ninja/samu decide what to do.
@@ -162,6 +157,14 @@ def get_parsed_args_ninja(options: 'argparse.Namespace', builddir: Path) -> T.Tu
         cmd.append('-v')
 
     cmd += options.ninja_args
+
+    # operands must be processed after options/option-arguments
+    if options.targets:
+        intro_data = parse_introspect_data(builddir)
+        for t in options.targets:
+            cmd.extend(generate_target_names_ninja(ParsedTargetName(t), builddir, intro_data))
+    if options.clean:
+        cmd.append('clean')
 
     return cmd, None
 
