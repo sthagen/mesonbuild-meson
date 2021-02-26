@@ -580,6 +580,9 @@ Returns a [disabler object](#disabler-object).
 
 Print the argument string and halts the build process.
 
+*(since 0.58.0)* Can take more than one argument that will be separated by
+space.
+
 ### environment()
 
 ``` meson
@@ -1353,6 +1356,7 @@ dictionaries does not guarantee ordering. `key` must be string,
 
 - an integer, boolean or string
 - *since 0.57.0* an external program or a dependency
+- *since 0.58.0* a feature option
 - a list of those.
 
 `summary()` can be called multiple times as long as the same
@@ -1976,9 +1980,9 @@ the following methods.
   the "native" compiler if we're not.
 
 - `get_cross_property(propname, fallback_value)`:
-  *Consider `get_external_property()` instead*. Returns the given
-  property from a cross file, the optional fallback_value is returned
-  if not cross compiling or the given property is not found.
+  *Deprecated since 0.58.0, use `get_external_property()` instead*.
+  Returns the given property from a cross file, the optional fallback_value
+  is returned if not cross compiling or the given property is not found.
 
 - `get_external_property(propname, fallback_value, native: true/false)`
   *(since 0.54.0)*: returns the given property from a native or cross file.
@@ -1987,6 +1991,13 @@ the following methods.
   native file, even when cross-compiling.
   If `native: false` or not specified, variable is retrieved from the
   cross-file if cross-compiling, and from the native-file when not cross-compiling.
+
+- `has_external_property(propname, native: true/false)`
+  *(since 0.58.0)*: checks whether the given property exist in a native or
+  cross file. The optional `native: true` forces checking for the variable
+  in the native file, even when cross-compiling.
+  If `native: false` or not specified, the variable is checked for in the
+  cross-file if cross-compiling, and in the native-file when not cross-compiling.
 
 - `can_run_host_binaries()` *(since 0.55.0)*: returns true if the build machine can run
   binaries compiled for the host. This returns true unless you are

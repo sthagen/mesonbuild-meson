@@ -4996,6 +4996,7 @@ class AllPlatformTests(BasePlatformTests):
                                  1
                                  True
                 empty list     :
+                enabled_opt    : enabled
                 A number       : 1
                 yes            : YES
                 no             : NO
@@ -5543,6 +5544,13 @@ class AllPlatformTests(BasePlatformTests):
         check_installed_files(['--skip-subprojects', 'bar'], main_expected)
         check_installed_files(['--skip-subprojects', 'another'], all_expected)
 
+    def test_adding_subproject_to_configure_project(self) -> None:
+        srcdir = os.path.join(self.unit_test_dir, '92 new subproject in configured project')
+        self.init(srcdir)
+        self.build()
+        self.setconf('-Duse-sub=true')
+        self.build()
+
 
 class FailureTests(BasePlatformTests):
     '''
@@ -5863,6 +5871,11 @@ class FailureTests(BasePlatformTests):
         self.assertMesonRaises("dependency('zlib')\n" +
                                "meson.override_dependency('zlib', declare_dependency())",
                                """Tried to override dependency 'zlib' which has already been resolved or overridden""")
+
+    def test_error_func(self):
+        self.assertMesonRaises("error('a', 'b', ['c', ['d', {'e': 'f'}]], 'g')",
+                               "Problem encountered: a b \['c', \['d', {'e' : 'f'}\]\] g")
+
 
 @unittest.skipUnless(is_windows() or is_cygwin(), "requires Windows (or Windows via Cygwin)")
 class WindowsTests(BasePlatformTests):

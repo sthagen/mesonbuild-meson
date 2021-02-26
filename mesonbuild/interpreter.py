@@ -32,6 +32,7 @@ from .interpreterbase import InterpreterObject, MutableInterpreterObject, Disabl
 from .interpreterbase import FeatureNew, FeatureDeprecated, FeatureNewKwargs, FeatureDeprecatedKwargs
 from .interpreterbase import ObjectHolder, MesonVersionString
 from .interpreterbase import TYPE_var, TYPE_nkwargs
+from .interpreterbase import typed_pos_args
 from .modules import ModuleReturnValue, ExtensionModule
 from .cmake import CMakeInterpreter
 from .backend.backends import TestProtocol, Backend, ExecutableSerialisation
@@ -61,28 +62,29 @@ permitted_method_kwargs = {
                            'sources'},
 }
 
-def stringifyUserArguments(args):
+def stringifyUserArguments(args, quote=False):
     if isinstance(args, list):
-        return '[%s]' % ', '.join([stringifyUserArguments(x) for x in args])
+        return '[%s]' % ', '.join([stringifyUserArguments(x, True) for x in args])
     elif isinstance(args, dict):
-        return '{%s}' % ', '.join(['%s : %s' % (stringifyUserArguments(k), stringifyUserArguments(v)) for k, v in args.items()])
+        return '{%s}' % ', '.join(['%s : %s' % (stringifyUserArguments(k, True), stringifyUserArguments(v, True)) for k, v in args.items()])
     elif isinstance(args, int):
         return str(args)
     elif isinstance(args, str):
-        return "'%s'" % args
-    raise InvalidArguments('Function accepts only strings, integers, lists and lists thereof.')
+        return f"'{args}'" if quote else args
+    raise InvalidArguments('Function accepts only strings, integers, lists, dictionaries and lists thereof.')
 
 
 class OverrideProgram(dependencies.ExternalProgram):
     pass
 
 
-class FeatureOptionHolder(InterpreterObject, ObjectHolder):
-    def __init__(self, env: 'Environment', name, option):
+class FeatureOptionHolder(InterpreterObject, ObjectHolder[coredata.UserFeatureOption]):
+    def __init__(self, env: 'Environment', name: str, option: coredata.UserFeatureOption):
         InterpreterObject.__init__(self)
         ObjectHolder.__init__(self, option)
         if option.is_auto():
-            self.held_object = env.coredata.options[OptionKey('auto_features')]
+            # TODO: we need to case here because options is not a TypedDict
+            self.held_object = T.cast(coredata.UserFeatureOption, env.coredata.options[OptionKey('auto_features')])
         self.name = name
         self.methods.update({'enabled': self.enabled_method,
                              'disabled': self.disabled_method,
@@ -236,7 +238,7 @@ class RunProcess(InterpreterObject):
     def stderr_method(self, args, kwargs):
         return self.stderr
 
-class ConfigureFileHolder(InterpreterObject, ObjectHolder):
+class ConfigureFileHolder(InterpreterObject, ObjectHolder[build.ConfigureFile]):
 
     def __init__(self, subdir, sourcename, targetname, configuration_data):
         InterpreterObject.__init__(self)
@@ -244,7 +246,7 @@ class ConfigureFileHolder(InterpreterObject, ObjectHolder):
         ObjectHolder.__init__(self, obj)
 
 
-class EnvironmentVariablesHolder(MutableInterpreterObject, ObjectHolder):
+class EnvironmentVariablesHolder(MutableInterpreterObject, ObjectHolder[build.EnvironmentVariables]):
     def __init__(self, initial_values=None):
         MutableInterpreterObject.__init__(self)
         ObjectHolder.__init__(self, build.EnvironmentVariables())
@@ -304,7 +306,7 @@ class EnvironmentVariablesHolder(MutableInterpreterObject, ObjectHolder):
         self.add_var(self.held_object.prepend, args, kwargs)
 
 
-class ConfigurationDataHolder(MutableInterpreterObject, ObjectHolder):
+class ConfigurationDataHolder(MutableInterpreterObject, ObjectHolder[build.ConfigurationData]):
     def __init__(self, pv, initial_values=None):
         MutableInterpreterObject.__init__(self)
         self.used = False # These objects become immutable after use in configure_file.
@@ -429,8 +431,8 @@ class ConfigurationDataHolder(MutableInterpreterObject, ObjectHolder):
 # Interpreter objects can not be pickled so we must have
 # these wrappers.
 
-class DependencyHolder(InterpreterObject, ObjectHolder):
-    def __init__(self, dep, pv):
+class DependencyHolder(InterpreterObject, ObjectHolder[Dependency]):
+    def __init__(self, dep: Dependency, pv: str):
         InterpreterObject.__init__(self)
         ObjectHolder.__init__(self, dep, pv)
         self.methods.update({'found': self.found_method,
@@ -537,8 +539,8 @@ class DependencyHolder(InterpreterObject, ObjectHolder):
         new_dep = self.held_object.generate_link_whole_dependency()
         return DependencyHolder(new_dep, self.subproject)
 
-class ExternalProgramHolder(InterpreterObject, ObjectHolder):
-    def __init__(self, ep, subproject, backend=None):
+class ExternalProgramHolder(InterpreterObject, ObjectHolder[ExternalProgram]):
+    def __init__(self, ep: ExternalProgram, subproject: str, backend=None):
         InterpreterObject.__init__(self)
         ObjectHolder.__init__(self, ep)
         self.subproject = subproject
@@ -604,8 +606,8 @@ class ExternalProgramHolder(InterpreterObject, ObjectHolder):
             self.cached_version = match.group(1)
         return self.cached_version
 
-class ExternalLibraryHolder(InterpreterObject, ObjectHolder):
-    def __init__(self, el, pv):
+class ExternalLibraryHolder(InterpreterObject, ObjectHolder[dependencies.ExternalLibrary]):
+    def __init__(self, el: dependencies.ExternalLibrary, pv: str):
         InterpreterObject.__init__(self)
         ObjectHolder.__init__(self, el, pv)
         self.methods.update({'found': self.found_method,
@@ -645,7 +647,7 @@ class ExternalLibraryHolder(InterpreterObject, ObjectHolder):
         pdep = self.held_object.get_partial_dependency(**kwargs)
         return DependencyHolder(pdep, self.subproject)
 
-class GeneratorHolder(InterpreterObject, ObjectHolder):
+class GeneratorHolder(InterpreterObject, ObjectHolder[build.Generator]):
     @FeatureNewKwargs('generator', '0.43.0', ['capture'])
     def __init__(self, interp, args, kwargs):
         self.interpreter = interp
@@ -672,7 +674,7 @@ class GeneratorHolder(InterpreterObject, ObjectHolder):
         return GeneratedListHolder(gl)
 
 
-class GeneratedListHolder(InterpreterObject, ObjectHolder):
+class GeneratedListHolder(InterpreterObject, ObjectHolder[build.GeneratedList]):
     def __init__(self, arg1, extra_args=None):
         InterpreterObject.__init__(self)
         if isinstance(arg1, GeneratorHolder):
@@ -688,8 +690,8 @@ class GeneratedListHolder(InterpreterObject, ObjectHolder):
         self.held_object.add_file(a)
 
 # A machine that's statically known from the cross file
-class MachineHolder(InterpreterObject, ObjectHolder):
-    def __init__(self, machine_info):
+class MachineHolder(InterpreterObject, ObjectHolder['MachineInfo']):
+    def __init__(self, machine_info: 'MachineInfo'):
         InterpreterObject.__init__(self)
         ObjectHolder.__init__(self, machine_info)
         self.methods.update({'system': self.system_method,
@@ -718,12 +720,12 @@ class MachineHolder(InterpreterObject, ObjectHolder):
     def endian_method(self, args: T.List[TYPE_var], kwargs: TYPE_nkwargs) -> str:
         return self.held_object.endian
 
-class IncludeDirsHolder(InterpreterObject, ObjectHolder):
-    def __init__(self, idobj):
+class IncludeDirsHolder(InterpreterObject, ObjectHolder[build.IncludeDirs]):
+    def __init__(self, idobj: build.IncludeDirs):
         InterpreterObject.__init__(self)
         ObjectHolder.__init__(self, idobj)
 
-class HeadersHolder(InterpreterObject, ObjectHolder):
+class HeadersHolder(InterpreterObject, ObjectHolder[build.Headers]):
 
     def __init__(self, obj: build.Headers):
         InterpreterObject.__init__(self)
@@ -744,8 +746,8 @@ class HeadersHolder(InterpreterObject, ObjectHolder):
     def get_custom_install_mode(self):
         return self.held_object.custom_install_mode
 
-class DataHolder(InterpreterObject, ObjectHolder):
-    def __init__(self, data):
+class DataHolder(InterpreterObject, ObjectHolder[build.Data]):
+    def __init__(self, data: build.Data):
         InterpreterObject.__init__(self)
         ObjectHolder.__init__(self, data)
 
@@ -758,13 +760,13 @@ class DataHolder(InterpreterObject, ObjectHolder):
     def get_install_dir(self):
         return self.held_object.install_dir
 
-class InstallDirHolder(InterpreterObject, ObjectHolder):
+class InstallDirHolder(InterpreterObject, ObjectHolder[build.IncludeDirs]):
 
     def __init__(self, obj: build.InstallDir):
         InterpreterObject.__init__(self)
         ObjectHolder.__init__(self, obj)
 
-class ManHolder(InterpreterObject, ObjectHolder):
+class ManHolder(InterpreterObject, ObjectHolder[build.Man]):
 
     def __init__(self, obj: build.Man):
         InterpreterObject.__init__(self)
@@ -779,19 +781,26 @@ class ManHolder(InterpreterObject, ObjectHolder):
     def get_sources(self) -> T.List[mesonlib.File]:
         return self.held_object.sources
 
-class GeneratedObjectsHolder(InterpreterObject, ObjectHolder):
-    def __init__(self, held_object):
+class GeneratedObjectsHolder(InterpreterObject, ObjectHolder[build.ExtractedObjects]):
+    def __init__(self, held_object: build.ExtractedObjects):
         InterpreterObject.__init__(self)
         ObjectHolder.__init__(self, held_object)
 
-class TargetHolder(InterpreterObject, ObjectHolder):
-    def __init__(self, target, interp):
+
+_Target = T.TypeVar('_Target', bound=build.Target)
+
+
+class TargetHolder(InterpreterObject, ObjectHolder[_Target]):
+    def __init__(self, target: _Target, interp: 'Interpreter'):
         InterpreterObject.__init__(self)
         ObjectHolder.__init__(self, target, interp.subproject)
         self.interpreter = interp
 
-class BuildTargetHolder(TargetHolder):
-    def __init__(self, target, interp):
+
+_BuildTarget = T.TypeVar('_BuildTarget', bound=build.BuildTarget)
+
+class BuildTargetHolder(TargetHolder[_BuildTarget]):
+    def __init__(self, target: _BuildTarget, interp: 'Interpreter'):
         super().__init__(target, interp)
         self.methods.update({'extract_objects': self.extract_objects_method,
                              'extract_all_objects': self.extract_all_objects_method,
@@ -856,16 +865,14 @@ class BuildTargetHolder(TargetHolder):
     def name_method(self, args, kwargs):
         return self.held_object.name
 
-class ExecutableHolder(BuildTargetHolder):
-    def __init__(self, target: build.Executable, interp: 'Interpreter'):
-        super().__init__(target, interp)
+class ExecutableHolder(BuildTargetHolder[build.Executable]):
+    pass
 
-class StaticLibraryHolder(BuildTargetHolder):
-    def __init__(self, target, interp):
-        super().__init__(target, interp)
+class StaticLibraryHolder(BuildTargetHolder[build.StaticLibrary]):
+    pass
 
-class SharedLibraryHolder(BuildTargetHolder):
-    def __init__(self, target, interp):
+class SharedLibraryHolder(BuildTargetHolder[build.SharedLibrary]):
+    def __init__(self, target: build.SharedLibrary, interp: 'Interpreter'):
         super().__init__(target, interp)
         # Set to True only when called from self.func_shared_lib().
         target.shared_library_only = False
@@ -897,16 +904,14 @@ class BothLibrariesHolder(BuildTargetHolder):
     def get_static_lib_method(self, args, kwargs):
         return self.static_holder
 
-class SharedModuleHolder(BuildTargetHolder):
-    def __init__(self, target, interp):
-        super().__init__(target, interp)
+class SharedModuleHolder(BuildTargetHolder[build.SharedModule]):
+    pass
 
-class JarHolder(BuildTargetHolder):
-    def __init__(self, target, interp):
-        super().__init__(target, interp)
+class JarHolder(BuildTargetHolder[build.Jar]):
+    pass
 
-class CustomTargetIndexHolder(TargetHolder):
-    def __init__(self, target, interp):
+class CustomTargetIndexHolder(TargetHolder[build.CustomTargetIndex]):
+    def __init__(self, target: build.CustomTargetIndex, interp: 'Interpreter'):
         super().__init__(target, interp)
         self.methods.update({'full_path': self.full_path_method,
                              })
@@ -992,9 +997,9 @@ class Test(InterpreterObject):
     def get_name(self):
         return self.name
 
-class SubprojectHolder(InterpreterObject, ObjectHolder):
+class SubprojectHolder(InterpreterObject, ObjectHolder[T.Optional['Interpreter']]):
 
-    def __init__(self, subinterpreter, subdir, warnings=0, disabled_feature=None,
+    def __init__(self, subinterpreter: T.Optional['Interpreter'], subdir: str, warnings=0, disabled_feature=None,
                  exception=None):
         InterpreterObject.__init__(self)
         ObjectHolder.__init__(self, subinterpreter)
@@ -1786,7 +1791,7 @@ class ModuleState(T.NamedTuple):
     current_node: mparser.BaseNode
 
 
-class ModuleHolder(InterpreterObject, ObjectHolder):
+class ModuleHolder(InterpreterObject, ObjectHolder['ExtensionModule']):
     def __init__(self, modname: str, module: 'ExtensionModule', interpreter: 'Interpreter'):
         InterpreterObject.__init__(self)
         ObjectHolder.__init__(self, module)
@@ -1873,6 +1878,9 @@ class Summary:
                 elif isinstance(i, (ExternalProgram, Dependency)):
                     FeatureNew.single_use('dependency or external program in summary', '0.57.0', subproject)
                     formatted_values.append(i.summary_value())
+                elif isinstance(i, coredata.UserOption):
+                    FeatureNew.single_use('feature option in summary', '0.58.0', subproject)
+                    formatted_values.append(i.printable_value())
                 else:
                     m = 'Summary value in section {!r}, key {!r}, must be string, integer, boolean, dependency or external program'
                     raise InterpreterException(m.format(section, k))
@@ -1943,6 +1951,7 @@ class MesonMain(InterpreterObject):
                              'project_name': self.project_name_method,
                              'get_cross_property': self.get_cross_property_method,
                              'get_external_property': self.get_external_property_method,
+                             'has_external_property': self.has_external_property_method,
                              'backend': self.backend_method,
                              })
 
@@ -2181,8 +2190,7 @@ class MesonMain(InterpreterObject):
         name, exe = args
         if not isinstance(name, str):
             raise InterpreterException('First argument must be a string')
-        if hasattr(exe, 'held_object'):
-            exe = exe.held_object
+        exe = unholder(exe)
         if isinstance(exe, mesonlib.File):
             abspath = exe.absolute_path(self.interpreter.environment.source_dir,
                                         self.interpreter.environment.build_dir)
@@ -2202,8 +2210,7 @@ class MesonMain(InterpreterObject):
         dep = args[1]
         if not isinstance(name, str) or not name:
             raise InterpreterException('First argument must be a string and cannot be empty')
-        if hasattr(dep, 'held_object'):
-            dep = dep.held_object
+        dep = unholder(dep)
         if not isinstance(dep, dependencies.Dependency):
             raise InterpreterException('Second argument must be a dependency object')
         identifier = dependencies.get_dep_identifier(name, kwargs)
@@ -2239,6 +2246,7 @@ class MesonMain(InterpreterObject):
 
     @noArgsFlattening
     @permittedKwargs({})
+    @FeatureDeprecated('meson.get_cross_property', '0.58.0', 'Use meson.get_external_property() instead')
     def get_cross_property_method(self, args, kwargs) -> str:
         if len(args) < 1 or len(args) > 2:
             raise InterpreterException('Must have one or two arguments.')
@@ -2281,6 +2289,14 @@ class MesonMain(InterpreterObject):
                 return self.get_cross_property_method(args, kwargs)
             else:
                 return _get_native()
+
+    @permittedKwargs({'native'})
+    @FeatureNew('meson.has_external_property', '0.58.0')
+    @typed_pos_args('meson.has_external_property', str)
+    def has_external_property_method(self, args: T.Tuple[str], kwargs: T.Dict[str, T.Any]) -> str:
+        prop_name = args[0]
+        for_machine = self.interpreter.machine_from_native_kwarg(kwargs)
+        return prop_name in self.interpreter.environment.properties[for_machine]
 
 known_library_kwargs = (
     build.known_shlib_kwargs |
@@ -2566,9 +2582,7 @@ class Interpreter(InterpreterBase):
             return DependencyHolder(item, self.subproject)
         elif isinstance(item, dependencies.ExternalProgram):
             return ExternalProgramHolder(item, self.subproject)
-        elif hasattr(item, 'held_object'):
-            return item
-        elif isinstance(item, InterpreterObject):
+        elif isinstance(item, (InterpreterObject, ObjectHolder)):
             return item
         else:
             raise InterpreterException('Module returned a value of unknown type.')
@@ -2601,9 +2615,7 @@ class Interpreter(InterpreterBase):
                 return InstallDirHolder(v)
             elif isinstance(v, Test):
                 self.build.tests.append(v)
-            elif hasattr(v, 'held_object'):
-                pass
-            elif isinstance(v, (int, str, bool, Disabler)):
+            elif isinstance(v, (int, str, bool, Disabler, ObjectHolder)):
                 pass
             else:
                 raise InterpreterException('Module returned a value of unknown type.')
@@ -3173,7 +3185,11 @@ external dependencies (including libraries) must go to "dependencies".''')
         # have any effect.
         self.project_default_options = mesonlib.stringlistify(kwargs.get('default_options', []))
         self.project_default_options = coredata.create_options_dict(self.project_default_options, self.subproject)
-        if self.environment.first_invocation:
+
+        # If this is the first invocation we alway sneed to initialize
+        # builtins, if this is a subproject that is new in a re-invocation we
+        # need to initialize builtins for that
+        if self.environment.first_invocation or (self.subproject != '' and self.subproject not in self.subprojects):
             default_options = self.project_default_options.copy()
             default_options.update(self.default_project_options)
             self.coredata.init_builtins(self.subproject)
@@ -3276,26 +3292,12 @@ external dependencies (including libraries) must go to "dependencies".''')
             success &= self.add_languages(args, required, MachineChoice.HOST)
             return success
 
-    def get_message_string_arg(self, arg):
-        if isinstance(arg, list):
-            argstr = stringifyUserArguments(arg)
-        elif isinstance(arg, dict):
-            argstr = stringifyUserArguments(arg)
-        elif isinstance(arg, str):
-            argstr = arg
-        elif isinstance(arg, int):
-            argstr = str(arg)
-        else:
-            raise InvalidArguments('Function accepts only strings, integers, lists and lists thereof.')
-
-        return argstr
-
     @noArgsFlattening
     @noKwargs
     def func_message(self, node, args, kwargs):
         if len(args) > 1:
             FeatureNew.single_use('message with more than one argument', '0.54.0', self.subproject)
-        args_str = [self.get_message_string_arg(i) for i in args]
+        args_str = [stringifyUserArguments(i) for i in args]
         self.message_impl(args_str)
 
     def message_impl(self, args):
@@ -3357,13 +3359,16 @@ external dependencies (including libraries) must go to "dependencies".''')
     def func_warning(self, node, args, kwargs):
         if len(args) > 1:
             FeatureNew.single_use('warning with more than one argument', '0.54.0', self.subproject)
-        args_str = [self.get_message_string_arg(i) for i in args]
+        args_str = [stringifyUserArguments(i) for i in args]
         mlog.warning(*args_str, location=node)
 
+    @noArgsFlattening
     @noKwargs
     def func_error(self, node, args, kwargs):
-        self.validate_arguments(args, 1, [str])
-        raise InterpreterException('Problem encountered: ' + args[0])
+        if len(args) > 1:
+            FeatureNew.single_use('error with more than one argument', '0.58.0', self.subproject)
+        args_str = [stringifyUserArguments(i) for i in args]
+        raise InterpreterException('Problem encountered: ' + ' '.join(args_str))
 
     @noKwargs
     @noPosargs
