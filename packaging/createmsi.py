@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-# Copyright 2017 The Meson development team
+# Copyright 2017-2021 The Meson development team
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -25,11 +25,13 @@ import uuid
 import sys
 import os
 from glob import glob
-import platform
 import xml.etree.ElementTree as ET
 
 sys.path.append(os.getcwd())
 from mesonbuild import coredata
+
+# Elementtree does not support CDATA. So hack it.
+WINVER_CHECK = '<![CDATA[Installed OR (VersionNT64 > 602)]]>'
 
 def gen_guid():
     '''
@@ -77,8 +79,7 @@ class PackageGenerator:
         self.update_guid = '141527EE-E28A-4D14-97A4-92E6075D28B2'
         self.main_xml = 'meson.wxs'
         self.main_o = 'meson.wixobj'
-        self.bytesize = 32 if '32' in platform.architecture()[0] else 64
-        self.final_output = 'meson-{}-{}.msi'.format(self.version, self.bytesize)
+        self.final_output = f'meson-{self.version}-64.msi'
         self.staging_dirs = ['dist', 'dist2']
         self.progfile_dir = 'ProgramFiles64Folder'
         redist_glob = 'C:\\Program Files (x86)\\Microsoft Visual Studio\\2019\\Community\\VC\\Redist\\MSVC\\v*\\MergeModules\\Microsoft_VC142_CRT_x64.msm'
@@ -141,6 +142,7 @@ class PackageGenerator:
                 'distutils.version',
                 'distutils.command.build_ext',
                 'distutils.command.build',
+                'filecmp',
                 ]
 
     def build_dist(self):
@@ -197,7 +199,7 @@ class PackageGenerator:
         package = ET.SubElement(product, 'Package', {
             'Id': '*',
             'Keywords': 'Installer',
-            'Description': 'Meson {} installer'.format(self.version),
+            'Description': f'Meson {self.version} installer',
             'Comments': 'Meson is a high performance build system',
             'Manufacturer': 'The Meson Development Team',
             'InstallerVersion': '500',
@@ -206,11 +208,13 @@ class PackageGenerator:
             'SummaryCodepage': '1252',
         })
 
+        condition = ET.SubElement(product, 'Condition', {'Message': 'This application is only supported on Windows 10 or higher.'})
+
+        condition.text = 'X'*len(WINVER_CHECK)
         ET.SubElement(product, 'MajorUpgrade',
                       {'DowngradeErrorMessage': 'A newer version of Meson is already installed.'})
 
-        if self.bytesize == 64:
-            package.set('Platform', 'x64')
+        package.set('Platform', 'x64')
         ET.SubElement(product, 'Media', {
             'Id': '1',
             'Cabinet': 'meson.cab',
@@ -272,6 +276,12 @@ class PackageGenerator:
         doc = xml.dom.minidom.parse(self.main_xml)
         with open(self.main_xml, 'w') as open_file:
             open_file.write(doc.toprettyxml())
+        # One last fix, add CDATA.
+        with open(self.main_xml) as open_file:
+            data = open_file.read()
+        data = data.replace('X'*len(WINVER_CHECK), WINVER_CHECK)
+        with open(self.main_xml, 'w') as open_file:
+            open_file.write(data)
 
     def build_features(self, top_feature, staging_dir):
         '''
@@ -289,14 +299,13 @@ class PackageGenerator:
         '''
         cur_node = nodes[current_dir]
         if cur_node.files:
-            component_id = 'ApplicationFiles{}'.format(self.component_num)
+            component_id = f'ApplicationFiles{self.component_num}'
             comp_xml_node = ET.SubElement(parent_xml_node, 'Component', {
                 'Id': component_id,
                 'Guid': gen_guid(),
             })
             self.feature_components[staging_dir].append(component_id)
-            if self.bytesize == 64:
-                comp_xml_node.set('Win64', 'yes')
+            comp_xml_node.set('Win64', 'yes')
             if self.component_num == 0:
                 ET.SubElement(comp_xml_node, 'Environment', {
                     'Id': 'Environment',

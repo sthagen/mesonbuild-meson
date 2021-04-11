@@ -1,6 +1,7 @@
 index.md
 	SimpleStart.md
 	Getting-meson.md
+		Getting-meson_zh.md
 	Quick-guide.md
 	Tutorial.md
 	Manual.md
@@ -32,6 +33,7 @@ index.md
 		Build-options.md
 		Subprojects.md
 		Disabler.md
+		Code-formatting.md
 		Modules.md
 			CMake-module.md
 			Cuda-module.md

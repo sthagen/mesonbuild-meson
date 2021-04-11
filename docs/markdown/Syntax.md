@@ -93,6 +93,14 @@ A boolean is either `true` or `false`.
 truth = true
 ```
 
+Booleans can be converted to a string or to a number:
+
+```meson
+bool_var = true
+string_var = bool_var.to_string()
+int_var = bool_var.to_int()
+```
+
 ## Strings
 
 Strings in Meson are declared with single quotes. To enter a literal
@@ -170,6 +178,8 @@ functionality described below.
 
 ### String formatting
 
+#### .format()
+
 Strings can be built using the string formatting functionality.
 
 ```meson
@@ -181,10 +191,46 @@ res = template.format('text', 1, true)
 As can be seen, the formatting works by replacing placeholders of type
 `@number@` with the corresponding argument.
 
+#### Format strings
+*(Added 0.58)*
+
+Format strings can be used as a non-positional alternative to the
+string formatting functionality described above.
+
+```meson
+n = 10
+m = 'hi'
+
+s = f'int: @n@, string: @m@'
+# s now has the value 'int: 10, string: hi'
+```
+
+Currently only identity-expressions are supported inside of format
+strings, meaning you cannot use arbitrary Meson expressions inside of them.
+
+```meson
+n = 10
+m = 5
+
+# The following is not a valid format string
+s = f'result: @n + m@'
+```
+
 ### String methods
 
 Strings also support a number of other methods that return transformed
 copies.
+
+#### .replace()
+
+Since 0.58.0, you can replace a substring from a string.
+
+```meson
+# Replaces all instances of one substring with another
+s = 'semicolons;as;separators'
+s = s.replace('as', 'are')
+# 's' now has the value of 'semicolons;are;separators'
+```
 
 #### .strip()
 

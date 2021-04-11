@@ -16,8 +16,7 @@ from . import ExtensionModule
 
 from .. import mesonlib
 from ..mesonlib import typeslistify
-from ..interpreterbase import FeatureNew, noKwargs
-from ..interpreter import InvalidCode
+from ..interpreterbase import FeatureNew, noKwargs, InvalidCode
 
 import os
 
@@ -42,8 +41,8 @@ class KeyvalModule(ExtensionModule):
                     except ValueError:
                         continue
                     result[name.strip()] = val.strip()
-        except IOError as e:
-            raise mesonlib.MesonException('Failed to load {}: {}'.format(path_to_config, e))
+        except OSError as e:
+            raise mesonlib.MesonException(f'Failed to load {path_to_config}: {e}')
 
         return result
 

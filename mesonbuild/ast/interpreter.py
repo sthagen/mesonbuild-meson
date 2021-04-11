@@ -70,10 +70,10 @@ class AstInterpreter(interpreterbase.InterpreterBase):
     def __init__(self, source_root: str, subdir: str, subproject: str, visitors: T.Optional[T.List[AstVisitor]] = None):
         super().__init__(source_root, subdir, subproject)
         self.visitors = visitors if visitors is not None else []
-        self.visited_subdirs = {}     # type: T.Dict[str, bool]
-        self.assignments = {}         # type: T.Dict[str, BaseNode]
-        self.assign_vals = {}         # type: T.Dict[str, T.Any]
-        self.reverse_assignment = {}  # type: T.Dict[str, BaseNode]
+        self.processed_buildfiles = set() # type: T.Set[str]
+        self.assignments = {}             # type: T.Dict[str, BaseNode]
+        self.assign_vals = {}             # type: T.Dict[str, T.Any]
+        self.reverse_assignment = {}      # type: T.Dict[str, BaseNode]
         self.funcs.update({'project': self.func_do_nothing,
                            'test': self.func_do_nothing,
                            'benchmark': self.func_do_nothing,
@@ -128,6 +128,7 @@ class AstInterpreter(interpreterbase.InterpreterBase):
                            'subdir_done': self.func_do_nothing,
                            'alias_target': self.func_do_nothing,
                            'summary': self.func_do_nothing,
+                           'range': self.func_do_nothing,
                            })
 
     def func_do_nothing(self, node: BaseNode, args: T.List[TYPE_nvar], kwargs: T.Dict[str, TYPE_nvar]) -> bool:
@@ -141,7 +142,7 @@ class AstInterpreter(interpreterbase.InterpreterBase):
     def func_subdir(self, node: BaseNode, args: T.List[TYPE_nvar], kwargs: T.Dict[str, TYPE_nvar]) -> None:
         args = self.flatten_args(args)
         if len(args) != 1 or not isinstance(args[0], str):
-            sys.stderr.write('Unable to evaluate subdir({}) in AstInterpreter --> Skipping\n'.format(args))
+            sys.stderr.write(f'Unable to evaluate subdir({args}) in AstInterpreter --> Skipping\n')
             return
 
         prev_subdir = self.subdir
@@ -150,13 +151,14 @@ class AstInterpreter(interpreterbase.InterpreterBase):
         buildfilename = os.path.join(subdir, environment.build_filename)
         absname = os.path.join(self.source_root, buildfilename)
         symlinkless_dir = os.path.realpath(absdir)
-        if symlinkless_dir in self.visited_subdirs:
+        build_file = os.path.join(symlinkless_dir, 'meson.build')
+        if build_file in self.processed_buildfiles:
             sys.stderr.write('Trying to enter {} which has already been visited --> Skipping\n'.format(args[0]))
             return
-        self.visited_subdirs[symlinkless_dir] = True
+        self.processed_buildfiles.add(build_file)
 
         if not os.path.isfile(absname):
-            sys.stderr.write('Unable to find build file {} --> Skipping\n'.format(buildfilename))
+            sys.stderr.write(f'Unable to find build file {buildfilename} --> Skipping\n')
             return
         with open(absname, encoding='utf8') as f:
             code = f.read()

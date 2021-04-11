@@ -61,7 +61,7 @@ vs64_instruction_set_args = {
 }  # T.Dicst[str, T.Optional[T.List[str]]]
 
 msvc_optimization_args = {
-    '0': [], # /Od is default in msvc, no need to specify it
+    '0': ['/Od'],
     'g': [], # No specific flag to optimize debugging, /Zi or /ZI will create debug information
     '1': ['/O1'],
     '2': ['/O2'],
@@ -125,6 +125,8 @@ class VisualStudioLikeCompiler(Compiler, metaclass=abc.ABCMeta):
             self.machine = 'arm'
         else:
             self.machine = target
+        if mesonlib.version_compare(self.version, '>=19.29.29917'):
+            self.base_options.add(mesonlib.OptionKey('b_sanitize'))
         assert self.linker is not None
         self.linker.machine = self.machine
 
@@ -158,6 +160,13 @@ class VisualStudioLikeCompiler(Compiler, metaclass=abc.ABCMeta):
 
     def get_no_optimization_args(self) -> T.List[str]:
         return ['/Od']
+
+    def sanitizer_compile_args(self, value: str) -> T.List[str]:
+        if value == 'none':
+            return []
+        if value != 'address':
+            raise mesonlib.MesonException('VS only supports address sanitizer at the moment.')
+        return ['/fsanitize=address']
 
     def get_output_args(self, target: str) -> T.List[str]:
         if target.endswith('.exe'):
@@ -314,7 +323,7 @@ class VisualStudioLikeCompiler(Compiler, metaclass=abc.ABCMeta):
             return '14.1' # (Visual Studio 2017)
         elif version < 1930:
             return '14.2' # (Visual Studio 2019)
-        mlog.warning('Could not find toolset for version {!r}'.format(self.version))
+        mlog.warning(f'Could not find toolset for version {self.version!r}')
         return None
 
     def get_toolset_version(self) -> T.Optional[str]:
@@ -402,6 +411,9 @@ class ClangClCompiler(VisualStudioLikeCompiler):
     def __init__(self, target: str):
         super().__init__(target)
         self.id = 'clang-cl'
+
+        # Assembly
+        self.can_compile_suffixes.add('s')
 
     def has_arguments(self, args: T.List[str], env: 'Environment', code: str, mode: str) -> T.Tuple[bool, bool]:
         if mode != 'link':

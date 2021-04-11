@@ -27,6 +27,8 @@ from enum import Enum
 from glob import glob
 from pathlib import Path
 from unittest import mock
+import typing as T
+
 from mesonbuild import compilers
 from mesonbuild import dependencies
 from mesonbuild import mesonlib
@@ -57,26 +59,27 @@ else:
 if NINJA_CMD is None:
     raise RuntimeError('Could not find Ninja v1.7 or newer')
 
-def guess_backend(backend, msbuild_exe: str):
+def guess_backend(backend_str: str, msbuild_exe: str) -> T.Tuple['Backend', T.List[str]]:
     # Auto-detect backend if unspecified
     backend_flags = []
-    if backend is None:
+    if backend_str is None:
         if msbuild_exe is not None and (mesonlib.is_windows() and not _using_intelcl()):
-            backend = 'vs' # Meson will auto-detect VS version to use
+            backend_str = 'vs' # Meson will auto-detect VS version to use
         else:
-            backend = 'ninja'
+            backend_str = 'ninja'
+
     # Set backend arguments for Meson
-    if backend.startswith('vs'):
-        backend_flags = ['--backend=' + backend]
+    if backend_str.startswith('vs'):
+        backend_flags = ['--backend=' + backend_str]
         backend = Backend.vs
-    elif backend == 'xcode':
+    elif backend_str == 'xcode':
         backend_flags = ['--backend=xcode']
         backend = Backend.xcode
-    elif backend == 'ninja':
+    elif backend_str == 'ninja':
         backend_flags = ['--backend=ninja']
         backend = Backend.ninja
     else:
-        raise RuntimeError('Unknown backend: {!r}'.format(backend))
+        raise RuntimeError(f'Unknown backend: {backend_str!r}')
     return (backend, backend_flags)
 
 
@@ -115,7 +118,8 @@ class FakeCompilerOptions:
     def __init__(self):
         self.value = []
 
-def get_fake_options(prefix=''):
+# TODO: use a typing.Protocol here
+def get_fake_options(prefix: str = '') -> argparse.Namespace:
     opts = argparse.Namespace()
     opts.native_file = []
     opts.cross_file = None
@@ -165,7 +169,7 @@ def get_meson_script():
     meson_cmd = shutil.which('meson')
     if meson_cmd:
         return meson_cmd
-    raise RuntimeError('Could not find {!r} or a meson in PATH'.format(meson_script))
+    raise RuntimeError(f'Could not find {meson_script!r} or a meson in PATH')
 
 def get_backend_args_for_dir(backend, builddir):
     '''
@@ -180,16 +184,16 @@ def find_vcxproj_with_target(builddir, target):
     import re, fnmatch
     t, ext = os.path.splitext(target)
     if ext:
-        p = r'<TargetName>{}</TargetName>\s*<TargetExt>\{}</TargetExt>'.format(t, ext)
+        p = fr'<TargetName>{t}</TargetName>\s*<TargetExt>\{ext}</TargetExt>'
     else:
-        p = r'<TargetName>{}</TargetName>'.format(t)
+        p = fr'<TargetName>{t}</TargetName>'
     for _, _, files in os.walk(builddir):
         for f in fnmatch.filter(files, '*.vcxproj'):
             f = os.path.join(builddir, f)
-            with open(f, 'r', encoding='utf-8') as o:
+            with open(f, encoding='utf-8') as o:
                 if re.search(p, o.read(), flags=re.MULTILINE):
                     return f
-    raise RuntimeError('No vcxproj matching {!r} in {!r}'.format(p, builddir))
+    raise RuntimeError(f'No vcxproj matching {p!r} in {builddir!r}')
 
 def get_builddir_target_args(backend, builddir, target):
     dir_args = []
@@ -205,12 +209,16 @@ def get_builddir_target_args(backend, builddir, target):
     elif backend is Backend.ninja:
         target_args = [target]
     else:
-        raise AssertionError('Unknown backend: {!r}'.format(backend))
+        raise AssertionError(f'Unknown backend: {backend!r}')
     return target_args + dir_args
 
-def get_backend_commands(backend, debug=False):
-    install_cmd = []
-    uninstall_cmd = []
+def get_backend_commands(backend: Backend, debug: bool = False) -> \
+        T.Tuple[T.List[str], T.List[str], T.List[str], T.List[str], T.List[str]]:
+    install_cmd: T.List[str] = []
+    uninstall_cmd: T.List[str] = []
+    clean_cmd: T.List[str]
+    cmd: T.List[str]
+    test_cmd: T.List[str]
     if backend is Backend.vs:
         cmd = ['msbuild']
         clean_cmd = cmd + ['/target:Clean']
@@ -231,7 +239,7 @@ def get_backend_commands(backend, debug=False):
         install_cmd = cmd + ['install']
         uninstall_cmd = cmd + ['uninstall']
     else:
-        raise AssertionError('Unknown backend: {!r}'.format(backend))
+        raise AssertionError(f'Unknown backend: {backend!r}')
     return cmd, clean_cmd, test_cmd, install_cmd, uninstall_cmd
 
 def ensure_backend_detects_changes(backend):
@@ -377,7 +385,7 @@ def main():
         else:
             cross_test_args = mesonlib.python_command + ['run_cross_test.py']
             for cf in options.cross:
-                print(mlog.bold('Running {} cross tests.'.format(cf)))
+                print(mlog.bold(f'Running {cf} cross tests.'))
                 print(flush=True)
                 cmd = cross_test_args + ['cross/' + cf]
                 if options.failfast:

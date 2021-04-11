@@ -37,10 +37,11 @@ from mesonbuild.mesonlib import (
 
 if T.TYPE_CHECKING:
     from ..coredata import KeyedOptionDictType
-    from ..dependencies import Dependency, ExternalProgram
+    from ..dependencies import Dependency
     from ..envconfig import MachineInfo
     from ..environment import Environment
     from ..linkers import DynamicLinker
+    from ..programs import ExternalProgram
 
 
 class FortranCompiler(CLikeCompiler, Compiler):
@@ -334,12 +335,6 @@ class IntelFortranCompiler(IntelGnuLikeCompiler, FortranCompiler):
 
     def get_preprocess_only_args(self) -> T.List[str]:
         return ['-cpp', '-EP']
-
-    def get_always_args(self) -> T.List[str]:
-        """Ifort doesn't have -pipe."""
-        val = super().get_always_args()
-        val.remove('-pipe')
-        return val
 
     def language_stdlib_only_link_flags(self) -> T.List[str]:
         return ['-lifcore', '-limf']

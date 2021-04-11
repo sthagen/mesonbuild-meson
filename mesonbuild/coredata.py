@@ -106,7 +106,7 @@ class UserBooleanOption(UserOption[bool]):
         if isinstance(value, bool):
             return value
         if not isinstance(value, str):
-            raise MesonException('Value {} cannot be converted to a boolean'.format(value))
+            raise MesonException(f'Value {value} cannot be converted to a boolean')
         if value.lower() == 'true':
             return True
         if value.lower() == 'false':
@@ -170,7 +170,7 @@ class UserUmaskOption(UserIntegerOption, UserOption[T.Union[str, OctalInt]]):
         try:
             return int(valuestring, 8)
         except ValueError as e:
-            raise MesonException('Invalid mode: {}'.format(e))
+            raise MesonException(f'Invalid mode: {e}')
 
 class UserComboOption(UserOption[str]):
     def __init__(self, description: str, choices: T.List[str], value: T.Any, yielding: T.Optional[bool] = None):
@@ -190,7 +190,7 @@ class UserComboOption(UserOption[str]):
                 _type = 'number'
             else:
                 _type = 'string'
-            optionsstring = ', '.join(['"%s"' % (item,) for item in self.choices])
+            optionsstring = ', '.join([f'"{item}"' for item in self.choices])
             raise MesonException('Value "{}" (of type "{}") for combo option "{}" is not one of the choices.'
                                  ' Possible choices are (as string): {}.'.format(
                                      value, _type, self.description, optionsstring))
@@ -216,7 +216,7 @@ class UserArrayOption(UserOption[T.List[str]]):
                 try:
                     newvalue = ast.literal_eval(value)
                 except ValueError:
-                    raise MesonException('malformed option {}'.format(value))
+                    raise MesonException(f'malformed option {value}')
             elif value == '':
                 newvalue = []
             else:
@@ -227,7 +227,7 @@ class UserArrayOption(UserOption[T.List[str]]):
         elif isinstance(value, list):
             newvalue = value
         else:
-            raise MesonException('"{}" should be a string array, but it is not'.format(newvalue))
+            raise MesonException(f'"{newvalue}" should be a string array, but it is not')
 
         if not self.allow_dups and len(set(newvalue)) != len(newvalue):
             msg = 'Duplicated values in array option is deprecated. ' \
@@ -235,13 +235,18 @@ class UserArrayOption(UserOption[T.List[str]]):
             mlog.deprecation(msg)
         for i in newvalue:
             if not isinstance(i, str):
-                raise MesonException('String array element "{0}" is not a string.'.format(str(newvalue)))
+                raise MesonException('String array element "{}" is not a string.'.format(str(newvalue)))
         if self.choices:
             bad = [x for x in newvalue if x not in self.choices]
             if bad:
                 raise MesonException('Options "{}" are not in allowed choices: "{}"'.format(
                     ', '.join(bad), ', '.join(self.choices)))
         return newvalue
+
+    def extend_value(self, value: T.Union[str, T.List[str]]) -> None:
+        """Extend the value with an additional value."""
+        new = self.validate_value(value)
+        self.set_value(self.value + new)
 
 
 class UserFeatureOption(UserComboOption):
@@ -397,7 +402,7 @@ class CoreData:
         self.compilers = PerMachine(OrderedDict(), OrderedDict())  # type: PerMachine[T.Dict[str, Compiler]]
 
         build_cache = DependencyCache(self.options, MachineChoice.BUILD)
-        host_cache = DependencyCache(self.options, MachineChoice.BUILD)
+        host_cache = DependencyCache(self.options, MachineChoice.HOST)
         self.deps = PerMachine(build_cache, host_cache)  # type: PerMachine[DependencyCache]
         self.compiler_check_cache = OrderedDict()  # type: T.Dict[CompilerCheckCacheKey, compiler.CompileResult]
 
@@ -433,8 +438,8 @@ class CoreData:
                     # in this case we've been passed some kind of pipe, copy
                     # the contents of that file into the meson private (scratch)
                     # directory so that it can be re-read when wiping/reconfiguring
-                    copy = os.path.join(scratch_dir, '{}.{}.ini'.format(uuid.uuid4(), ftype))
-                    with open(f, 'r') as rf:
+                    copy = os.path.join(scratch_dir, f'{uuid.uuid4()}.{ftype}.ini')
+                    with open(f) as rf:
                         with open(copy, 'w') as wf:
                             wf.write(rf.read())
                     real.append(copy)
@@ -461,7 +466,7 @@ class CoreData:
             if found_invalid:
                 mlog.log('Found invalid candidates for', ftype, 'file:', *found_invalid)
             mlog.log('Could not find any valid candidate for', ftype, 'files:', *missing)
-            raise MesonException('Cannot find specified {} file: {}'.format(ftype, f))
+            raise MesonException(f'Cannot find specified {ftype} file: {f}')
         return real
 
     def builtin_options_libdir_cross_fixup(self):
@@ -683,7 +688,7 @@ class CoreData:
                 try:
                     value.set_value(oldval.value)
                 except MesonException as e:
-                    mlog.warning('Old value(s) of {} are no longer valid, resetting to default ({}).'.format(key, value.value))
+                    mlog.warning(f'Old value(s) of {key} are no longer valid, resetting to default ({value.value}).')
 
     def is_cross_build(self, when_building_for: MachineChoice = MachineChoice.HOST) -> bool:
         if when_building_for == MachineChoice.BUILD:
@@ -726,8 +731,8 @@ class CoreData:
                 self.set_option(k, v)
         if unknown_options and warn_unknown:
             unknown_options_str = ', '.join(sorted(str(s) for s in unknown_options))
-            sub = 'In subproject {}: '.format(subproject) if subproject else ''
-            mlog.warning('{}Unknown options: "{}"'.format(sub, unknown_options_str))
+            sub = f'In subproject {subproject}: ' if subproject else ''
+            mlog.warning(f'{sub}Unknown options: "{unknown_options_str}"')
             mlog.log('The value of new options can be set with:')
             mlog.log(mlog.bold('meson setup <builddir> --reconfigure -Dnew_option=new_value ...'))
         if not self.is_cross_build():
@@ -754,7 +759,11 @@ class CoreData:
             if k.subproject and k.subproject != subproject:
                 continue
             # If the option is a builtin and is yielding then it's not allowed per subproject.
-            if subproject and k.is_builtin() and self.options[k.as_root()].yielding:
+            #
+            # Always test this using the HOST machine, as many builtin options
+            # are not valid for the BUILD machine, but the yielding value does
+            # not differ between them even when they are valid for both.
+            if subproject and k.is_builtin() and self.options[k.evolve(subproject='', machine=MachineChoice.HOST)].yielding:
                 continue
             # Skip base, compiler, and backend options, they are handled when
             # adding languages and setting backend.
@@ -776,8 +785,10 @@ class CoreData:
                       for_machine: MachineChoice, env: 'Environment') -> None:
         """Add global language arguments that are needed before compiler/linker detection."""
         from .compilers import compilers
-        options = compilers.get_global_options(lang, comp, for_machine, env)
-        self.add_compiler_options(options, lang, for_machine, env)
+        # These options are all new at this point, because the compiler is
+        # responsible for adding its own options, thus calling
+        # `self.options.update()`` is perfectly safe.
+        self.options.update(compilers.get_global_options(lang, comp, for_machine, env))
 
     def process_new_compiler(self, lang: str, comp: 'Compiler', env: 'Environment') -> None:
         from . import compilers
@@ -833,14 +844,14 @@ class MachineFileParser():
         section = {}
         for entry, value in self.parser.items(s):
             if ' ' in entry or '\t' in entry or "'" in entry or '"' in entry:
-                raise EnvironmentException('Malformed variable name {!r} in machine file.'.format(entry))
+                raise EnvironmentException(f'Malformed variable name {entry!r} in machine file.')
             # Windows paths...
             value = value.replace('\\', '\\\\')
             try:
                 ast = mparser.Parser(value, 'machinefile').parse()
                 res = self._evaluate_statement(ast.lines[0])
             except MesonException:
-                raise EnvironmentException('Malformed value in machine file variable {!r}.'.format(entry))
+                raise EnvironmentException(f'Malformed value in machine file variable {entry!r}.')
             except KeyError as e:
                 raise EnvironmentException('Undefined constant {!r} in machine file variable {!r}.'.format(e.args[0], entry))
             section[entry] = res
@@ -905,9 +916,9 @@ def write_cmd_line_file(build_dir: str, options: argparse.Namespace) -> None:
 
     properties = OrderedDict()
     if options.cross_file:
-        properties['cross_file'] = [os.path.abspath(f) for f in options.cross_file]
+        properties['cross_file'] = options.cross_file
     if options.native_file:
-        properties['native_file'] = [os.path.abspath(f) for f in options.native_file]
+        properties['native_file'] = options.native_file
 
     config['options'] = {str(k): str(v) for k, v in options.cmd_line_options.items()}
     config['properties'] = properties
@@ -927,9 +938,9 @@ def get_cmd_line_options(build_dir: str, options: argparse.Namespace) -> str:
     read_cmd_line_file(build_dir, copy)
     cmdline = ['-D{}={}'.format(str(k), v) for k, v in copy.cmd_line_options.items()]
     if options.cross_file:
-        cmdline += ['--cross-file {}'.format(f) for f in options.cross_file]
+        cmdline += [f'--cross-file {f}' for f in options.cross_file]
     if options.native_file:
-        cmdline += ['--native-file {}'.format(f) for f in options.native_file]
+        cmdline += [f'--native-file {f}' for f in options.native_file]
     return ' '.join([shlex.quote(x) for x in cmdline])
 
 def major_versions_differ(v1: str, v2: str) -> bool:
@@ -937,13 +948,13 @@ def major_versions_differ(v1: str, v2: str) -> bool:
 
 def load(build_dir: str) -> CoreData:
     filename = os.path.join(build_dir, 'meson-private', 'coredata.dat')
-    load_fail_msg = 'Coredata file {!r} is corrupted. Try with a fresh build tree.'.format(filename)
+    load_fail_msg = f'Coredata file {filename!r} is corrupted. Try with a fresh build tree.'
     try:
         with open(filename, 'rb') as f:
             obj = pickle.load(f)
     except (pickle.UnpicklingError, EOFError):
         raise MesonException(load_fail_msg)
-    except AttributeError:
+    except (ModuleNotFoundError, AttributeError):
         raise MesonException(
             "Coredata file {!r} references functions or classes that don't "
             "exist. This probably means that it was generated with an old "
@@ -986,7 +997,7 @@ def create_options_dict(options: T.List[str], subproject: str = '') -> T.Dict[Op
         try:
             (key, value) = o.split('=', 1)
         except ValueError:
-            raise MesonException('Option {!r} must have a value separated by equals sign.'.format(o))
+            raise MesonException(f'Option {o!r} must have a value separated by equals sign.')
         k = OptionKey.from_string(key)
         if subproject:
             k = k.evolve(subproject=subproject)

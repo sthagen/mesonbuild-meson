@@ -18,10 +18,11 @@ import subprocess
 import typing as T
 
 from ..mesonlib import (
-    EnvironmentException, MachineChoice, version_compare, OptionKey,
+    EnvironmentException, MachineChoice, version_compare, OptionKey, is_windows
 )
 
 from ..arglist import CompilerArgs
+from ..linkers import RSPFileSyntax
 from .compilers import (
     d_dmd_buildtype_args,
     d_gdc_buildtype_args,
@@ -33,7 +34,7 @@ from .mixins.gnu import GnuCompiler
 
 if T.TYPE_CHECKING:
     from .compilers import Compiler as CompilerMixinBase
-    from ..dependencies import Dependency, ExternalProgram
+    from ..programs import ExternalProgram
     from ..envconfig import MachineInfo
     from ..environment import Environment
     from ..linkers import DynamicLinker
@@ -153,6 +154,9 @@ class DmdLikeCompilerMixin(CompilerMixinBase):
     def get_feature_args(self, kwargs: T.Dict[str, T.Any], build_to_src: str) -> T.List[str]:
         # TODO: using a TypeDict here would improve this
         res = []
+        # get_feature_args can be called multiple times for the same target when there is generated source
+        # so we have to copy the kwargs (target.d_features) dict before popping from it
+        kwargs = kwargs.copy()
         if 'unittest' in kwargs:
             unittest = kwargs.pop('unittest')
             unittest_arg = d_feature_args[self.id]['unittest']
@@ -180,10 +184,10 @@ class DmdLikeCompilerMixin(CompilerMixinBase):
                     if int(d) > debug_level:
                         debug_level = int(d)
                 else:
-                    res.append('{0}={1}'.format(debug_arg, d))
+                    res.append(f'{debug_arg}={d}')
 
             if debug_level >= 0:
-                res.append('{0}={1}'.format(debug_arg, debug_level))
+                res.append(f'{debug_arg}={debug_level}')
 
         if 'versions' in kwargs:
             version_level = -1
@@ -204,10 +208,10 @@ class DmdLikeCompilerMixin(CompilerMixinBase):
                     if int(v) > version_level:
                         version_level = int(v)
                 else:
-                    res.append('{0}={1}'.format(version_arg, v))
+                    res.append(f'{version_arg}={v}')
 
             if version_level >= 0:
-                res.append('{0}={1}'.format(version_arg, version_level))
+                res.append(f'{version_arg}={version_level}')
 
         if 'import_dirs' in kwargs:
             import_dirs = kwargs.pop('import_dirs')
@@ -220,13 +224,15 @@ class DmdLikeCompilerMixin(CompilerMixinBase):
             for idir_obj in import_dirs:
                 basedir = idir_obj.get_curdir()
                 for idir in idir_obj.get_incdirs():
+                    bldtreedir = os.path.join(basedir, idir)
                     # Avoid superfluous '/.' at the end of paths when d is '.'
                     if idir not in ('', '.'):
-                        expdir = os.path.join(basedir, idir)
+                        expdir = bldtreedir
                     else:
                         expdir = basedir
                     srctreedir = os.path.join(build_to_src, expdir)
-                    res.append('{0}{1}'.format(import_dir_arg, srctreedir))
+                    res.append(f'{import_dir_arg}{srctreedir}')
+                    res.append(f'{import_dir_arg}{bldtreedir}')
 
         if kwargs:
             raise EnvironmentException('Unknown D compiler feature(s) selected: %s' % ', '.join(kwargs.keys()))
@@ -268,11 +274,17 @@ class DmdLikeCompilerMixin(CompilerMixinBase):
             env, build_dir, from_dir, rpath_paths, build_rpath, install_rpath)
 
     def _translate_args_to_nongnu(self, args: T.List[str]) -> T.List[str]:
-        dcargs = []
         # Translate common arguments to flags the LDC/DMD compilers
         # can understand.
         # The flags might have been added by pkg-config files,
         # and are therefore out of the user's control.
+        dcargs = []
+        # whether we hit a linker argument that expect another arg
+        # see the comment in the "-L" section
+        link_expect_arg = False
+        link_flags_with_arg = [
+            '-rpath', '-soname', '-compatibility_version', '-current_version',
+        ]
         for arg in args:
             # Translate OS specific arguments first.
             osargs = []  # type: T.List[str]
@@ -327,23 +339,51 @@ class DmdLikeCompilerMixin(CompilerMixinBase):
                 else:
                     dcargs.append('-I' + arg[10:])
                 continue
-            elif arg.startswith('-L/') or arg.startswith('-L./'):
-                # we need to handle cases where -L is set by e.g. a pkg-config
-                # setting to select a linker search path. We can however not
-                # unconditionally prefix '-L' with '-L' because the user might
-                # have set this flag too to do what it is intended to for this
-                # compiler (pass flag through to the linker)
-                # Hence, we guess here whether the flag was intended to pass
-                # a linker search path.
+            elif arg.startswith('-L'):
+                # The D linker expect library search paths in the form of -L=-L/path (the '=' is optional).
+                #
+                # This function receives a mix of arguments already prepended
+                # with -L for the D linker driver and other linker arguments.
+                # The arguments starting with -L can be:
+                #  - library search path (with or without a second -L)
+                #     - it can come from pkg-config (a single -L)
+                #     - or from the user passing linker flags (-L-L would be expected)
+                #  - arguments like "-L=-rpath" that expect a second argument (also prepended with -L)
+                #  - arguments like "-L=@rpath/xxx" without a second argument (on Apple platform)
+                #  - arguments like "-L=/SUBSYSTEM:CONSOLE (for Windows linker)
+                #
+                # The logic that follows trys to detect all these cases (some may be missing)
+                # in order to prepend a -L only for the library search paths with a single -L
+
+                if arg.startswith('-L='):
+                    suffix = arg[3:]
+                else:
+                    suffix = arg[2:]
+
+                if link_expect_arg:
+                    # flags like rpath and soname expect a path or filename respectively,
+                    # we must not alter it (i.e. prefixing with -L for a lib search path)
+                    dcargs.append(arg)
+                    link_expect_arg = False
+                    continue
+
+                if suffix in link_flags_with_arg:
+                    link_expect_arg = True
+
+                if suffix.startswith('-') or suffix.startswith('@'):
+                    # this is not search path
+                    dcargs.append(arg)
+                    continue
+
+                # linker flag such as -L=/DEBUG must pass through
+                if self.linker.id == 'link' and self.info.is_windows() and suffix.startswith('/'):
+                    dcargs.append(arg)
+                    continue
 
                 # Make sure static library files are passed properly to the linker.
                 if arg.endswith('.a') or arg.endswith('.lib'):
-                    if arg.startswith('-L='):
-                        farg = arg[3:]
-                    else:
-                        farg = arg[2:]
-                    if len(farg) > 0 and not farg.startswith('-'):
-                        dcargs.append('-L=' + farg)
+                    if len(suffix) > 0 and not suffix.startswith('-'):
+                        dcargs.append('-L=' + suffix)
                         continue
 
                 dcargs.append('-L=' + arg)
@@ -525,6 +565,9 @@ class DCompiler(Compiler):
     def get_feature_args(self, kwargs: T.Dict[str, T.Any], build_to_src: str) -> T.List[str]:
         # TODO: using a TypeDict here would improve this
         res = []
+        # get_feature_args can be called multiple times for the same target when there is generated source
+        # so we have to copy the kwargs (target.d_features) dict before popping from it
+        kwargs = kwargs.copy()
         if 'unittest' in kwargs:
             unittest = kwargs.pop('unittest')
             unittest_arg = d_feature_args[self.id]['unittest']
@@ -552,10 +595,10 @@ class DCompiler(Compiler):
                     if int(d) > debug_level:
                         debug_level = int(d)
                 else:
-                    res.append('{0}={1}'.format(debug_arg, d))
+                    res.append(f'{debug_arg}={d}')
 
             if debug_level >= 0:
-                res.append('{0}={1}'.format(debug_arg, debug_level))
+                res.append(f'{debug_arg}={debug_level}')
 
         if 'versions' in kwargs:
             version_level = -1
@@ -576,10 +619,10 @@ class DCompiler(Compiler):
                     if int(v) > version_level:
                         version_level = int(v)
                 else:
-                    res.append('{0}={1}'.format(version_arg, v))
+                    res.append(f'{version_arg}={v}')
 
             if version_level >= 0:
-                res.append('{0}={1}'.format(version_arg, version_level))
+                res.append(f'{version_arg}={version_level}')
 
         if 'import_dirs' in kwargs:
             import_dirs = kwargs.pop('import_dirs')
@@ -592,13 +635,15 @@ class DCompiler(Compiler):
             for idir_obj in import_dirs:
                 basedir = idir_obj.get_curdir()
                 for idir in idir_obj.get_incdirs():
+                    bldtreedir = os.path.join(basedir, idir)
                     # Avoid superfluous '/.' at the end of paths when d is '.'
                     if idir not in ('', '.'):
-                        expdir = os.path.join(basedir, idir)
+                        expdir = bldtreedir
                     else:
                         expdir = basedir
                     srctreedir = os.path.join(build_to_src, expdir)
-                    res.append('{0}{1}'.format(import_dir_arg, srctreedir))
+                    res.append(f'{import_dir_arg}{srctreedir}')
+                    res.append(f'{import_dir_arg}{bldtreedir}')
 
         if kwargs:
             raise EnvironmentException('Unknown D compiler feature(s) selected: %s' % ', '.join(kwargs.keys()))
@@ -759,7 +804,7 @@ class LLVMDCompiler(DmdLikeCompilerMixin, DCompiler):
 
     @classmethod
     def use_linker_args(cls, linker: str) -> T.List[str]:
-        return ['-linker={}'.format(linker)]
+        return [f'-linker={linker}']
 
     def get_linker_always_args(self) -> T.List[str]:
         args = super().get_linker_always_args()
@@ -769,6 +814,12 @@ class LLVMDCompiler(DmdLikeCompilerMixin, DCompiler):
 
     def get_disable_assert_args(self) -> T.List[str]:
         return ['--release']
+
+    def rsp_file_syntax(self) -> RSPFileSyntax:
+        # We use `mesonlib.is_windows` here because we want to konw what the
+        # build machine is, not the host machine. This really means whe whould
+        # have the Environment not the MachineInfo in the compiler.
+        return RSPFileSyntax.MSVC if is_windows() else RSPFileSyntax.GCC
 
 
 class DmdDCompiler(DmdLikeCompilerMixin, DCompiler):
@@ -850,3 +901,6 @@ class DmdDCompiler(DmdLikeCompilerMixin, DCompiler):
 
     def get_disable_assert_args(self) -> T.List[str]:
         return ['-release']
+
+    def rsp_file_syntax(self) -> RSPFileSyntax:
+        return RSPFileSyntax.MSVC

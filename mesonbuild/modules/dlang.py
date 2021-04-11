@@ -26,10 +26,8 @@ from ..mesonlib import (
     Popen_safe, MesonException
 )
 
-from ..dependencies.base import (
-    ExternalProgram, DubDependency
-)
-
+from ..dependencies.base import DubDependency
+from ..programs import ExternalProgram
 from ..interpreter import DependencyHolder
 
 class DlangModule(ExtensionModule):
@@ -70,7 +68,7 @@ class DlangModule(ExtensionModule):
 
         config_path = os.path.join(args[1], 'dub.json')
         if os.path.exists(config_path):
-            with open(config_path, 'r', encoding='utf8') as ofile:
+            with open(config_path, encoding='utf8') as ofile:
                 try:
                     config = json.load(ofile)
                 except ValueError:

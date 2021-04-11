@@ -29,7 +29,8 @@ from ..mesonlib import (
 from ..interpreterbase import FeatureNew, typed_pos_args, noKwargs, permittedKwargs
 
 if T.TYPE_CHECKING:
-    from ..interpreter import Interpreter, ModuleState
+    from . import ModuleState
+    from ..interpreter import Interpreter
 
 
 class FSModule(ExtensionModule):
@@ -112,7 +113,7 @@ class FSModule(ExtensionModule):
     def hash(self, state: 'ModuleState', args: T.Tuple[str, str], kwargs: T.Dict[str, T.Any]) -> ModuleReturnValue:
         file = self._resolve_dir(state, args[0])
         if not file.is_file():
-            raise MesonException('{} is not a file and therefore cannot be hashed'.format(file))
+            raise MesonException(f'{file} is not a file and therefore cannot be hashed')
         try:
             h = hashlib.new(args[1])
         except ValueError:
@@ -126,7 +127,7 @@ class FSModule(ExtensionModule):
     def size(self, state: 'ModuleState', args: T.Tuple[str], kwargs: T.Dict[str, T.Any]) -> ModuleReturnValue:
         file = self._resolve_dir(state, args[0])
         if not file.is_file():
-            raise MesonException('{} is not a file and therefore cannot be sized'.format(file))
+            raise MesonException(f'{file} is not a file and therefore cannot be sized')
         try:
             return ModuleReturnValue(file.stat().st_size, [])
         except ValueError:
@@ -210,7 +211,7 @@ class FSModule(ExtensionModule):
         if path_is_in_root(Path(path), Path(build_dir), resolve=True):
             raise MesonException('path must not be in the build tree')
         try:
-            with open(path, 'r', encoding=encoding) as f:
+            with open(path, encoding=encoding) as f:
                 data = f.read()
         except UnicodeDecodeError:
             raise MesonException(f'decoding failed for {path}')

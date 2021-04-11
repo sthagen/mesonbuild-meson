@@ -43,9 +43,9 @@ from . import environment
 from . import mlog
 from .coredata import major_versions_differ, MesonVersionMismatchException
 from .coredata import version as coredata_version
-from .dependencies import ExternalProgram
 from .mesonlib import MesonException, OrderedSet, get_wine_shortpath, split_args, join_args
 from .mintro import get_infodir, load_info_file
+from .programs import ExternalProgram
 from .backend.backends import TestProtocol, TestSerialisation
 
 # GNU autotools interprets a return code of 77 from tests it executes to
@@ -80,7 +80,7 @@ def determine_worker_count() -> int:
         try:
             num_workers = int(os.environ[varname])
         except ValueError:
-            print('Invalid value in {}, using 1 thread.'.format(varname))
+            print(f'Invalid value in {varname}, using 1 thread.')
             num_workers = 1
     else:
         try:
@@ -178,17 +178,17 @@ def returncode_to_status(retcode: int) -> str:
             signame = signal.Signals(signum).name
         except ValueError:
             signame = 'SIGinvalid'
-        return 'killed by signal {} {}'.format(signum, signame)
+        return f'killed by signal {signum} {signame}'
 
     if retcode <= 128:
-        return 'exit status {}'.format(retcode)
+        return f'exit status {retcode}'
 
     signum = retcode - 128
     try:
         signame = signal.Signals(signum).name
     except ValueError:
         signame = 'SIGinvalid'
-    return '(exit status {} or signal {} {})'.format(retcode, signum, signame)
+    return f'(exit status {retcode} or signal {signum} {signame})'
 
 # TODO for Windows
 sh_quote: T.Callable[[str], str] = lambda x: x
@@ -285,7 +285,7 @@ class TAPParser:
         explanation: T.Optional[str]
 
         def __str__(self) -> str:
-            return '{} {}'.format(self.number, self.name).strip()
+            return f'{self.number} {self.name}'.strip()
 
     class Error(T.NamedTuple):
         message: str
@@ -329,7 +329,7 @@ class TAPParser:
                 yield self.Test(num, name, TestResult.UNEXPECTEDPASS if ok else TestResult.EXPECTEDFAIL, explanation)
                 return
             else:
-                yield self.Error('invalid directive "{}"'.format(directive,))
+                yield self.Error(f'invalid directive "{directive}"')
 
         yield self.Test(num, name, TestResult.OK if ok else TestResult.FAIL, explanation)
 
@@ -367,7 +367,7 @@ class TAPParser:
                     return
                 if line.startswith(self.yaml_indent):
                     return
-                yield self.Error('YAML block not terminated (started on line {})'.format(self.yaml_lineno))
+                yield self.Error(f'YAML block not terminated (started on line {self.yaml_lineno})')
                 self.state = self._MAIN
 
             assert self.state == self._MAIN
@@ -433,13 +433,13 @@ class TAPParser:
         else:
             # end of file
             if self.state == self._YAML:
-                yield self.Error('YAML block not terminated (started on line {})'.format(self.yaml_lineno))
+                yield self.Error(f'YAML block not terminated (started on line {self.yaml_lineno})')
 
             if not self.bailed_out and self.plan and self.num_tests != self.plan.num_tests:
                 if self.num_tests < self.plan.num_tests:
-                    yield self.Error('Too few tests run (expected {}, got {})'.format(self.plan.num_tests, self.num_tests))
+                    yield self.Error(f'Too few tests run (expected {self.plan.num_tests}, got {self.num_tests})')
                 else:
-                    yield self.Error('Too many tests run (expected {}, got {})'.format(self.plan.num_tests, self.num_tests))
+                    yield self.Error(f'Too many tests run (expected {self.plan.num_tests}, got {self.num_tests})')
 
 class TestLogger:
     def flush(self) -> None:
@@ -530,7 +530,7 @@ class ConsoleLogger(TestLogger):
             return
 
         if len(self.running_tests) == 1:
-            count = '{}/{}'.format(self.started_tests, self.test_count)
+            count = f'{self.started_tests}/{self.test_count}'
         else:
             count = '{}-{}/{}'.format(self.started_tests - len(self.running_tests) + 1,
                                       self.started_tests, self.test_count)
@@ -657,7 +657,7 @@ class ConsoleLogger(TestLogger):
         self.running_tests.remove(result)
         if result.res is TestResult.TIMEOUT and harness.options.verbose:
             self.flush()
-            print('{} time out (After {} seconds)'.format(result.name, result.timeout))
+            print(f'{result.name} time out (After {result.timeout} seconds)')
 
         if not harness.options.quiet or not result.res.is_ok():
             self.flush()
@@ -692,9 +692,9 @@ class ConsoleLogger(TestLogger):
 
 class TextLogfileBuilder(TestFileLogger):
     def start(self, harness: 'TestHarness') -> None:
-        self.file.write('Log of Meson test suite run on {}\n\n'.format(datetime.datetime.now().isoformat()))
+        self.file.write(f'Log of Meson test suite run on {datetime.datetime.now().isoformat()}\n\n')
         inherit_env = env_tuple_to_str(os.environ.items())
-        self.file.write('Inherited environment: {}\n\n'.format(inherit_env))
+        self.file.write(f'Inherited environment: {inherit_env}\n\n')
 
     def log(self, harness: 'TestHarness', result: 'TestRun') -> None:
         self.file.write(harness.format(result, False) + '\n')
@@ -713,7 +713,7 @@ class TextLogfileBuilder(TestFileLogger):
                 self.file.write(harness.format(result, False) + '\n')
         self.file.write(harness.summary())
 
-        print('Full log written to {}'.format(self.filename))
+        print(f'Full log written to {self.filename}')
 
 
 class JsonLogfileBuilder(TestFileLogger):
@@ -773,8 +773,8 @@ class JunitBuilder(TestLogger):
         # We want to record this so that each result is recorded
         # separately
         if test.results:
-            suitename = '{}.{}'.format(test.project, test.name)
-            assert suitename not in self.suites, 'duplicate suite'
+            suitename = f'{test.project}.{test.name}'
+            assert suitename not in self.suites or harness.options.repeat > 1, 'duplicate suite'
 
             suite = self.suites[suitename] = et.Element(
                 'testsuite',
@@ -902,12 +902,12 @@ class TestRun:
             return returncode_to_status(self.returncode)
         if self.results:
             # running or succeeded
-            passed = sum((x.result.is_ok() for x in self.results))
-            ran = sum((x.result is not TestResult.SKIP for x in self.results))
+            passed = sum(x.result.is_ok() for x in self.results)
+            ran = sum(x.result is not TestResult.SKIP for x in self.results)
             if passed == ran:
-                return '{} subtests passed'.format(passed)
+                return f'{passed} subtests passed'
             else:
-                return '{}/{} subtests passed'.format(passed, ran)
+                return f'{passed}/{ran} subtests passed'
         return ''
 
     def _complete(self, returncode: int, res: TestResult,
@@ -928,7 +928,7 @@ class TestRun:
             return None
         test_only_env = set(self.env.items()) - set(os.environ.items())
         return env_tuple_to_str(test_only_env) + \
-            ' '.join((sh_quote(x) for x in self.cmd))
+            ' '.join(sh_quote(x) for x in self.cmd)
 
     def complete_skip(self, message: str) -> None:
         self.starttime = time.time()
@@ -985,7 +985,7 @@ TestRun.PROTOCOL_TO_CLASS[TestProtocol.EXITCODE] = TestRunExitCode
 class TestRunGTest(TestRunExitCode):
     def complete(self, returncode: int, res: TestResult,
                  stdo: T.Optional[str], stde: T.Optional[str]) -> None:
-        filename = '{}.xml'.format(self.test.name)
+        filename = f'{self.test.name}.xml'
         if self.test.workdir:
             filename = os.path.join(self.test.workdir, filename)
 
@@ -1005,7 +1005,7 @@ class TestRunTAP(TestRun):
         if returncode != 0 and not res.was_killed():
             res = TestResult.ERROR
             stde = stde or ''
-            stde += '\n(test program exited with status code {})'.format(returncode,)
+            stde += f'\n(test program exited with status code {returncode})'
 
         super().complete(returncode, res, stdo, stde)
 
@@ -1048,7 +1048,7 @@ class TestRunRust(TestRun):
             elif result == 'FAILED':
                 return TAPParser.Test(n, name, TestResult.FAIL, None)
             return TAPParser.Test(n, name, TestResult.ERROR,
-                                  'Unsupported output from rust test: {}'.format(result))
+                                  f'Unsupported output from rust test: {result}')
 
         n = 1
         async for line in lines:
@@ -1129,11 +1129,9 @@ def check_testdata(objs: T.List[TestSerialisation]) -> T.List[TestSerialisation]
 # Custom waiting primitives for asyncio
 
 async def try_wait_one(*awaitables: T.Any, timeout: T.Optional[T.Union[int, float]]) -> None:
-    try:
-        await asyncio.wait(awaitables,
-                           timeout=timeout, return_when=asyncio.FIRST_COMPLETED)
-    except asyncio.TimeoutError:
-        pass
+    """Wait for completion of one of the given futures, ignoring timeouts."""
+    await asyncio.wait(awaitables,
+                       timeout=timeout, return_when=asyncio.FIRST_COMPLETED)
 
 async def queue_iter(q: 'asyncio.Queue[T.Optional[str]]') -> T.AsyncIterator[str]:
     while True:
@@ -1150,14 +1148,37 @@ async def complete(future: asyncio.Future) -> None:
     except asyncio.CancelledError:
         pass
 
-async def complete_all(futures: T.Iterable[asyncio.Future]) -> None:
-    """Wait for completion of all the given futures, ignoring cancellation."""
-    while futures:
-        done, futures = await asyncio.wait(futures, return_when=asyncio.FIRST_EXCEPTION)
-        # Raise exceptions if needed for all the "done" futures
-        for f in done:
-            if not f.cancelled():
+async def complete_all(futures: T.Iterable[asyncio.Future],
+                       timeout: T.Optional[T.Union[int, float]] = None) -> None:
+    """Wait for completion of all the given futures, ignoring cancellation.
+       If timeout is not None, raise an asyncio.TimeoutError after the given
+       time has passed.  asyncio.TimeoutError is only raised if some futures
+       have not completed and none have raised exceptions, even if timeout
+       is zero."""
+
+    def check_futures(futures: T.Iterable[asyncio.Future]) -> None:
+        # Raise exceptions if needed
+        left = False
+        for f in futures:
+            if not f.done():
+                left = True
+            elif not f.cancelled():
                 f.result()
+        if left:
+            raise asyncio.TimeoutError
+
+    # Python is silly and does not have a variant of asyncio.wait with an
+    # absolute time as deadline.
+    deadline = None if timeout is None else asyncio.get_event_loop().time() + timeout
+    while futures and (timeout is None or timeout > 0):
+        done, futures = await asyncio.wait(futures, timeout=timeout,
+                                           return_when=asyncio.FIRST_EXCEPTION)
+        check_futures(done)
+        if deadline:
+            timeout = deadline - asyncio.get_event_loop().time()
+
+    check_futures(futures)
+
 
 class TestSubprocess:
     def __init__(self, p: asyncio.subprocess.Process,
@@ -1169,6 +1190,7 @@ class TestSubprocess:
         self.stdo_task = None            # type: T.Optional[asyncio.Future[str]]
         self.stde_task = None            # type: T.Optional[asyncio.Future[str]]
         self.postwait_fn = postwait_fn   # type: T.Callable[[], None]
+        self.all_futures = []            # type: T.List[asyncio.Future]
 
     def stdout_lines(self, console_mode: ConsoleUser) -> T.AsyncIterator[str]:
         q = asyncio.Queue()              # type: asyncio.Queue[T.Optional[str]]
@@ -1183,9 +1205,11 @@ class TestSubprocess:
         if self.stdo_task is None and self.stdout is not None:
             decode_coro = read_decode(self._process.stdout, console_mode)
             self.stdo_task = asyncio.ensure_future(decode_coro)
+            self.all_futures.append(self.stdo_task)
         if self.stderr is not None and self.stderr != asyncio.subprocess.STDOUT:
             decode_coro = read_decode(self._process.stderr, console_mode)
             self.stde_task = asyncio.ensure_future(decode_coro)
+            self.all_futures.append(self.stde_task)
 
         return self.stdo_task, self.stde_task
 
@@ -1238,11 +1262,13 @@ class TestSubprocess:
         p = self._process
         result = None
         additional_error = None
+
+        self.all_futures.append(asyncio.ensure_future(p.wait()))
         try:
-            await try_wait_one(p.wait(), timeout=timeout)
-            if p.returncode is None:
-                additional_error = await self._kill()
-                result = TestResult.TIMEOUT
+            await complete_all(self.all_futures, timeout=timeout)
+        except asyncio.TimeoutError:
+            additional_error = await self._kill()
+            result = TestResult.TIMEOUT
         except asyncio.CancelledError:
             # The main loop must have seen Ctrl-C.
             additional_error = await self._kill()
@@ -1399,7 +1425,7 @@ class SingleTestRunner:
             gtestname = self.test.name
             if self.test.workdir:
                 gtestname = os.path.join(self.test.workdir, self.test.name)
-            extra_cmd.append('--gtest_output=xml:{}.xml'.format(gtestname))
+            extra_cmd.append(f'--gtest_output=xml:{gtestname}.xml')
 
         p = await self._run_subprocess(cmd + extra_cmd,
                                        stdout=stdout,
@@ -1480,7 +1506,7 @@ class TestHarness:
     def load_tests(self, file_name: str) -> T.List[TestSerialisation]:
         datafile = Path('meson-private') / file_name
         if not datafile.is_file():
-            raise TestException('Directory {!r} does not seem to be a Meson build directory.'.format(self.options.wd))
+            raise TestException(f'Directory {self.options.wd!r} does not seem to be a Meson build directory.')
         with datafile.open('rb') as f:
             objs = check_testdata(pickle.load(f))
         return objs
@@ -1498,12 +1524,12 @@ class TestHarness:
     def get_test_setup(self, test: T.Optional[TestSerialisation]) -> build.TestSetup:
         if ':' in self.options.setup:
             if self.options.setup not in self.build_data.test_setups:
-                sys.exit("Unknown test setup '{}'.".format(self.options.setup))
+                sys.exit(f"Unknown test setup '{self.options.setup}'.")
             return self.build_data.test_setups[self.options.setup]
         else:
             full_name = test.project_name + ":" + self.options.setup
             if full_name not in self.build_data.test_setups:
-                sys.exit("Test setup '{}' not found from project '{}'.".format(self.options.setup, test.project_name))
+                sys.exit(f"Test setup '{self.options.setup}' not found from project '{test.project_name}'.")
             return self.build_data.test_setups[full_name]
 
     def merge_setup_options(self, options: argparse.Namespace, test: TestSerialisation) -> T.Dict[str, str]:
@@ -1550,7 +1576,7 @@ class TestHarness:
         elif result.res is TestResult.UNEXPECTEDPASS:
             self.unexpectedpass_count += 1
         else:
-            sys.exit('Unknown test result encountered: {}'.format(result.res))
+            sys.exit(f'Unknown test result encountered: {result.res}')
 
         if result.res.is_bad():
             self.collected_failures.append(result)
@@ -1627,18 +1653,22 @@ class TestHarness:
             # wrapper script.
             sys.exit(125)
 
-        self.test_count = len(tests)
         self.name_max_len = max([uniwidth(self.get_pretty_suite(test)) for test in tests])
         startdir = os.getcwd()
         try:
             if self.options.wd:
                 os.chdir(self.options.wd)
-            runners = [self.get_test_runner(test) for test in tests]
-            self.duration_max_len = max([len(str(int(runner.timeout or 99)))
-                                         for runner in runners])
-            # Disable the progress report if it gets in the way
-            self.need_console = any((runner.console_mode is not ConsoleUser.LOGGER
-                                     for runner in runners))
+            runners = []             # type: T.List[SingleTestRunner]
+            for i in range(self.options.repeat):
+                runners.extend(self.get_test_runner(test) for test in tests)
+                if i == 0:
+                    self.duration_max_len = max([len(str(int(runner.timeout or 99)))
+                                                 for runner in runners])
+                    # Disable the progress report if it gets in the way
+                    self.need_console = any(runner.console_mode is not ConsoleUser.LOGGER
+                                             for runner in runners)
+
+            self.test_count = len(runners)
             self.run_tests(runners)
         finally:
             os.chdir(startdir)
@@ -1860,16 +1890,15 @@ class TestHarness:
             asyncio.get_event_loop().add_signal_handler(signal.SIGINT, sigint_handler)
             asyncio.get_event_loop().add_signal_handler(signal.SIGTERM, sigterm_handler)
         try:
-            for _ in range(self.options.repeat):
-                for runner in runners:
-                    if not runner.is_parallel:
-                        await complete_all(futures)
-                    future = asyncio.ensure_future(run_test(runner))
-                    futures.append(future)
-                    running_tests[future] = runner.visible_name
-                    future.add_done_callback(test_done)
-                    if not runner.is_parallel:
-                        await complete(future)
+            for runner in runners:
+                if not runner.is_parallel:
+                    await complete_all(futures)
+                future = asyncio.ensure_future(run_test(runner))
+                futures.append(future)
+                running_tests[future] = runner.visible_name
+                future.add_done_callback(test_done)
+                if not runner.is_parallel:
+                    await complete(future)
                 if self.options.repeat > 1 and self.fail_count:
                     break
 
@@ -1919,7 +1948,7 @@ def rebuild_deps(wd: str, tests: T.List[TestSerialisation]) -> bool:
 
     ret = subprocess.run(ninja + ['-C', wd] + sorted(targets)).returncode
     if ret != 0:
-        print('Could not rebuild {}'.format(wd))
+        print(f'Could not rebuild {wd}')
         return False
 
     return True
@@ -1950,7 +1979,7 @@ def run(options: argparse.Namespace) -> int:
     if check_bin is not None:
         exe = ExternalProgram(check_bin, silent=True)
         if not exe.found():
-            print('Could not find requested program: {!r}'.format(check_bin))
+            print(f'Could not find requested program: {check_bin!r}')
             return 1
 
     with TestHarness(options) as th:

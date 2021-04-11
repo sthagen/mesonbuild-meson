@@ -1065,7 +1065,7 @@ arguments. The following keyword arguments are supported:
 
   `install_mode: 'rw-r--r--'` for just the file mode
 
-  `install_mode: ['rw-r--r--', 'nobody', 'nobody']` for the file mode and the user/group
+  `install_mode: ['rw-r--r--', 'nobody', 'nogroup']` for the file mode and the user/group
 
   `install_mode: ['rw-r-----', 0, 0]` for the file mode and uid/gid
 
@@ -1132,6 +1132,11 @@ Accepts the following keywords:
 - `install_mode` *(since 0.47.0)*: can be used to specify the file mode in symbolic
   format and optionally the owner/uid and group/gid for the installed files.
   An example value could be `['rwxr-sr-x', 'root', 'root']`.
+
+- `locale` *(since 0.58.0)*: can be used to specify the locale into which the
+  man page will be installed within the manual page directory tree.
+  An example manual might be `foo.fr.1` with a locale of `fr`, such
+  that `{mandir}/{locale}/man{num}/foo.1` becomes the installed file.
 
 *(since 0.49.0)* [manpages are no longer compressed
  implicitly][install_man_49].
@@ -1627,8 +1632,7 @@ platforms, notably OSX.  Consider using a
 ```
 
 Builds a static library with the given sources. Positional and keyword
-arguments are otherwise the same as for [`library`](#library), but it
-has one argument the others don't have:
+arguments are as for [`library`](#library), as well as:
 
  - `pic` *(since 0.36.0)*: builds the library as positional
    independent code (so it can be linked into a shared library). This
@@ -1856,6 +1860,36 @@ which to build the targets.
 If you desire more specific behavior than what this command provides,
 you should use `custom_target`.
 
+### range()
+
+``` meson
+    rangeobject range(stop)
+    rangeobject range(start, stop[, step])
+```
+
+*Since 0.58.0*
+
+Return an opaque object that can be only be used in `foreach` statements.
+- `start` must be integer greater or equal to 0. Defaults to 0.
+- `stop` must be integer greater or equal to `start`.
+- `step` must be integer greater or equal to 1. Defaults to 1.
+
+It cause the `foreach` loop to be called with the value from `start` included
+to `stop` excluded with an increment of `step` after each loop.
+
+```meson
+# Loop 15 times with i from 0 to 14 included.
+foreach i : range(15)
+   ...
+endforeach
+```
+
+The range object can also be assigned to a variable and indexed.
+```meson
+r = range(5, 10, 2)
+assert(r[2] == 9)
+```
+
 ## Built-in objects
 
 These are built-in objects that are always available.
@@ -1872,16 +1906,25 @@ the following methods.
   archived. Note that this runs the script file that is in the
   _staging_ directory, not the one in the source directory. If the
   script file can not be found in the staging directory, it is a hard
-  error. This command can only invoked from the main project, calling
-  it from a subproject is a hard error. *(since 0.49.0)* Accepts multiple arguments
-  for the script. *(since 0.54.0)* The `MESON_SOURCE_ROOT` and `MESON_BUILD_ROOT`
-  environment variables are set when dist scripts are run.
-
+  error. The `MESON_DIST_ROOT` environment variables is set when dist scripts is
+  run.
+  *(since 0.49.0)* Accepts multiple arguments for the script.
+  *(since 0.54.0)* The `MESON_SOURCE_ROOT` and `MESON_BUILD_ROOT`
+  environment variables are set when dist scripts are run. They are path to the
+  root source and build directory of the main project, even when the script
+  comes from a subproject.
   *(since 0.55.0)* The output of `configure_file`, `files`, and `find_program`
   as well as strings.
-
   *(since 0.57.0)* `file` objects and the output of `configure_file` may be
   used as the `script_name` parameter.
+  *(since 0.58.0)* This command can be invoked from a subproject, it was a hard
+  error in earlier versions. Subproject dist scripts will only be executed
+  when running `meson dist --include-subprojects`. `MESON_PROJECT_SOURCE_ROOT`,
+  `MESON_PROJECT_BUILD_ROOT` and `MESON_PROJECT_DIST_ROOT` environment
+  variables are set when dist scripts are run. They are identical to
+  `MESON_SOURCE_ROOT`, `MESON_BUILD_ROOT` and `MESON_DIST_ROOT` for main project
+  scripts, but for subproject scripts they have the path to the root of the
+  subproject appended, usually `subprojects/<subproject-name>`.
 
 - `add_install_script(script_name, arg1, arg2, ...)`: causes the script
   given as an argument to be run during the install step, this script
@@ -1945,6 +1988,9 @@ the following methods.
   root directory. *(deprecated since 0.56.0)*: this function will return the
   build root of the parent project if called from a subproject, which is usually
   not what you want. Try using `current_build_dir()` or `project_build_root()`.
+  In the rare cases where the root of the main project is needed,
+  use `global_build_root()` that has the same behaviour but with a more explicit
+  name.
 
 - `source_root()`: returns a string with the absolute path to the
   source root directory. Note: you should use the `files()` function
@@ -1953,12 +1999,25 @@ the following methods.
   *(deprecated since 0.56.0)*: This function will return the source root of the
   parent project if called from a subproject, which is usually not what you want.
   Try using `current_source_dir()` or `project_source_root()`.
+  In the rare cases where the root of the main project is needed,
+  use `global_source_root()` that has the same behaviour but with a more explicit
+  name.
 
 - `project_build_root()` *(since 0.56.0)*: returns a string with the absolute path
   to the build root directory of the current (sub)project.
 
 - `project_source_root()` *(since 0.56.0)*: returns a string with the absolute path
   to the source root directory of the current (sub)project.
+
+- `global_build_root()` *(since 0.58.0)*: returns a string with the absolute path
+  to the build root directory. This function will return the build root of the
+  main project if called from a subproject, which is usually not what you want.
+  It is usually preferable to use `current_build_dir()` or `project_build_root()`.
+
+- `global_source_root()` *(since 0.58.0)*: returns a string with the absolute path
+  to the source root directory. This function will return the source root of the
+  main project if called from a subproject, which is usually not what you want.
+  It is usually preferable to use `current_source_dir()` or `project_source_root()`.
 
 - `current_build_dir()`: returns a string with the absolute path to the
   current build directory.
@@ -2050,6 +2109,19 @@ the following methods.
 
 - `version()`: return a string with the version of Meson.
 
+- `add_devenv()`: *(Since 0.58.0)* add an [`environment()`](#environment) object
+  to the list of environments that will be applied when using [`meson devenv`](Commands.md#devenv)
+  command line. This is useful for developpers who wish to use the project without
+  installing it, it is often needed to set for example the path to plugins
+  directory, etc. Alternatively, a list or dictionary can be passed as first
+  argument.
+  ``` meson
+  devenv = environment()
+  devenv.set('PLUGINS_PATH', meson.current_build_dir())
+  ...
+  meson.add_devenv(devenv)
+  ```
+
 ### `build_machine` object
 
 Provides information about the build machine — the machine that is
@@ -2128,6 +2200,9 @@ are immutable, all operations return their results as a new string.
 
 - `join(list_of_strings)`: the opposite of split, for example
   `'.'.join(['a', 'b', 'c']` yields `'a.b.c'`.
+
+- `replace('old_substr', 'new_str')`: replaces instances of `old_substr` in the
+  string with `new_str` and returns a new string
 
 - `split(split_character)`: splits the string at the specified
   character (or whitespace if not set) and returns the parts in an
@@ -2231,8 +2306,7 @@ the following methods:
   the positional argument, you can specify external dependencies to
   use with `dependencies` keyword argument.
 
-- `cmd_array()`: returns an array containing the command arguments for
-  the current compiler.
+- `cmd_array()`: returns an array containing the command(s) for the compiler.
 
 - `compiles(code)`: returns true if the code fragment given in the
   positional argument compiles, you can specify external dependencies
@@ -2628,7 +2702,7 @@ an external dependency with the following methods:
    - includes: any include_directories
    - sources: any compiled or static sources the dependency has
 
- - `get_variable(cmake : str, pkgconfig : str, configtool : str,
+ - `get_variable(varname, cmake : str, pkgconfig : str, configtool : str,
    internal: str, default_value : str, pkgconfig_define : [str, str])`
    *(since 0.51.0)*: a generic variable getter method, which replaces the
    get_*type*_variable methods. This allows one to get the variable
@@ -2636,8 +2710,12 @@ an external dependency with the following methods:
    was found. If default_value is set and the value cannot be gotten
    from the object then default_value is returned, if it is not set
    then an error is raised.
-
    *(since 0.54.0)* added `internal` keyword.
+   *(since 0.58.0)* added `varname` as first positional argument. It is used as
+   default value for `cmake`, `pkgconfig`, `configtool` and `internal` keyword
+   arguments. It is useful in the common case where `pkgconfig` and `internal`
+   use the same variable name, in which case it's easier to write `dep.get_variable('foo')`
+   instead of `dep.get_variable(pkgconfig: 'foo', internal: 'foo')`.
 
 ### `disabler` object
 
@@ -2689,8 +2767,19 @@ tests and other functions. It has the following methods.
   joined by the separator, e.g.  `env.set('FOO', 'BAR'),` sets envvar
   `FOO` to value `BAR`. See `append()` above for how separators work.
 
-**Note:** All these methods overwrite the previously-defined value(s)
-if called twice with the same `varname`.
+*Since 0.58.0* `append()` and `prepend()` methods can be called multiple times
+on the same `varname`. Earlier Meson versions would warn and only the last
+operation took effect.
+
+```meson
+env = environment()
+
+# MY_PATH will be '0:1:2:3'
+env.set('MY_PATH', '1')
+env.append('MY_PATH', '2')
+env.append('MY_PATH', '3')
+env.prepend('MY_PATH', '0')
+```
 
 ### `external library` object
 

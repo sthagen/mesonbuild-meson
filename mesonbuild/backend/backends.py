@@ -26,6 +26,7 @@ import hashlib
 
 from .. import build
 from .. import dependencies
+from .. import programs
 from .. import mesonlib
 from .. import mlog
 from ..compilers import LANGUAGES_USING_LDFLAGS
@@ -65,7 +66,7 @@ class TestProtocol(enum.Enum):
             return cls.GTEST
         elif string == 'rust':
             return cls.RUST
-        raise MesonException('unknown test format {}'.format(string))
+        raise MesonException(f'unknown test format {string}')
 
     def __str__(self) -> str:
         cls = type(self)
@@ -140,7 +141,7 @@ class ExecutableSerialisation:
         self.cmd_args = cmd_args
         self.env = env
         if exe_wrapper is not None:
-            assert(isinstance(exe_wrapper, dependencies.ExternalProgram))
+            assert(isinstance(exe_wrapper, programs.ExternalProgram))
         self.exe_runner = exe_wrapper
         self.workdir = workdir
         self.extra_paths = extra_paths
@@ -152,7 +153,7 @@ class ExecutableSerialisation:
 
 class TestSerialisation:
     def __init__(self, name: str, project: str, suite: str, fname: T.List[str],
-                 is_cross_built: bool, exe_wrapper: T.Optional[dependencies.ExternalProgram],
+                 is_cross_built: bool, exe_wrapper: T.Optional[programs.ExternalProgram],
                  needs_exe_wrapper: bool, is_parallel: bool, cmd_args: T.List[str],
                  env: build.EnvironmentVariables, should_fail: bool,
                  timeout: T.Optional[int], workdir: T.Optional[str],
@@ -164,7 +165,7 @@ class TestSerialisation:
         self.fname = fname
         self.is_cross_built = is_cross_built
         if exe_wrapper is not None:
-            assert(isinstance(exe_wrapper, dependencies.ExternalProgram))
+            assert(isinstance(exe_wrapper, programs.ExternalProgram))
         self.exe_runner = exe_wrapper
         self.is_parallel = is_parallel
         self.cmd_args = cmd_args
@@ -223,6 +224,8 @@ class Backend:
         self.source_dir = self.environment.get_source_dir()
         self.build_to_src = mesonlib.relpath(self.environment.get_source_dir(),
                                              self.environment.get_build_dir())
+        self.src_to_build = mesonlib.relpath(self.environment.get_build_dir(),
+                                             self.environment.get_source_dir())
 
     def generate(self) -> None:
         raise RuntimeError('generate is not implemented in {}'.format(type(self).__name__))
@@ -264,10 +267,13 @@ class Backend:
         tmppath = os.path.normpath(os.path.join(self.build_to_src, curdir))
         return compiler.get_include_args(tmppath, False)
 
-    def get_build_dir_include_args(self, target, compiler):
-        curdir = target.get_subdir()
-        if curdir == '':
-            curdir = '.'
+    def get_build_dir_include_args(self, target, compiler, *, absolute_path=False):
+        if absolute_path:
+            curdir = os.path.join(self.build_dir, target.get_subdir())
+        else:
+            curdir = target.get_subdir()
+            if curdir == '':
+                curdir = '.'
         return compiler.get_include_args(curdir, False)
 
     def get_target_filename_for_linking(self, target):
@@ -282,14 +288,14 @@ class Backend:
             return os.path.join(self.get_target_dir(target), target.get_filename())
         elif isinstance(target, (build.CustomTarget, build.CustomTargetIndex)):
             if not target.is_linkable_target():
-                raise MesonException('Tried to link against custom target "{}", which is not linkable.'.format(target.name))
+                raise MesonException(f'Tried to link against custom target "{target.name}", which is not linkable.')
             return os.path.join(self.get_target_dir(target), target.get_filename())
         elif isinstance(target, build.Executable):
             if target.import_filename:
                 return os.path.join(self.get_target_dir(target), target.get_import_filename())
             else:
                 return None
-        raise AssertionError('BUG: Tried to link to {!r} which is not linkable'.format(target))
+        raise AssertionError(f'BUG: Tried to link to {target!r} which is not linkable')
 
     @lru_cache(maxsize=None)
     def get_target_dir(self, target):
@@ -335,7 +341,7 @@ class Backend:
     def get_unity_source_file(self, target, suffix, number):
         # There is a potential conflict here, but it is unlikely that
         # anyone both enables unity builds and has a file called foo-unity.cpp.
-        osrc = '{}-unity{}.{}'.format(target.name, number, suffix)
+        osrc = f'{target.name}-unity{number}.{suffix}'
         return mesonlib.File.from_built_file(self.get_target_private_dir(target), osrc)
 
     def generate_unity_files(self, target, unity_src):
@@ -368,7 +374,7 @@ class Backend:
                     ofile = init_language_file(comp.get_default_suffix(), unity_file_number)
                     unity_file_number += 1
                     files_in_current = 0
-                ofile.write('#include<{}>\n'.format(src))
+                ofile.write(f'#include<{src}>\n')
                 files_in_current += 1
             if ofile:
                 ofile.close()
@@ -406,7 +412,7 @@ class Backend:
                                      env: T.Optional[build.EnvironmentVariables] = None):
         exe = cmd[0]
         cmd_args = cmd[1:]
-        if isinstance(exe, dependencies.ExternalProgram):
+        if isinstance(exe, programs.ExternalProgram):
             exe_cmd = exe.get_command()
             exe_for_machine = exe.for_machine
         elif isinstance(exe, build.BuildTarget):
@@ -443,7 +449,7 @@ class Backend:
         else:
             if exe_cmd[0].endswith('.jar'):
                 exe_cmd = ['java', '-jar'] + exe_cmd
-            elif exe_cmd[0].endswith('.exe') and not (mesonlib.is_windows() or mesonlib.is_cygwin()):
+            elif exe_cmd[0].endswith('.exe') and not (mesonlib.is_windows() or mesonlib.is_cygwin() or mesonlib.is_wsl()):
                 exe_cmd = ['mono'] + exe_cmd
             exe_wrapper = None
 
@@ -490,7 +496,7 @@ class Backend:
                     ['--internal', 'exe', '--capture', capture, '--'] + es.cmd_args),
                     ', '.join(reasons))
 
-        if isinstance(exe, (dependencies.ExternalProgram,
+        if isinstance(exe, (programs.ExternalProgram,
                             build.BuildTarget, build.CustomTarget)):
             basename = exe.name
         elif isinstance(exe, mesonlib.File):
@@ -505,7 +511,7 @@ class Backend:
         data = bytes(str(es.env) + str(es.cmd_args) + str(es.workdir) + str(capture),
                      encoding='utf-8')
         digest = hashlib.sha1(data).hexdigest()
-        scratch_file = 'meson_exe_{0}_{1}.dat'.format(basename, digest)
+        scratch_file = f'meson_exe_{basename}_{digest}.dat'
         exe_data = os.path.join(self.environment.get_scratch_dir(), scratch_file)
         with open(exe_data, 'wb') as f:
             pickle.dump(es, f)
@@ -575,7 +581,7 @@ class Backend:
                 for dir in symbols_match.group(1).split(':'):
                     # Prevent usage of --just-symbols to specify rpath
                     if Path(dir).is_dir():
-                        raise MesonException('Invalid arg for --just-symbols, {} is a directory.'.format(dir))
+                        raise MesonException(f'Invalid arg for --just-symbols, {dir} is a directory.')
         return dirs
 
     def rpaths_for_bundled_shared_libraries(self, target, exclude_system=True):
@@ -601,7 +607,7 @@ class Backend:
                 continue
             if libdir.startswith(self.environment.get_source_dir()):
                 rel_to_src = libdir[len(self.environment.get_source_dir()) + 1:]
-                assert not os.path.isabs(rel_to_src), 'rel_to_src: {} is absolute'.format(rel_to_src)
+                assert not os.path.isabs(rel_to_src), f'rel_to_src: {rel_to_src} is absolute'
                 paths.append(os.path.join(self.build_to_src, rel_to_src))
             else:
                 paths.append(libdir)
@@ -717,7 +723,7 @@ class Backend:
     def create_msvc_pch_implementation(self, target, lang, pch_header):
         # We have to include the language in the file name, otherwise
         # pch.c and pch.cpp will both end up as pch.obj in VS backends.
-        impl_name = 'meson_pch-{}.{}'.format(lang, lang)
+        impl_name = f'meson_pch-{lang}.{lang}'
         pch_rel_to_build = os.path.join(self.get_target_private_dir(target), impl_name)
         # Make sure to prepend the build dir, since the working directory is
         # not defined. Otherwise, we might create the file in the wrong path.
@@ -833,7 +839,7 @@ class Backend:
         args = []
         for d in deps:
             if not (d.is_linkable_target()):
-                raise RuntimeError('Tried to link with a non-library target "{}".'.format(d.get_basename()))
+                raise RuntimeError(f'Tried to link with a non-library target "{d.get_basename()}".')
             arg = self.get_target_filename_for_linking(d)
             if not arg:
                 continue
@@ -897,11 +903,11 @@ class Backend:
         arr = []
         for t in sorted(tests, key=lambda tst: -1 * tst.priority):
             exe = t.get_exe()
-            if isinstance(exe, dependencies.ExternalProgram):
+            if isinstance(exe, programs.ExternalProgram):
                 cmd = exe.get_command()
             else:
                 cmd = [os.path.join(self.environment.get_build_dir(), self.get_target_filename(t.get_exe()))]
-            if isinstance(exe, (build.BuildTarget, dependencies.ExternalProgram)):
+            if isinstance(exe, (build.BuildTarget, programs.ExternalProgram)):
                 test_for_machine = exe.for_machine
             else:
                 # E.g. an external verifier or simulator program run on a generated executable.
@@ -1011,7 +1017,7 @@ class Backend:
             # to the future by a minuscule amount, less than
             # 0.001 seconds. I don't know why.
             if delta > 0.001:
-                raise MesonException('Clock skew detected. File {} has a time stamp {:.4f}s in the future.'.format(absf, delta))
+                raise MesonException(f'Clock skew detected. File {absf} has a time stamp {delta:.4f}s in the future.')
 
     def build_target_to_cmd_array(self, bt):
         if isinstance(bt, build.BuildTarget):
@@ -1036,7 +1042,7 @@ class Backend:
             m = regex.search(arg)
             while m is not None:
                 index = int(m.group(1))
-                src = '@OUTPUT{}@'.format(index)
+                src = f'@OUTPUT{index}@'
                 arg = arg.replace(src, os.path.join(private_dir, output_list[index]))
                 m = regex.search(arg)
             newargs.append(arg)
@@ -1129,12 +1135,22 @@ class Backend:
                     deps.append(os.path.join(self.build_to_src, target.subdir, i))
         return deps
 
+    def get_custom_target_output_dir(self, target):
+        # The XCode backend is special. A target foo/bar does
+        # not go to ${BUILDDIR}/foo/bar but instead to
+        # ${BUILDDIR}/${BUILDTYPE}/foo/bar.
+        # Currently we set the include dir to be the former,
+        # and not the latter. Thus we need this extra customisation
+        # point. If in the future we make include dirs et al match
+        # ${BUILDDIR}/${BUILDTYPE} instead, this becomes unnecessary.
+        return self.get_target_dir(target)
+
     def eval_custom_target_command(self, target, absolute_outputs=False):
         # We want the outputs to be absolute only when using the VS backend
         # XXX: Maybe allow the vs backend to use relative paths too?
         source_root = self.build_to_src
         build_root = '.'
-        outdir = self.get_target_dir(target)
+        outdir = self.get_custom_target_output_dir(target)
         if absolute_outputs:
             source_root = self.environment.get_source_dir()
             build_root = self.environment.get_build_dir()
@@ -1180,18 +1196,6 @@ class Backend:
                     else:
                         pdir = self.get_target_private_dir(target)
                     i = i.replace('@PRIVATE_DIR@', pdir)
-                if '@PRIVATE_OUTDIR_' in i:
-                    match = re.search(r'@PRIVATE_OUTDIR_(ABS_)?([^/\s*]*)@', i)
-                    if not match:
-                        msg = 'Custom target {!r} has an invalid argument {!r}' \
-                              ''.format(target.name, i)
-                        raise MesonException(msg)
-                    source = match.group(0)
-                    if match.group(1) is None and not target.absolute_paths:
-                        lead_dir = ''
-                    else:
-                        lead_dir = self.environment.get_build_dir()
-                    i = i.replace(source, os.path.join(lead_dir, outdir))
             else:
                 err_msg = 'Argument {0} is of unknown type {1}'
                 raise RuntimeError(err_msg.format(str(i), str(type(i))))
@@ -1223,10 +1227,10 @@ class Backend:
     def get_run_target_env(self, target: build.RunTarget) -> build.EnvironmentVariables:
         env = target.env if target.env else build.EnvironmentVariables()
         introspect_cmd = join_args(self.environment.get_build_command() + ['introspect'])
-        env.add_var(env.set, 'MESON_SOURCE_ROOT', [self.environment.get_source_dir()], {})
-        env.add_var(env.set, 'MESON_BUILD_ROOT', [self.environment.get_build_dir()], {})
-        env.add_var(env.set, 'MESON_SUBDIR', [target.subdir], {})
-        env.add_var(env.set, 'MESONINTROSPECT', [introspect_cmd], {})
+        env.set('MESON_SOURCE_ROOT', [self.environment.get_source_dir()])
+        env.set('MESON_BUILD_ROOT', [self.environment.get_build_dir()])
+        env.set('MESON_SUBDIR', [target.subdir])
+        env.set('MESONINTROSPECT', [introspect_cmd])
         return env
 
     def run_postconf_scripts(self) -> None:
@@ -1239,7 +1243,7 @@ class Backend:
 
         for s in self.build.postconf_scripts:
             name = ' '.join(s.cmd_args)
-            mlog.log('Running postconf script {!r}'.format(name))
+            mlog.log(f'Running postconf script {name!r}')
             run_exe(s, env)
 
     def create_install_data(self) -> InstallData:
@@ -1399,9 +1403,15 @@ class Backend:
                 num = f.split('.')[-1]
                 subdir = m.get_custom_install_dir()
                 if subdir is None:
-                    subdir = os.path.join(manroot, 'man' + num)
+                    if m.locale:
+                        subdir = os.path.join(manroot, m.locale, 'man' + num)
+                    else:
+                        subdir = os.path.join(manroot, 'man' + num)
+                fname = f.fname
+                if m.locale: # strip locale from file name
+                    fname = fname.replace(f'.{m.locale}', '')
                 srcabs = f.absolute_path(self.environment.get_source_dir(), self.environment.get_build_dir())
-                dstabs = os.path.join(subdir, os.path.basename(f.fname))
+                dstabs = os.path.join(subdir, os.path.basename(fname))
                 i = InstallDataBase(srcabs, dstabs, m.get_custom_install_mode(), m.subproject)
                 d.man.append(i)
 
@@ -1485,3 +1495,37 @@ class Backend:
             }]
 
         return []
+
+    def get_devenv(self) -> build.EnvironmentVariables:
+        env = build.EnvironmentVariables()
+        extra_paths = set()
+        library_paths = set()
+        for t in self.build.get_targets().values():
+            cross_built = not self.environment.machines.matches_build_machine(t.for_machine)
+            can_run = not cross_built or not self.environment.need_exe_wrapper()
+            in_default_dir = t.should_install() and not t.get_install_dir(self.environment)[1]
+            if not can_run or not in_default_dir:
+                continue
+            tdir = os.path.join(self.environment.get_build_dir(), self.get_target_dir(t))
+            if isinstance(t, build.Executable):
+                # Add binaries that are going to be installed in bindir into PATH
+                # so they get used by default instead of searching on system when
+                # in developer environment.
+                extra_paths.add(tdir)
+                if mesonlib.is_windows() or mesonlib.is_cygwin():
+                    # On windows we cannot rely on rpath to run executables from build
+                    # directory. We have to add in PATH the location of every DLL needed.
+                    extra_paths.update(self.determine_windows_extra_paths(t, []))
+            elif isinstance(t, build.SharedLibrary):
+                # Add libraries that are going to be installed in libdir into
+                # LD_LIBRARY_PATH. This allows running system applications using
+                # that library.
+                library_paths.add(tdir)
+        if mesonlib.is_windows() or mesonlib.is_cygwin():
+            extra_paths.update(library_paths)
+        elif mesonlib.is_osx():
+            env.prepend('DYLD_LIBRARY_PATH', list(library_paths))
+        else:
+            env.prepend('LD_LIBRARY_PATH', list(library_paths))
+        env.prepend('PATH', list(extra_paths))
+        return env

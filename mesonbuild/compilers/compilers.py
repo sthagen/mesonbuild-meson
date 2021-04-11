@@ -34,7 +34,7 @@ if T.TYPE_CHECKING:
     from ..coredata import OptionDictType, KeyedOptionDictType
     from ..envconfig import MachineInfo
     from ..environment import Environment
-    from ..linkers import DynamicLinker  # noqa: F401
+    from ..linkers import DynamicLinker, RSPFileSyntax
     from ..dependencies import Dependency
 
     CompilerType = T.TypeVar('CompilerType', bound=Compiler)
@@ -693,7 +693,7 @@ class Compiler(metaclass=abc.ABCMeta):
 
     def find_library(self, libname: str, env: 'Environment', extra_dirs: T.List[str],
                      libtype: LibType = LibType.PREFER_SHARED) -> T.Optional[T.List[str]]:
-        raise EnvironmentException('Language {} does not support library finding.'.format(self.get_display_language()))
+        raise EnvironmentException(f'Language {self.get_display_language()} does not support library finding.')
 
     def get_library_naming(self, env: 'Environment', libtype: LibType,
                            strict: bool = False) -> T.Optional[T.Tuple[str, ...]]:
@@ -762,7 +762,7 @@ class Compiler(metaclass=abc.ABCMeta):
                 contents = code
             elif isinstance(code, mesonlib.File):
                 srcname = code.fname
-                with open(code.fname, 'r') as f:
+                with open(code.fname) as f:
                     contents = f.read()
 
             # Construct the compiler command-line
@@ -896,7 +896,7 @@ class Compiler(metaclass=abc.ABCMeta):
 
     def has_func_attribute(self, name: str, env: 'Environment') -> T.Tuple[bool, bool]:
         raise EnvironmentException(
-            'Language {} does not support function attributes.'.format(self.get_display_language()))
+            f'Language {self.get_display_language()} does not support function attributes.')
 
     def get_pic_args(self) -> T.List[str]:
         m = 'Language {} does not support position-independent code'
@@ -971,7 +971,7 @@ class Compiler(metaclass=abc.ABCMeta):
         return self.linker.bitcode_args()
 
     def get_buildtype_args(self, buildtype: str) -> T.List[str]:
-        raise EnvironmentException('{} does not implement get_buildtype_args'.format(self.id))
+        raise EnvironmentException(f'{self.id} does not implement get_buildtype_args')
 
     def get_buildtype_linker_args(self, buildtype: str) -> T.List[str]:
         return self.linker.get_buildtype_args(buildtype)
@@ -1009,16 +1009,16 @@ class Compiler(metaclass=abc.ABCMeta):
         return []
 
     def get_crt_compile_args(self, crt_val: str, buildtype: str) -> T.List[str]:
-        raise EnvironmentError('This compiler does not support Windows CRT selection')
+        raise EnvironmentException('This compiler does not support Windows CRT selection')
 
     def get_crt_link_args(self, crt_val: str, buildtype: str) -> T.List[str]:
-        raise EnvironmentError('This compiler does not support Windows CRT selection')
+        raise EnvironmentException('This compiler does not support Windows CRT selection')
 
     def get_compile_only_args(self) -> T.List[str]:
         return []
 
     def get_preprocess_only_args(self) -> T.List[str]:
-        raise EnvironmentError('This compiler does not have a preprocessor')
+        raise EnvironmentException('This compiler does not have a preprocessor')
 
     def get_default_include_dirs(self) -> T.List[str]:
         return []
@@ -1047,22 +1047,22 @@ class Compiler(metaclass=abc.ABCMeta):
         return []
 
     def find_framework_paths(self, env: 'Environment') -> T.List[str]:
-        raise EnvironmentException('{} does not support find_framework_paths'.format(self.id))
+        raise EnvironmentException(f'{self.id} does not support find_framework_paths')
 
     def attribute_check_func(self, name: str) -> str:
-        raise EnvironmentException('{} does not support attribute checks'.format(self.id))
+        raise EnvironmentException(f'{self.id} does not support attribute checks')
 
     def get_pch_suffix(self) -> str:
-        raise EnvironmentException('{} does not support pre compiled headers'.format(self.id))
+        raise EnvironmentException(f'{self.id} does not support pre compiled headers')
 
     def get_pch_name(self, name: str) -> str:
-        raise EnvironmentException('{} does not support pre compiled headers'.format(self.id))
+        raise EnvironmentException(f'{self.id} does not support pre compiled headers')
 
     def get_pch_use_args(self, pch_dir: str, header: str) -> T.List[str]:
-        raise EnvironmentException('{} does not support pre compiled headers'.format(self.id))
+        raise EnvironmentException(f'{self.id} does not support pre compiled headers')
 
     def get_has_func_attribute_extra_args(self, name: str) -> T.List[str]:
-        raise EnvironmentException('{} does not support function attributes'.format(self.id))
+        raise EnvironmentException(f'{self.id} does not support function attributes')
 
     def name_string(self) -> str:
         return ' '.join(self.exelist)
@@ -1095,7 +1095,7 @@ class Compiler(metaclass=abc.ABCMeta):
         return objfile + '.' + self.get_depfile_suffix()
 
     def get_depfile_suffix(self) -> str:
-        raise EnvironmentError('{} does not implement get_depfile_suffix'.format(self.id))
+        raise EnvironmentException(f'{self.id} does not implement get_depfile_suffix')
 
     def get_no_stdinc_args(self) -> T.List[str]:
         """Arguments to turn off default inclusion of standard libraries."""
@@ -1112,13 +1112,13 @@ class Compiler(metaclass=abc.ABCMeta):
         pass
 
     def get_module_incdir_args(self) -> T.Tuple[str, ...]:
-        raise EnvironmentError('{} does not implement get_module_incdir_args'.format(self.id))
+        raise EnvironmentException(f'{self.id} does not implement get_module_incdir_args')
 
     def get_module_outdir_args(self, path: str) -> T.List[str]:
-        raise EnvironmentError('{} does not implement get_module_outdir_args'.format(self.id))
+        raise EnvironmentException(f'{self.id} does not implement get_module_outdir_args')
 
     def module_name_to_filename(self, module_name: str) -> str:
-        raise EnvironmentError('{} does not implement module_name_to_filename'.format(self.id))
+        raise EnvironmentException(f'{self.id} does not implement module_name_to_filename')
 
     def get_compiler_check_args(self, mode: CompileCheckMode) -> T.List[str]:
         """Arguments to pass the compiler and/or linker for checks.
@@ -1212,10 +1212,18 @@ class Compiler(metaclass=abc.ABCMeta):
     def get_feature_args(self, kwargs: T.Dict[str, T.Any], build_to_src: str) -> T.List[str]:
         """Used by D for extra language features."""
         # TODO: using a TypeDict here would improve this
-        raise EnvironmentError('{} does not implement get_feature_args'.format(self.id))
+        raise EnvironmentException(f'{self.id} does not implement get_feature_args')
 
     def get_prelink_args(self, prelink_name: str, obj_list: T.List[str]) -> T.List[str]:
-        raise EnvironmentException('{} does not know how to do prelinking.'.format(self.id))
+        raise EnvironmentException(f'{self.id} does not know how to do prelinking.')
+
+    def rsp_file_syntax(self) -> 'RSPFileSyntax':
+        """The format of the RSP file that this compiler supports.
+
+        If `self.can_linker_accept_rsp()` returns True, then this needs to
+        be implemented
+        """
+        return self.linker.rsp_file_syntax()
 
 
 def get_global_options(lang: str,
@@ -1223,21 +1231,31 @@ def get_global_options(lang: str,
                        for_machine: MachineChoice,
                        env: 'Environment') -> 'KeyedOptionDictType':
     """Retrieve options that apply to all compilers for a given language."""
-    description = 'Extra arguments passed to the {}'.format(lang)
+    description = f'Extra arguments passed to the {lang}'
     argkey = OptionKey('args', lang=lang, machine=for_machine)
     largkey = argkey.evolve('link_args')
+    envkey = argkey.evolve('env_args')
+
+    comp_key = argkey if argkey in env.options else envkey
+
+    comp_options = env.options.get(comp_key, [])
+    link_options = env.options.get(largkey, [])
 
     cargs = coredata.UserArrayOption(
         description + ' compiler',
-        env.options.get(argkey, []), split_args=True, user_input=True, allow_dups=True)
+        comp_options, split_args=True, user_input=True, allow_dups=True)
+
     largs = coredata.UserArrayOption(
         description + ' linker',
-        env.options.get(largkey, []), split_args=True, user_input=True, allow_dups=True)
+        link_options, split_args=True, user_input=True, allow_dups=True)
 
-    # This needs to be done here, so that if we have string values in the env
-    # options that we can safely combine them *after* they've been split
-    if comp.INVOKES_LINKER:
-        largs.set_value(largs.value + cargs.value)
+    if comp.INVOKES_LINKER and comp_key == envkey:
+        # If the compiler acts as a linker driver, and we're using the
+        # environment variable flags for both the compiler and linker
+        # arguments, then put the compiler flags in the linker flags as well.
+        # This is how autotools works, and the env vars freature is for
+        # autotools compatibility.
+        largs.extend_value(comp_options)
 
     opts: 'KeyedOptionDictType' = {argkey: cargs, largkey: largs}
 

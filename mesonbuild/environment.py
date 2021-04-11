@@ -27,6 +27,9 @@ from .mesonlib import (
     PerMachineDefaultable, PerThreeMachineDefaultable, split_args, quote_arg, OptionKey
 )
 from . import mlog
+from .programs import (
+    ExternalProgram, EmptyExternalProgram
+)
 
 from .envconfig import (
     BinaryTable, MachineInfo, Properties, known_cpu_families, CMakeVariables,
@@ -160,10 +163,10 @@ def _get_env_var(for_machine: MachineChoice, is_cross: bool, var_name: str) -> T
         if value is not None:
             break
     else:
-        formatted = ', '.join(['{!r}'.format(var) for var in candidates])
-        mlog.debug('None of {} are defined in the environment, not changing global flags.'.format(formatted))
+        formatted = ', '.join([f'{var!r}' for var in candidates])
+        mlog.debug(f'None of {formatted} are defined in the environment, not changing global flags.')
         return None
-    mlog.debug('Using {!r} from environment with value: {!r}'.format(var, value))
+    mlog.debug(f'Using {var!r} from environment with value: {value!r}')
     return value
 
 
@@ -208,7 +211,6 @@ def detect_ninja(version: str = '1.8.2', log: bool = False) -> T.List[str]:
     return r[0] if r else None
 
 def detect_ninja_command_and_version(version: str = '1.8.2', log: bool = False) -> (T.List[str], str):
-    from .dependencies.base import ExternalProgram
     env_ninja = os.environ.get('NINJA', None)
     for n in [env_ninja] if env_ninja else ['ninja', 'ninja-build', 'samu']:
         prog = ExternalProgram(n, silent=True)
@@ -640,7 +642,9 @@ class Environment:
             binaries.build = BinaryTable(config.get('binaries', {}))
             properties.build = Properties(config.get('properties', {}))
             cmakevars.build = CMakeVariables(config.get('cmake', {}))
-            self._load_machine_file_options(config, properties.build, MachineChoice.BUILD)
+            self._load_machine_file_options(
+                config, properties.build,
+                MachineChoice.BUILD if self.coredata.cross_files else MachineChoice.HOST)
 
         ## Read in cross file(s) to override host machine configuration
 
@@ -659,12 +663,6 @@ class Environment:
                 if self.coredata.is_per_machine_option(key):
                     self.options[key.as_build()] = value
             self._load_machine_file_options(config, properties.host, MachineChoice.HOST)
-        else:
-            # IF we aren't cross compiling, but we hav ea native file, the
-            # native file is for the host. This is due to an mismatch between
-            # meson internals which talk about build an host, and external
-            # interfaces which talk about native and cross.
-            self.options = {k.as_host(): v for k, v in self.options.items()}
 
 
         ## "freeze" now initialized configuration, and "save" to the class.
@@ -694,7 +692,6 @@ class Environment:
 
         exe_wrapper = self.lookup_binary_entry(MachineChoice.HOST, 'exe_wrapper')
         if exe_wrapper is not None:
-            from .dependencies import ExternalProgram
             self.exe_wrapper = ExternalProgram.from_bin_list(self, MachineChoice.HOST, 'exe_wrapper')
         else:
             self.exe_wrapper = None
@@ -748,20 +745,29 @@ class Environment:
 
     def _load_machine_file_options(self, config: 'ConfigParser', properties: Properties, machine: MachineChoice) -> None:
         """Read the contents of a Machine file and put it in the options store."""
+
+        # Look for any options in the deprecated paths section, warn about
+        # those, then assign them. They will be overwritten by the ones in the
+        # "built-in options" section if they're in both sections.
         paths = config.get('paths')
         if paths:
             mlog.deprecation('The [paths] section is deprecated, use the [built-in options] section instead.')
             for k, v in paths.items():
                 self.options[OptionKey.from_string(k).evolve(machine=machine)] = v
-        deprecated_properties = set()
+
+        # Next look for compiler options in the "properties" section, this is
+        # also deprecated, and these will also be overwritten by the "built-in
+        # options" section. We need to remove these from this section, as well.
+        deprecated_properties: T.Set[str] = set()
         for lang in compilers.all_languages:
             deprecated_properties.add(lang + '_args')
             deprecated_properties.add(lang + '_link_args')
         for k, v in properties.properties.copy().items():
             if k in deprecated_properties:
-                mlog.deprecation('{} in the [properties] section of the machine file is deprecated, use the [built-in options] section.'.format(k))
+                mlog.deprecation(f'{k} in the [properties] section of the machine file is deprecated, use the [built-in options] section.')
                 self.options[OptionKey.from_string(k).evolve(machine=machine)] = v
                 del properties.properties[k]
+
         for section, values in config.items():
             if ':' in section:
                 subproject, section = section.split(':')
@@ -776,9 +782,11 @@ class Environment:
                     if key.subproject:
                         raise MesonException('Do not set subproject options in [built-in options] section, use [subproject:built-in options] instead.')
                     self.options[key.evolve(subproject=subproject, machine=machine)] = v
-            elif section == 'project options':
+            elif section == 'project options' and machine is MachineChoice.HOST:
+                # Project options are only for the host machine, we don't want
+                # to read these from the native file
                 for k, v in values.items():
-                    # Project options are always for the machine machine
+                    # Project options are always for the host machine
                     key = OptionKey.from_string(k)
                     if key.subproject:
                         raise MesonException('Do not set subproject options in [built-in options] section, use [subproject:built-in options] instead.')
@@ -827,12 +835,29 @@ class Environment:
                             key = key.evolve(lang=lang)
                             env_opts[key].extend(p_list)
                     elif keyname == 'cppflags':
-                        key = OptionKey('args', machine=for_machine, lang='c')
+                        key = OptionKey('env_args', machine=for_machine, lang='c')
                         for lang in compilers.compilers.LANGUAGES_USING_CPPFLAGS:
                             key = key.evolve(lang=lang)
                             env_opts[key].extend(p_list)
                     else:
                         key = OptionKey.from_string(keyname).evolve(machine=for_machine)
+                        if evar in compilers.compilers.CFLAGS_MAPPING.values():
+                            # If this is an environment variable, we have to
+                            # store it separately until the compiler is
+                            # instantiated, as we don't know whether the
+                            # compiler will want to use these arguments at link
+                            # time and compile time (instead of just at compile
+                            # time) until we're instantiating that `Compiler`
+                            # object. This is required so that passing
+                            # `-Dc_args=` on the command line and `$CFLAGS`
+                            # have subtely differen behavior. `$CFLAGS` will be
+                            # added to the linker command line if the compiler
+                            # acts as a linker driver, `-Dc_args` will not.
+                            #
+                            # We stil use the original key as the base here, as
+                            # we want to inhert the machine and the compiler
+                            # language
+                            key = key.evolve('env_args')
                         env_opts[key].extend(p_list)
 
         # Only store options that are not already in self.options,
@@ -887,10 +912,6 @@ class Environment:
 
     def dump_coredata(self) -> str:
         return coredata.save(self.coredata, self.get_build_dir())
-
-    def get_script_dir(self) -> str:
-        import mesonbuild.scripts
-        return os.path.dirname(mesonbuild.scripts.__file__)
 
     def get_log_dir(self) -> str:
         return self.log_dir
@@ -1004,7 +1025,7 @@ class Environment:
             compilers = [compilers]
         else:
             if not self.machines.matches_build_machine(for_machine):
-                raise EnvironmentException('{!r} compiler binary not defined in cross or native file'.format(lang))
+                raise EnvironmentException(f'{lang!r} compiler binary not defined in cross or native file')
             compilers = getattr(self, 'default_' + lang)
             ccache = BinaryTable.detect_ccache()
 
@@ -1016,11 +1037,11 @@ class Environment:
         return compilers, ccache, exe_wrap
 
     def _handle_exceptions(self, exceptions, binaries, bintype='compiler'):
-        errmsg = 'Unknown {}(s): {}'.format(bintype, binaries)
+        errmsg = f'Unknown {bintype}(s): {binaries}'
         if exceptions:
             errmsg += '\nThe following exception(s) were encountered:'
             for (c, e) in exceptions.items():
-                errmsg += '\nRunning "{0}" gave "{1}"'.format(c, e)
+                errmsg += f'\nRunning "{c}" gave "{e}"'
         raise EnvironmentException(errmsg)
 
     @staticmethod
@@ -1208,7 +1229,7 @@ class Environment:
                 compiler = [compiler]
             compiler_name = os.path.basename(compiler[0])
 
-            if not set(['cl', 'cl.exe', 'clang-cl', 'clang-cl.exe']).isdisjoint(compiler):
+            if not {'cl', 'cl.exe', 'clang-cl', 'clang-cl.exe'}.isdisjoint(compiler):
                 # Watcom C provides it's own cl.exe clone that mimics an older
                 # version of Microsoft's compiler. Since Watcom's cl.exe is
                 # just a wrapper, we skip using it if we detect its presence
@@ -1809,7 +1830,7 @@ class Environment:
 
                         # Also ensure that we pass any extra arguments to the linker
                         for l in exelist:
-                            compiler.extend(['-C', 'link-arg={}'.format(l)])
+                            compiler.extend(['-C', f'link-arg={l}'])
 
                     # This trickery with type() gets us the class of the linker
                     # so we can initialize a new copy for the Rust Compiler
@@ -2065,7 +2086,7 @@ class Environment:
             if 'DMD32 D Compiler' in out or 'DMD64 D Compiler' in out:
                 return DLinker(linker, compiler.arch)
             if 'LDC - the LLVM D compiler' in out:
-                return DLinker(linker, compiler.arch)
+                return DLinker(linker, compiler.arch, rsp_syntax=compiler.rsp_file_syntax())
             if 'GDC' in out and ' based on D ' in out:
                 return DLinker(linker, compiler.arch)
             if err.startswith('Renesas') and ('rlink' in linker or 'rlink.exe' in linker):
@@ -2161,6 +2182,5 @@ class Environment:
 
     def get_exe_wrapper(self):
         if not self.need_exe_wrapper():
-            from .dependencies import EmptyExternalProgram
             return EmptyExternalProgram()
         return self.exe_wrapper

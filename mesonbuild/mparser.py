@@ -72,7 +72,7 @@ class BlockParseException(MesonException):
             # Followed by a caret to show the block start
             # Followed by underscores
             # Followed by a caret to show the block end.
-            super().__init__("%s\n%s\n%s" % (text, line, '%s^%s^' % (' ' * start_colno, '_' * (colno - start_colno - 1))))
+            super().__init__("{}\n{}\n{}".format(text, line, '{}^{}^'.format(' ' * start_colno, '_' * (colno - start_colno - 1))))
         else:
             # If block start and end are on different lines, it is formatted as:
             # Error message
@@ -114,6 +114,7 @@ class Lexer:
         self.token_specification = [
             # Need to be sorted longest to shortest.
             ('ignore', re.compile(r'[ \t]')),
+            ('fstring', re.compile(r"f'([^'\\]|(\\.))*'")),
             ('id', re.compile('[_a-zA-Z][_0-9a-zA-Z]*')),
             ('number', re.compile(r'0[bB][01]+|0[oO][0-7]+|0[xX][0-9a-fA-F]+|0|[1-9]\d*')),
             ('eol_cont', re.compile(r'\\\n')),
@@ -189,7 +190,7 @@ class Lexer:
                         curl_count -= 1
                     elif tid == 'dblquote':
                         raise ParseException('Double quotes are not supported. Use single quotes.', self.getline(line_start), lineno, col)
-                    elif tid == 'string':
+                    elif tid in {'string', 'fstring'}:
                         # Handle here and not on the regexp to give a better error message.
                         if match_text.find("\n") != -1:
                             mlog.warning(textwrap.dedent("""\
@@ -200,11 +201,11 @@ class Lexer:
                                 str(lineno),
                                 str(col)
                             )
-                        value = match_text[1:-1]
+                        value = match_text[2 if tid == 'fstring' else 1:-1]
                         try:
                             value = ESCAPE_SEQUENCE_SINGLE_RE.sub(decode_match, value)
                         except MesonUnicodeDecodeError as err:
-                            raise MesonException("Failed to parse escape sequence: '{}' in string:\n  {}".format(err.match, match_text))
+                            raise MesonException(f"Failed to parse escape sequence: '{err.match}' in string:\n  {match_text}")
                     elif tid == 'multiline_string':
                         tid = 'string'
                         value = match_text[3:-3]
@@ -228,7 +229,7 @@ class Lexer:
                             tid = match_text
                         else:
                             if match_text in self.future_keywords:
-                                mlog.warning("Identifier '{}' will become a reserved keyword in a future release. Please rename it.".format(match_text),
+                                mlog.warning(f"Identifier '{match_text}' will become a reserved keyword in a future release. Please rename it.",
                                              location=types.SimpleNamespace(filename=filename, lineno=lineno))
                             value = match_text
                     yield Token(tid, filename, curline_start, curline, col, bytespan, value)
@@ -288,6 +289,14 @@ class StringNode(ElementaryNode[str]):
     def __str__(self) -> str:
         return "String node: '%s' (%d, %d)." % (self.value, self.lineno, self.colno)
 
+class FormatStringNode(ElementaryNode[str]):
+    def __init__(self, token: Token[str]):
+        super().__init__(token)
+        assert isinstance(self.value, str)
+
+    def __str__(self) -> str:
+        return "Format string node: '{self.value}' ({self.lineno}, {self.colno})."
+
 class ContinueNode(ElementaryNode):
     pass
 
@@ -316,7 +325,7 @@ class ArgumentNode(BaseNode):
 
     def set_kwarg(self, name: IdNode, value: BaseNode) -> None:
         if name.value in [x.value for x in self.kwargs.keys() if isinstance(x, IdNode)]:
-            mlog.warning('Keyword argument "{}" defined multiple times.'.format(name.value), location=self)
+            mlog.warning(f'Keyword argument "{name.value}" defined multiple times.', location=self)
             mlog.warning('This will be an error in future Meson releases.')
         self.kwargs[name] = value
 
@@ -510,12 +519,12 @@ class Parser:
     def expect(self, s: str) -> bool:
         if self.accept(s):
             return True
-        raise ParseException('Expecting %s got %s.' % (s, self.current.tid), self.getline(), self.current.lineno, self.current.colno)
+        raise ParseException(f'Expecting {s} got {self.current.tid}.', self.getline(), self.current.lineno, self.current.colno)
 
     def block_expect(self, s: str, block_start: Token) -> bool:
         if self.accept(s):
             return True
-        raise BlockParseException('Expecting %s got %s.' % (s, self.current.tid), self.getline(), self.current.lineno, self.current.colno, self.lexer.getline(block_start.line_start), block_start.lineno, block_start.colno)
+        raise BlockParseException(f'Expecting {s} got {self.current.tid}.', self.getline(), self.current.lineno, self.current.colno, self.lexer.getline(block_start.line_start), block_start.lineno, block_start.colno)
 
     def parse(self) -> CodeBlockNode:
         block = self.codeblock()
@@ -671,6 +680,8 @@ class Parser:
             return NumberNode(t)
         if self.accept('string'):
             return StringNode(t)
+        if self.accept('fstring'):
+            return FormatStringNode(t)
         return EmptyNode(self.current.lineno, self.current.colno, self.current.filename)
 
     def key_values(self) -> ArgumentNode:

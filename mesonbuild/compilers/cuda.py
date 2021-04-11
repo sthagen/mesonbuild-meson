@@ -29,10 +29,11 @@ from .compilers import (Compiler, cuda_buildtype_args, cuda_optimization_args,
 if T.TYPE_CHECKING:
     from ..build import BuildTarget
     from ..coredata import KeyedOptionDictType
-    from ..dependencies import Dependency, ExternalProgram
+    from ..dependencies import Dependency
     from ..environment import Environment  # noqa: F401
     from ..envconfig import MachineInfo
     from ..linkers import DynamicLinker
+    from ..programs import ExternalProgram
 
 
 class _Phase(enum.Enum):
@@ -186,7 +187,7 @@ class CudaCompiler(Compiler):
 
     @classmethod
     def _shield_nvcc_list_arg(cls, arg: str, listmode: bool=True) -> str:
-        """
+        r"""
         Shield an argument against both splitting by NVCC's list-argument
         parse logic, and interpretation by any shell.
 
@@ -217,21 +218,6 @@ class CudaCompiler(Compiler):
                 # strings between them.
                 l = [cls._shield_nvcc_list_arg(s) for s in arg.split(SQ)]
                 l = sum([[s, DQSQ] for s in l][:-1], [])  # Interleave l with DQSQs
-
-                # The list l now has the structure of shielded strings interleaved
-                # with double-quoted single-quotes.
-                #
-                # Plain concatenation would result in the tripling of the length of
-                # a string made up only of single quotes. See if we can merge some
-                # DQSQs together first.
-                def isdqsq(x:str) -> bool:
-                    return x.startswith(SQ) and x.endswith(SQ) and x[1:-1].strip(SQ) == ''
-                for i in range(1, len(l)-2, 2):
-                    if isdqsq(l[i]) and l[i+1] == '' and isdqsq(l[i+2]):
-                        l[i+2] = l[i][:-1]+l[i+2][1:]
-                        l[i]   = ''
-
-                # With DQSQs merged, simply concatenate everything together and return.
                 return ''.join(l)
         else:
             # A comma is present, and list mode was active.
@@ -256,7 +242,53 @@ class CudaCompiler(Compiler):
             # Shield individual strings, without listmode, then return them with
             # escaped commas between them.
             l = [cls._shield_nvcc_list_arg(s, listmode=False) for s in l]
-            return '\,'.join(l)
+            return r'\,'.join(l)
+
+    @classmethod
+    def _merge_flags(cls, flags: T.List[str]) -> T.List[str]:
+        r"""
+        The flags to NVCC gets exceedingly verbose and unreadable when too many of them
+        are shielded with -Xcompiler. Merge consecutive -Xcompiler-wrapped arguments
+        into one.
+        """
+        if len(flags) <= 1:
+            return flags
+        flagit = iter(flags)
+        xflags = []
+
+        def is_xcompiler_flag_isolated(flag: str) -> bool:
+            return flag == '-Xcompiler'
+        def is_xcompiler_flag_glued(flag: str) -> bool:
+            return flag.startswith('-Xcompiler=')
+        def is_xcompiler_flag(flag: str) -> bool:
+            return is_xcompiler_flag_isolated(flag) or is_xcompiler_flag_glued(flag)
+        def get_xcompiler_val(flag: str, flagit: T.Iterator[str]) -> str:
+            if is_xcompiler_flag_glued(flag):
+                return flag[len('-Xcompiler='):]
+            else:
+                try:
+                    return next(flagit)
+                except StopIteration:
+                    return ""
+
+        ingroup = False
+        for flag in flagit:
+            if not is_xcompiler_flag(flag):
+                ingroup = False
+                xflags.append(flag)
+            elif ingroup:
+                xflags[-1] += ','
+                xflags[-1] += get_xcompiler_val(flag, flagit)
+            elif is_xcompiler_flag_isolated(flag):
+                ingroup = True
+                xflags.append(flag)
+                xflags.append(get_xcompiler_val(flag, flagit))
+            elif is_xcompiler_flag_glued(flag):
+                ingroup = True
+                xflags.append(flag)
+            else:
+                raise ValueError("-Xcompiler flag merging failed, unknown argument form!")
+        return xflags
 
     @classmethod
     def _to_host_flags(cls, flags: T.List[str], phase: _Phase = _Phase.COMPILER) -> T.List[str]:
@@ -431,7 +463,7 @@ class CudaCompiler(Compiler):
                 xflags.append(flag)
                 xflags.append(val)
 
-        return xflags
+        return cls._merge_flags(xflags)
 
     def needs_static_linker(self) -> bool:
         return False
@@ -514,7 +546,7 @@ class CudaCompiler(Compiler):
         mlog.debug(stde)
         mlog.debug('-----')
         if pc.returncode != 0:
-            raise EnvironmentException('Compiler {0} can not compile programs.'.format(self.name_string()))
+            raise EnvironmentException(f'Compiler {self.name_string()} can not compile programs.')
 
         # Run sanity check (if possible)
         if self.is_cross:
@@ -533,7 +565,7 @@ class CudaCompiler(Compiler):
         mlog.debug('-----')
         pe.wait()
         if pe.returncode != 0:
-            raise EnvironmentException('Executables created by {0} compiler {1} are not runnable.'.format(self.language, self.name_string()))
+            raise EnvironmentException(f'Executables created by {self.language} compiler {self.name_string()} are not runnable.')
 
         # Interpret the result of the sanity test.
         # As mentioned above, it is not only a sanity test but also a GPU
@@ -585,8 +617,19 @@ class CudaCompiler(Compiler):
         return opts
 
     def _to_host_compiler_options(self, options: 'KeyedOptionDictType') -> 'KeyedOptionDictType':
+        """
+        Convert an NVCC Option set to a host compiler's option set.
+        """
+
+        # We must strip the -std option from the host compiler option set, as NVCC has
+        # its own -std flag that may not agree with the host compiler's.
         overrides = {name: opt.value for name, opt in options.items()}
-        return OptionOverrideProxy(overrides, self.host_compiler.get_options())
+        overrides.pop(OptionKey('std', machine=self.for_machine,
+                                       lang=self.host_compiler.language), None)
+        host_options = self.host_compiler.get_options().copy()
+        if 'std' in host_options:
+            del host_options['std'] # type: ignore
+        return OptionOverrideProxy(overrides, host_options)
 
     def get_option_compile_args(self, options: 'KeyedOptionDictType') -> T.List[str]:
         args = self.get_ccbin_args(options)

@@ -57,11 +57,11 @@ def whitelist_wrapdb(urlstr: str) -> urllib.parse.ParseResult:
     """ raises WrapException if not whitelisted subdomain """
     url = urllib.parse.urlparse(urlstr)
     if not url.hostname:
-        raise WrapException('{} is not a valid URL'.format(urlstr))
+        raise WrapException(f'{urlstr} is not a valid URL')
     if not url.hostname.endswith(WHITELIST_SUBDOMAIN):
-        raise WrapException('{} is not a whitelisted WrapDB URL'.format(urlstr))
+        raise WrapException(f'{urlstr} is not a whitelisted WrapDB URL')
     if has_ssl and not url.scheme == 'https':
-        raise WrapException('WrapDB did not have expected SSL https url, instead got {}'.format(urlstr))
+        raise WrapException(f'WrapDB did not have expected SSL https url, instead got {urlstr}')
     return url
 
 def open_wrapdburl(urlstring: str) -> 'http.client.HTTPResponse':
@@ -72,17 +72,17 @@ def open_wrapdburl(urlstring: str) -> 'http.client.HTTPResponse':
         try:
             return T.cast('http.client.HTTPResponse', urllib.request.urlopen(urllib.parse.urlunparse(url), timeout=REQ_TIMEOUT))
         except urllib.error.URLError as excp:
-            raise WrapException('WrapDB connection failed to {} with error {}'.format(urlstring, excp))
+            raise WrapException(f'WrapDB connection failed to {urlstring} with error {excp}')
 
     # following code is only for those without Python SSL
     nossl_url = url._replace(scheme='http')
     if not SSL_WARNING_PRINTED:
-        mlog.warning('SSL module not available in {}: WrapDB traffic not authenticated.'.format(sys.executable))
+        mlog.warning(f'SSL module not available in {sys.executable}: WrapDB traffic not authenticated.')
         SSL_WARNING_PRINTED = True
     try:
         return T.cast('http.client.HTTPResponse', urllib.request.urlopen(urllib.parse.urlunparse(nossl_url), timeout=REQ_TIMEOUT))
     except urllib.error.URLError as excp:
-        raise WrapException('WrapDB connection failed to {} with error {}'.format(urlstring, excp))
+        raise WrapException(f'WrapDB connection failed to {urlstring} with error {excp}')
 
 
 class WrapException(MesonException):
@@ -109,7 +109,7 @@ class PackageDefinition:
         if os.path.dirname(self.directory):
             raise WrapException('Directory key must be a name and not a path')
         if self.type and self.type not in ALL_TYPES:
-            raise WrapException('Unknown wrap type {!r}'.format(self.type))
+            raise WrapException(f'Unknown wrap type {self.type!r}')
         self.filesdir = os.path.join(os.path.dirname(self.filename), 'packagefiles')
 
     def parse_wrap(self) -> None:
@@ -136,7 +136,7 @@ class PackageDefinition:
                 raise WrapException('wrap-redirect filename must be a .wrap file')
             fname = dirname / fname
             if not fname.is_file():
-                raise WrapException('wrap-redirect filename does not exist')
+                raise WrapException(f'wrap-redirect {fname} filename does not exist')
             self.filename = str(fname)
             self.parse_wrap()
             return
@@ -144,7 +144,7 @@ class PackageDefinition:
 
     def parse_wrap_section(self, config: configparser.ConfigParser) -> None:
         if len(config.sections()) < 1:
-            raise WrapException('Missing sections in {}'.format(self.basename))
+            raise WrapException(f'Missing sections in {self.basename}')
         self.wrap_section = config.sections()[0]
         if not self.wrap_section.startswith('wrap-'):
             m = '{!r} is not a valid first section in {}'
@@ -334,7 +334,7 @@ class Resolver:
                 elif self.wrap.type == "svn":
                     self.get_svn()
                 else:
-                    raise WrapException('Unknown wrap type {!r}'.format(self.wrap.type))
+                    raise WrapException(f'Unknown wrap type {self.wrap.type!r}')
             self.apply_patch()
 
         # A meson.build or CMakeLists.txt file is required in the directory
@@ -442,7 +442,7 @@ class Resolver:
     def is_git_full_commit_id(self, revno: str) -> bool:
         result = False
         if len(revno) in (40, 64): # 40 for sha1, 64 for upcoming sha256
-            result = all((ch in '0123456789AaBbCcDdEeFf' for ch in revno))
+            result = all(ch in '0123456789AaBbCcDdEeFf' for ch in revno)
         return result
 
     def get_hg(self) -> None:
@@ -472,14 +472,14 @@ class Resolver:
         if url.hostname and url.hostname.endswith(WHITELIST_SUBDOMAIN):
             resp = open_wrapdburl(urlstring)
         elif WHITELIST_SUBDOMAIN in urlstring:
-            raise WrapException('{} may be a WrapDB-impersonating URL'.format(urlstring))
+            raise WrapException(f'{urlstring} may be a WrapDB-impersonating URL')
         else:
             try:
-                req = urllib.request.Request(urlstring, headers={'User-Agent': 'mesonbuild/{}'.format(coredata.version)})
+                req = urllib.request.Request(urlstring, headers={'User-Agent': f'mesonbuild/{coredata.version}'})
                 resp = urllib.request.urlopen(req, timeout=REQ_TIMEOUT)
             except urllib.error.URLError as e:
                 mlog.log(str(e))
-                raise WrapException('could not get {} is the internet available?'.format(urlstring))
+                raise WrapException(f'could not get {urlstring} is the internet available?')
         with contextlib.closing(resp) as resp:
             try:
                 dlsize = int(resp.info()['Content-Length'])
@@ -512,13 +512,13 @@ class Resolver:
     def check_hash(self, what: str, path: str, hash_required: bool = True) -> None:
         if what + '_hash' not in self.wrap.values and not hash_required:
             return
-        expected = self.wrap.get(what + '_hash')
+        expected = self.wrap.get(what + '_hash').lower()
         h = hashlib.sha256()
         with open(path, 'rb') as f:
             h.update(f.read())
         dhash = h.hexdigest()
         if dhash != expected:
-            raise WrapException('Incorrect hash for {}:\n {} expected\n {} actual.'.format(what, expected, dhash))
+            raise WrapException(f'Incorrect hash for {what}:\n {expected} expected\n {dhash} actual.')
 
     def download(self, what: str, ofname: str, fallback: bool = False) -> None:
         self.check_can_download()
@@ -526,10 +526,10 @@ class Resolver:
         mlog.log('Downloading', mlog.bold(self.packagename), what, 'from', mlog.bold(srcurl))
         try:
             dhash, tmpfile = self.get_data(srcurl)
-            expected = self.wrap.get(what + '_hash')
+            expected = self.wrap.get(what + '_hash').lower()
             if dhash != expected:
                 os.remove(tmpfile)
-                raise WrapException('Incorrect hash for {}:\n {} expected\n {} actual.'.format(what, expected, dhash))
+                raise WrapException(f'Incorrect hash for {what}:\n {expected} expected\n {dhash} actual.')
         except WrapException:
             if not fallback:
                 if what + '_fallback_url' in self.wrap.values:
@@ -555,11 +555,11 @@ class Resolver:
             return cache_path
         else:
             from ..interpreterbase import FeatureNew
-            FeatureNew('Local wrap patch files without {}_url'.format(what), '0.55.0').use(self.current_subproject)
+            FeatureNew(f'Local wrap patch files without {what}_url', '0.55.0').use(self.current_subproject)
             path = Path(self.wrap.filesdir) / filename
 
             if not path.exists():
-                raise WrapException('File "{}" does not exist'.format(path))
+                raise WrapException(f'File "{path}" does not exist')
             self.check_hash(what, path.as_posix(), hash_required=False)
 
             return path.as_posix()
@@ -582,7 +582,7 @@ class Resolver:
             patch_dir = self.wrap.values['patch_directory']
             src_dir = os.path.join(self.wrap.filesdir, patch_dir)
             if not os.path.isdir(src_dir):
-                raise WrapException('patch directory does not exists: {}'.format(patch_dir))
+                raise WrapException(f'patch directory does not exists: {patch_dir}')
             self.copy_tree(src_dir, self.dirname)
 
     def copy_tree(self, root_src_dir: str, root_dst_dir: str) -> None:

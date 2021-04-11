@@ -107,6 +107,7 @@ __all__ = [
     'is_qnx',
     'is_sunos',
     'is_windows',
+    'is_wsl',
     'iter_regexin_iter',
     'join_args',
     'listify',
@@ -213,7 +214,7 @@ def set_meson_command(mainfile: str) -> None:
         _meson_command = python_command + [mainfile]
     # We print this value for unit tests.
     if 'MESON_COMMAND_TESTS' in os.environ:
-        mlog.log('meson_command is {!r}'.format(_meson_command))
+        mlog.log(f'meson_command is {_meson_command!r}')
 
 
 def get_meson_command() -> T.Optional[T.List[str]]:
@@ -427,7 +428,7 @@ def get_compiler_for_source(compilers: T.Iterable['CompilerType'], src: str) -> 
     for comp in compilers:
         if comp.can_compile(src):
             return comp
-    raise MesonException('No specified compiler can handle file {!s}'.format(src))
+    raise MesonException(f'No specified compiler can handle file {src!s}')
 
 
 def classify_unity_sources(compilers: T.Iterable['CompilerType'], sources: T.Iterable[str]) -> T.Dict['CompilerType', T.List[str]]:
@@ -486,7 +487,7 @@ class PerMachine(T.Generic[_T]):
         return unfreeze
 
     def __repr__(self) -> str:
-        return 'PerMachine({!r}, {!r})'.format(self.build, self.host)
+        return f'PerMachine({self.build!r}, {self.host!r})'
 
 
 class PerThreeMachine(PerMachine[_T]):
@@ -521,7 +522,7 @@ class PerThreeMachine(PerMachine[_T]):
         return self.build == self[machine]
 
     def __repr__(self) -> str:
-        return 'PerThreeMachine({!r}, {!r}, {!r})'.format(self.build, self.host, self.target)
+        return f'PerThreeMachine({self.build!r}, {self.host!r}, {self.target!r})'
 
 
 class PerMachineDefaultable(PerMachine[T.Optional[_T]]):
@@ -542,7 +543,7 @@ class PerMachineDefaultable(PerMachine[T.Optional[_T]]):
         return freeze
 
     def __repr__(self) -> str:
-        return 'PerMachineDefaultable({!r}, {!r})'.format(self.build, self.host)
+        return f'PerMachineDefaultable({self.build!r}, {self.host!r})'
 
 
 class PerThreeMachineDefaultable(PerMachineDefaultable, PerThreeMachine[T.Optional[_T]]):
@@ -566,7 +567,7 @@ class PerThreeMachineDefaultable(PerMachineDefaultable, PerThreeMachine[T.Option
         return freeze
 
     def __repr__(self) -> str:
-        return 'PerThreeMachineDefaultable({!r}, {!r}, {!r})'.format(self.build, self.host, self.target)
+        return f'PerThreeMachineDefaultable({self.build!r}, {self.host!r}, {self.target!r})'
 
 
 def is_sunos() -> bool:
@@ -597,6 +598,8 @@ def is_windows() -> bool:
     platname = platform.system().lower()
     return platname == 'windows'
 
+def is_wsl() -> bool:
+    return is_linux() and 'microsoft' in platform.version().lower()
 
 def is_cygwin() -> bool:
     return sys.platform == 'cygwin'
@@ -647,7 +650,7 @@ def darwin_get_object_archs(objpath: str) -> T.List[str]:
     '''
     _, stdo, stderr = Popen_safe(['lipo', '-info', objpath])
     if not stdo:
-        mlog.debug('lipo {}: {}'.format(objpath, stderr))
+        mlog.debug(f'lipo {objpath}: {stderr}')
         return None
     stdo = stdo.rsplit(': ', 1)[1]
     # Convert from lipo-style archs to meson-style CPUs
@@ -682,6 +685,12 @@ def detect_vcs(source_dir: T.Union[str, Path]) -> T.Optional[T.Dict[str, str]]:
 
 def current_vs_supports_modules() -> bool:
     vsver = os.environ.get('VSCMD_VER', '')
+    nums = vsver.split('.', 2)
+    major = int(nums[0])
+    if major >= 17:
+        return True
+    if major == 16 and int(nums[1]) >= 10:
+        return True
     return vsver.startswith('16.9.0') and '-pre.' in vsver
 
 # a helper class which implements the same version ordering as RPM
@@ -701,10 +710,10 @@ class Version:
         self._v = sequences3
 
     def __str__(self) -> str:
-        return '%s (V=%s)' % (self._s, str(self._v))
+        return '{} (V={})'.format(self._s, str(self._v))
 
     def __repr__(self) -> str:
-        return '<Version: {}>'.format(self._s)
+        return f'<Version: {self._s}>'
 
     def __lt__(self, other: object) -> bool:
         if isinstance(other, Version):
@@ -929,7 +938,7 @@ if is_windows():
     # https://blogs.msdn.microsoft.com/twistylittlepassagesallalike/2011/04/23/everyone-quotes-command-line-arguments-the-wrong-way/
 
     _whitespace = ' \t\n\r'
-    _find_unsafe_char = re.compile(r'[{}"]'.format(_whitespace)).search
+    _find_unsafe_char = re.compile(fr'[{_whitespace}"]').search
 
     def quote_arg(arg: str) -> str:
         if arg and not _find_unsafe_char(arg):
@@ -1070,7 +1079,7 @@ def do_define(regex: T.Pattern[str], line: str, confdata: 'ConfigurationData', v
             result = v
         else:
             result = get_cmake_define(line, confdata)
-        result = '#define %s %s\n' % (varname, result)
+        result = f'#define {varname} {result}\n'
         (result, missing_variable) = do_replacement(regex, result, variable_format, confdata)
         return result
     else:
@@ -1084,7 +1093,7 @@ def get_variable_regex(variable_format: str = 'meson') -> T.Pattern[str]:
     elif variable_format == 'cmake':
         regex = re.compile(r'(?:\\\\)+(?=\\?\$)|\\\${|\${([-a-zA-Z0-9_]+)}')
     else:
-        raise MesonException('Format "{}" not handled'.format(variable_format))
+        raise MesonException(f'Format "{variable_format}" not handled')
     return regex
 
 def do_conf_str (data: list, confdata: 'ConfigurationData', variable_format: str,
@@ -1115,7 +1124,7 @@ def do_conf_str (data: list, confdata: 'ConfigurationData', variable_format: str
             line = do_define(regex, line, confdata, variable_format)
         else:
             if not line_is_valid(line,variable_format):
-                raise MesonException('Format "{}" mismatched'.format(variable_format))
+                raise MesonException(f'Format "{variable_format}" mismatched')
             line, missing = do_replacement(regex, line, variable_format, confdata)
             missing_variables.update(missing)
             if missing:
@@ -1130,7 +1139,7 @@ def do_conf_file(src: str, dst: str, confdata: 'ConfigurationData', variable_for
         with open(src, encoding=encoding, newline='') as f:
             data = f.readlines()
     except Exception as e:
-        raise MesonException('Could not read input file %s: %s' % (src, str(e)))
+        raise MesonException('Could not read input file {}: {}'.format(src, str(e)))
 
     (result, missing_variables, confdata_useless) = do_conf_str(data, confdata, variable_format, encoding)
     dst_tmp = dst + '~'
@@ -1138,7 +1147,7 @@ def do_conf_file(src: str, dst: str, confdata: 'ConfigurationData', variable_for
         with open(dst_tmp, 'w', encoding=encoding, newline='') as f:
             f.writelines(result)
     except Exception as e:
-        raise MesonException('Could not write output file %s: %s' % (dst, str(e)))
+        raise MesonException('Could not write output file {}: {}'.format(dst, str(e)))
     shutil.copymode(src, dst_tmp)
     replace_if_different(dst, dst_tmp)
     return missing_variables, confdata_useless
@@ -1178,11 +1187,11 @@ def dump_conf_header(ofilename: str, cdata: 'ConfigurationData', output_format: 
                         ofile.write('; %s\n' % line)
             if isinstance(v, bool):
                 if v:
-                    ofile.write('%sdefine %s\n\n' % (prefix, k))
+                    ofile.write(f'{prefix}define {k}\n\n')
                 else:
-                    ofile.write('%sundef %s\n\n' % (prefix, k))
+                    ofile.write(f'{prefix}undef {k}\n\n')
             elif isinstance(v, (int, str)):
-                ofile.write('%sdefine %s %s\n\n' % (prefix, k, v))
+                ofile.write(f'{prefix}define {k} {v}\n\n')
             else:
                 raise MesonException('Unknown data type in configuration file entry: ' + k)
     replace_if_different(ofilename, ofilename_tmp)
@@ -1486,7 +1495,7 @@ def get_filenames_templates_dict(inputs: T.List[str], outputs: T.List[str]) -> T
         values['@INPUT@'] = inputs
         for (ii, vv) in enumerate(inputs):
             # Write out @INPUT0@, @INPUT1@, ...
-            values['@INPUT{}@'.format(ii)] = vv
+            values[f'@INPUT{ii}@'] = vv
         if len(inputs) == 1:
             # Just one value, substitute @PLAINNAME@ and @BASENAME@
             values['@PLAINNAME@'] = plain = os.path.basename(inputs[0])
@@ -1495,7 +1504,7 @@ def get_filenames_templates_dict(inputs: T.List[str], outputs: T.List[str]) -> T
         # Gather values derived from the outputs, similar to above.
         values['@OUTPUT@'] = outputs
         for (ii, vv) in enumerate(outputs):
-            values['@OUTPUT{}@'.format(ii)] = vv
+            values[f'@OUTPUT{ii}@'] = vv
         # Outdir should be the same for all outputs
         values['@OUTDIR@'] = os.path.dirname(outputs[0])
         # Many external programs fail on empty arguments.
@@ -1521,9 +1530,16 @@ def windows_proof_rmtree(f: str) -> None:
     # be scanning files you are trying to delete. The only
     # way to fix this is to try again and again.
     delays = [0.1, 0.1, 0.2, 0.2, 0.2, 0.5, 0.5, 1, 1, 1, 1, 2]
-    # Start by making the tree wriable.
-    _make_tree_writable(f)
+    writable = False
     for d in delays:
+        try:
+            # Start by making the tree writable.
+            if not writable:
+                _make_tree_writable(f)
+                writable = True
+        except PermissionError:
+            time.sleep(d)
+            continue
         try:
             shutil.rmtree(f)
             return
@@ -1716,7 +1732,7 @@ class ProgressBarFallback:  # lgtm [py/iter-returns-non-self]
         if self.total and bar_type == 'download':
             print('Download size:', self.total)
         if desc:
-            print('{}: '.format(desc), end='')
+            print(f'{desc}: ', end='')
 
     # Pretend to be an iterator when called as one and don't print any
     # progress

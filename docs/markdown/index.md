@@ -29,12 +29,6 @@ code.
 Are you an absolute beginner when it comes to programming? No worries,
 read [this beginner guide](SimpleStart.md) to get started.
 
-## A full manual
-
-The documentation on this site is freely available for all. However
-there is also a full separate manual available for purchase [on this
-web page](https://meson-manual.com/).
-
 ## Community
 
 There are two main methods of connecting with other Meson
@@ -46,9 +40,9 @@ The second way is via IRC. The channel to use is `#mesonbuild` at
 
 ### [Projects using Meson](Users.md)
 
-Many projects out there are using Meson and their communities are also
-a great resource for learning about what (and what not too!) do when
-trying to convert to using Meson.
+Many projects are using Meson and they're
+a great resource for learning what to (and what not to!) do when
+converting existing projects to Meson.
 
 [A short list of Meson users can be found here](Users.md)
 but there are many more. We would love to hear about your success

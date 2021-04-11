@@ -18,6 +18,7 @@ import argparse
 import pickle
 import subprocess
 import typing as T
+import locale
 
 from .. import mesonlib
 from ..backend.backends import ExecutableSerialisation
@@ -67,14 +68,15 @@ def run_exe(exe: ExecutableSerialisation, extra_env: T.Optional[dict] = None) ->
 
     if p.returncode != 0:
         if exe.pickled:
-            print('while executing {!r}'.format(cmd_args))
+            print(f'while executing {cmd_args!r}')
         if exe.verbose:
             return p.returncode
+        encoding = locale.getpreferredencoding()
         if not exe.capture:
             print('--- stdout ---')
-            print(stdout.decode())
+            print(stdout.decode(encoding=encoding, errors='replace'))
         print('--- stderr ---')
-        print(stderr.decode())
+        print(stderr.decode(encoding=encoding, errors='replace'))
         return p.returncode
 
     if exe.capture:
@@ -82,7 +84,7 @@ def run_exe(exe: ExecutableSerialisation, extra_env: T.Optional[dict] = None) ->
         try:
             with open(exe.capture, 'rb') as cur:
                 skip_write = cur.read() == stdout
-        except IOError:
+        except OSError:
             pass
         if not skip_write:
             with open(exe.capture, 'wb') as output:

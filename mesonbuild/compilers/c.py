@@ -40,10 +40,11 @@ from .compilers import (
 
 if T.TYPE_CHECKING:
     from ..coredata import KeyedOptionDictType
-    from ..dependencies import Dependency, ExternalProgram
+    from ..dependencies import Dependency
     from ..envconfig import MachineInfo
     from ..environment import Environment
     from ..linkers import DynamicLinker
+    from ..programs import ExternalProgram
 
     CompilerMixinBase = Compiler
 else:
@@ -58,7 +59,7 @@ class CCompiler(CLikeCompiler, Compiler):
         try:
             return C_FUNC_ATTRIBUTES[name]
         except KeyError:
-            raise MesonException('Unknown function attribute "{}"'.format(name))
+            raise MesonException(f'Unknown function attribute "{name}"')
 
     language = 'c'
 
@@ -474,7 +475,7 @@ class ClangClCCompiler(_ClangCStds, ClangClCompiler, VisualStudioLikeCCompilerMi
         key = OptionKey('std', machine=self.for_machine, lang=self.language)
         std = options[key].value
         if std != "none":
-            return ['/clang:-std={}'.format(std)]
+            return [f'/clang:-std={std}']
         return []
 
 
@@ -654,7 +655,7 @@ class CompCertCCompiler(CompCertCompiler, CCompiler):
         return ['-O0']
 
     def get_output_args(self, target: str) -> T.List[str]:
-        return ['-o{}'.format(target)]
+        return [f'-o{target}']
 
     def get_werror_args(self) -> T.List[str]:
         return ['-Werror']

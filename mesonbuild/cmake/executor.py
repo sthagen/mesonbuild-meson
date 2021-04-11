@@ -23,12 +23,13 @@ import re
 import os
 
 from .. import mlog
+from ..environment import Environment
 from ..mesonlib import PerMachine, Popen_safe, version_compare, MachineChoice, is_windows, OptionKey
+from ..programs import find_external_program, NonExistingExternalProgram
 
 if T.TYPE_CHECKING:
     from ..environment import Environment
-    from ..dependencies.base import ExternalProgram
-    from ..compilers import Compiler
+    from ..programs import ExternalProgram
 
 TYPE_result    = T.Tuple[int, T.Optional[str], T.Optional[str]]
 TYPE_cache_key = T.Tuple[str, T.Tuple[str, ...], str, T.FrozenSet[T.Tuple[str, str]]]
@@ -65,9 +66,7 @@ class CMakeExecutor:
         if self.prefix_paths:
             self.extra_cmake_args += ['-DCMAKE_PREFIX_PATH={}'.format(';'.join(self.prefix_paths))]
 
-    def find_cmake_binary(self, environment: 'Environment', silent: bool = False) -> T.Tuple[T.Optional['ExternalProgram'], T.Optional[str]]:
-        from ..dependencies.base import find_external_program, NonExistingExternalProgram
-
+    def find_cmake_binary(self, environment: Environment, silent: bool = False) -> T.Tuple[T.Optional['ExternalProgram'], T.Optional[str]]:
         # Only search for CMake the first time and store the result in the class
         # definition
         if isinstance(CMakeExecutor.class_cmakebin[self.for_machine], NonExistingExternalProgram):
@@ -87,7 +86,7 @@ class CMakeExecutor:
                     continue
                 if not silent:
                     mlog.log('Found CMake:', mlog.bold(potential_cmakebin.get_path()),
-                             '({})'.format(version_if_ok))
+                             f'({version_if_ok})')
                 CMakeExecutor.class_cmakebin[self.for_machine] = potential_cmakebin
                 CMakeExecutor.class_cmakevers[self.for_machine] = version_if_ok
                 break
@@ -104,7 +103,7 @@ class CMakeExecutor:
 
     def check_cmake(self, cmakebin: 'ExternalProgram') -> T.Optional[str]:
         if not cmakebin.found():
-            mlog.log('Did not find CMake {!r}'.format(cmakebin.name))
+            mlog.log(f'Did not find CMake {cmakebin.name!r}')
             return None
         try:
             p, out = Popen_safe(cmakebin.get_command() + ['--version'])[0:2]
@@ -202,9 +201,9 @@ class CMakeExecutor:
         return rc, out, err
 
     def _call_impl(self, args: T.List[str], build_dir: Path, env: T.Optional[T.Dict[str, str]]) -> TYPE_result:
-        mlog.debug('Calling CMake ({}) in {} with:'.format(self.cmakebin.get_command(), build_dir))
+        mlog.debug(f'Calling CMake ({self.cmakebin.get_command()}) in {build_dir} with:')
         for i in args:
-            mlog.debug('  - "{}"'.format(i))
+            mlog.debug(f'  - "{i}"')
         if not self.print_cmout:
             return self._call_quiet(args, build_dir, env)
         else:

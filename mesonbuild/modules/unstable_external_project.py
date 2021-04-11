@@ -16,12 +16,12 @@ import os, subprocess, shlex
 from pathlib import Path
 import typing as T
 
-from . import ExtensionModule, ModuleReturnValue
+from . import ExtensionModule, ModuleReturnValue, ModuleState
 from .. import mlog, build
 from ..mesonlib import (MesonException, Popen_safe, MachineChoice,
-                       get_variable_regex, do_replacement)
+                       get_variable_regex, do_replacement, extract_as_list)
 from ..interpreterbase import InterpreterObject, InterpreterException, FeatureNew
-from ..interpreterbase import stringArgs, permittedKwargs
+from ..interpreterbase import permittedKwargs, typed_pos_args
 from ..interpreter import Interpreter, DependencyHolder
 from ..compilers.compilers import CFLAGS_MAPPING, CEXE_MAPPING
 from ..dependencies.base import InternalDependency, PkgConfigDependency
@@ -37,7 +37,7 @@ class ExternalProject(InterpreterObject):
                  environment: Environment,
                  build_machine: str,
                  host_machine: str,
-                 configure_command: T.List[str],
+                 configure_command: str,
                  configure_options: T.List[str],
                  cross_configure_options: T.List[str],
                  env: build.EnvironmentVariables,
@@ -59,13 +59,13 @@ class ExternalProject(InterpreterObject):
         self.verbose = verbose
         self.user_env = env
 
-        self.name = self.subdir.name
         self.src_dir = Path(self.env.get_source_dir(), self.subdir)
         self.build_dir = Path(self.env.get_build_dir(), self.subdir, 'build')
         self.install_dir = Path(self.env.get_build_dir(), self.subdir, 'dist')
         self.prefix = Path(self.env.coredata.get_option(OptionKey('prefix')))
         self.libdir = Path(self.env.coredata.get_option(OptionKey('libdir')))
         self.includedir = Path(self.env.coredata.get_option(OptionKey('includedir')))
+        self.name = self.src_dir.name
 
         # On Windows if the prefix is "c:/foo" and DESTDIR is "c:/bar", `make`
         # will install files into "c:/bar/c:/foo" which is an invalid path.
@@ -92,7 +92,7 @@ class ExternalProject(InterpreterObject):
 
         d = [('PREFIX', '--prefix=@PREFIX@', self.prefix.as_posix()),
              ('LIBDIR', '--libdir=@PREFIX@/@LIBDIR@', self.libdir.as_posix()),
-             ('INCLUDEDIR', '--includedir=@PREFIX@/@INCLUDEDIR@', self.includedir.as_posix()),
+             ('INCLUDEDIR', None, self.includedir.as_posix()),
              ]
         self._validate_configure_options(d)
 
@@ -140,7 +140,9 @@ class ExternalProject(InterpreterObject):
         # Ensure the user at least try to pass basic info to the build system,
         # like the prefix, libdir, etc.
         for key, default, val in variables:
-            key_format = '@{}@'.format(key)
+            if default is None:
+                continue
+            key_format = f'@{key}@'
             for option in self.configure_options:
                 if key_format in option:
                     break
@@ -160,13 +162,13 @@ class ExternalProject(InterpreterObject):
         if missing:
             var_list = ", ".join(map(repr, sorted(missing)))
             raise EnvironmentException(
-                "Variables {} in configure options are missing.".format(var_list))
+                f"Variables {var_list} in configure options are missing.")
         return out
 
     def _run(self, step: str, command: T.List[str]):
-        mlog.log('External project {}:'.format(self.name), mlog.bold(step))
+        mlog.log(f'External project {self.name}:', mlog.bold(step))
         m = 'Running command ' + str(command) + ' in directory ' + str(self.build_dir) + '\n'
-        log_filename = Path(mlog.log_dir, '{}-{}.log'.format(self.name, step))
+        log_filename = Path(mlog.log_dir, f'{self.name}-{step}.log')
         output = None
         if not self.verbose:
             output = open(log_filename, 'w')
@@ -178,7 +180,7 @@ class ExternalProject(InterpreterObject):
                                       stderr=subprocess.STDOUT,
                                       stdout=output)
         if p.returncode != 0:
-            m = '{} step returned error code {}.'.format(step, p.returncode)
+            m = f'{step} step returned error code {p.returncode}.'
             if not self.verbose:
                 m += '\nSee logs: ' + str(log_filename)
             raise MesonException(m)
@@ -196,8 +198,8 @@ class ExternalProject(InterpreterObject):
         if self.verbose:
             cmd.append('--verbose')
 
-        target_kwargs = {'output': '{}.stamp'.format(self.name),
-                         'depfile': '{}.d'.format(self.name),
+        target_kwargs = {'output': f'{self.name}.stamp',
+                         'depfile': f'{self.name}.d',
                          'command': cmd + ['@OUTPUT@', '@DEPFILE@'],
                          'console': True,
                          }
@@ -217,12 +219,9 @@ class ExternalProject(InterpreterObject):
 
         return [self.target, idir]
 
-    @stringArgs
     @permittedKwargs({'subdir'})
-    def dependency_method(self, args, kwargs):
-        if len(args) != 1:
-            m = 'ExternalProject.dependency takes exactly 1 positional arguments'
-            raise InterpreterException(m)
+    @typed_pos_args('external_project.dependency', str)
+    def dependency_method(self, args: T.Tuple[str], kwargs):
         libname = args[0]
 
         subdir = kwargs.get('subdir', '')
@@ -237,8 +236,8 @@ class ExternalProject(InterpreterObject):
 
         version = self.project_version['version']
         incdir = []
-        compile_args = ['-I{}'.format(abs_includedir)]
-        link_args = ['-L{}'.format(abs_libdir), '-l{}'.format(libname)]
+        compile_args = [f'-I{abs_includedir}']
+        link_args = [f'-L{abs_libdir}', f'-l{libname}']
         libs = []
         libs_whole = []
         sources = self.target
@@ -253,15 +252,17 @@ class ExternalProjectModule(ExtensionModule):
     @FeatureNew('External build system Module', '0.56.0')
     def __init__(self, interpreter):
         super().__init__(interpreter)
+        self.methods.update({'add_project': self.add_project,
+                             })
 
-    @stringArgs
     @permittedKwargs({'configure_options', 'cross_configure_options', 'verbose', 'env'})
-    def add_project(self, state, args, kwargs):
-        if len(args) != 1:
-            raise InterpreterException('add_project takes exactly one positional argument')
+    @typed_pos_args('external_project_mod.add_project', str)
+    def add_project(self, state: ModuleState, args: T.Tuple[str], kwargs: T.Dict[str, T.Any]):
         configure_command = args[0]
-        configure_options = kwargs.get('configure_options', [])
-        cross_configure_options = kwargs.get('cross_configure_options', ['--host={host}'])
+        configure_options = extract_as_list(kwargs, 'configure_options')
+        cross_configure_options = extract_as_list(kwargs, 'cross_configure_options')
+        if not cross_configure_options:
+            cross_configure_options = ['--host=@HOST@']
         verbose = kwargs.get('verbose', False)
         env = self.interpreter.unpack_env_kwarg(kwargs)
         project = ExternalProject(self.interpreter,

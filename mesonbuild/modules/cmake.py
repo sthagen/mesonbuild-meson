@@ -18,10 +18,11 @@ import typing as T
 
 from . import ExtensionModule, ModuleReturnValue
 
-from .. import build, dependencies, mesonlib, mlog
+from .. import build, mesonlib, mlog
 from ..cmake import SingleTargetOptions, TargetOptions, cmake_defines_to_args
-from ..interpreter import ConfigurationDataHolder, InterpreterException, SubprojectHolder, DependencyHolder
+from ..interpreter import ConfigurationDataHolder, SubprojectHolder, DependencyHolder
 from ..interpreterbase import (
+    InterpreterException,
     InterpreterObject,
     ObjectHolder,
 
@@ -36,6 +37,7 @@ from ..interpreterbase import (
 
     InvalidArguments,
 )
+from ..programs import ExternalProgram
 
 
 COMPATIBILITIES = ['AnyNewerVersion', 'SameMajorVersion', 'SameMinorVersion', 'ExactVersion']
@@ -92,7 +94,7 @@ class CMakeSubprojectHolder(InterpreterObject, ObjectHolder):
         tgt = args[0]
         res = self.held_object.cm_interpreter.target_info(tgt)
         if res is None:
-            raise InterpreterException('The CMake target {} does not exist\n'.format(tgt) +
+            raise InterpreterException(f'The CMake target {tgt} does not exist\n' +
                                        '  Use the following command in your meson.build to list all available targets:\n\n' +
                                        '    message(\'CMaket targets:\\n - \' + \'\\n - \'.join(<cmake_subproject>.target_list()))')
 
@@ -232,10 +234,10 @@ class CmakeModule(ExtensionModule):
         if self.cmake_detected:
             return True
 
-        cmakebin = dependencies.ExternalProgram('cmake', silent=False)
+        cmakebin = ExternalProgram('cmake', silent=False)
         p, stdout, stderr = mesonlib.Popen_safe(cmakebin.get_command() + ['--system-information', '-G', 'Ninja'])[0:3]
         if p.returncode != 0:
-            mlog.log('error retrieving cmake information: returnCode={0} stdout={1} stderr={2}'.format(p.returncode, stdout, stderr))
+            mlog.log(f'error retrieving cmake information: returnCode={p.returncode} stdout={stdout} stderr={stderr}')
             return False
 
         match = re.search('\nCMAKE_ROOT \\"([^"]+)"\n', stdout.strip())
@@ -273,11 +275,11 @@ class CmakeModule(ExtensionModule):
         if not isinstance(pkgroot, str):
             raise mesonlib.MesonException('Install_dir must be a string.')
 
-        template_file = os.path.join(self.cmake_root, 'Modules', 'BasicConfigVersion-{}.cmake.in'.format(compatibility))
+        template_file = os.path.join(self.cmake_root, 'Modules', f'BasicConfigVersion-{compatibility}.cmake.in')
         if not os.path.exists(template_file):
-            raise mesonlib.MesonException('your cmake installation doesn\'t support the {} compatibility'.format(compatibility))
+            raise mesonlib.MesonException(f'your cmake installation doesn\'t support the {compatibility} compatibility')
 
-        version_file = os.path.join(state.environment.scratch_dir, '{}ConfigVersion.cmake'.format(name))
+        version_file = os.path.join(state.environment.scratch_dir, f'{name}ConfigVersion.cmake')
 
         conf = {
             'CVF_VERSION': (version, ''),
@@ -295,10 +297,10 @@ class CmakeModule(ExtensionModule):
         package_init += PACKAGE_INIT_SET_AND_CHECK
 
         try:
-            with open(infile, "r") as fin:
+            with open(infile) as fin:
                 data = fin.readlines()
         except Exception as e:
-            raise mesonlib.MesonException('Could not read input file %s: %s' % (infile, str(e)))
+            raise mesonlib.MesonException('Could not read input file {}: {}'.format(infile, str(e)))
 
         result = []
         regex = re.compile(r'(?:\\\\)+(?=\\?@)|\\@|@([-a-zA-Z0-9_]+)@')
@@ -339,7 +341,7 @@ class CmakeModule(ExtensionModule):
             raise mesonlib.MesonException('"name" not specified.')
         name = kwargs['name']
 
-        (ofile_path, ofile_fname) = os.path.split(os.path.join(state.subdir, '{}Config.cmake'.format(name)))
+        (ofile_path, ofile_fname) = os.path.split(os.path.join(state.subdir, f'{name}Config.cmake'))
         ofile_abs = os.path.join(state.environment.build_dir, ofile_path, ofile_fname)
 
         install_dir = kwargs.get('install_dir', os.path.join(state.environment.coredata.get_option(mesonlib.OptionKey('libdir')), 'cmake', name))

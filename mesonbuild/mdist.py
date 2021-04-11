@@ -78,21 +78,27 @@ def process_submodules(dirname):
         del_gitfiles(os.path.join(dirname, v))
 
 
-def run_dist_scripts(src_root, bld_root, dist_root, dist_scripts):
+def run_dist_scripts(src_root, bld_root, dist_root, dist_scripts, subprojects):
     assert(os.path.isabs(dist_root))
     env = {}
     env['MESON_DIST_ROOT'] = dist_root
     env['MESON_SOURCE_ROOT'] = src_root
     env['MESON_BUILD_ROOT'] = bld_root
     for d in dist_scripts:
+        if d.subproject and d.subproject not in subprojects:
+            continue
+        subdir = subprojects.get(d.subproject, '')
+        env['MESON_PROJECT_DIST_ROOT'] = os.path.join(dist_root, subdir)
+        env['MESON_PROJECT_SOURCE_ROOT'] = os.path.join(src_root, subdir)
+        env['MESON_PROJECT_BUILD_ROOT'] = os.path.join(bld_root, subdir)
         name = ' '.join(d.cmd_args)
-        print('Running custom dist script {!r}'.format(name))
+        print(f'Running custom dist script {name!r}')
         try:
             rc = run_exe(d, env)
             if rc != 0:
                 sys.exit('Dist script errored out')
         except OSError:
-            print('Failed to run dist script {!r}'.format(name))
+            print(f'Failed to run dist script {name!r}')
             sys.exit(1)
 
 def git_root(src_root):
@@ -141,7 +147,7 @@ def git_clone(src_root, distdir):
 def create_dist_git(dist_name, archives, src_root, bld_root, dist_sub, dist_scripts, subprojects):
     distdir = os.path.join(dist_sub, dist_name)
     git_clone(src_root, distdir)
-    for path in subprojects:
+    for path in subprojects.values():
         sub_src_root = os.path.join(src_root, path)
         sub_distdir = os.path.join(distdir, path)
         if os.path.exists(sub_distdir):
@@ -150,7 +156,7 @@ def create_dist_git(dist_name, archives, src_root, bld_root, dist_sub, dist_scri
             git_clone(sub_src_root, sub_distdir)
         else:
             shutil.copytree(sub_src_root, sub_distdir)
-    run_dist_scripts(src_root, bld_root, distdir, dist_scripts)
+    run_dist_scripts(src_root, bld_root, distdir, dist_scripts, subprojects)
     output_names = []
     for a in archives:
         compressed_name = distdir + archive_extension[a]
@@ -222,7 +228,7 @@ def run_dist_steps(meson_command, unpacked_src_dir, builddir, installdir, ninja_
     return 0
 
 def check_dist(packagename, meson_command, extra_meson_args, bld_root, privdir):
-    print('Testing distribution package {}'.format(packagename))
+    print(f'Testing distribution package {packagename}')
     unpackdir = os.path.join(privdir, 'dist-unpack')
     builddir = os.path.join(privdir, 'dist-build')
     installdir = os.path.join(privdir, 'dist-install')
@@ -242,19 +248,19 @@ def check_dist(packagename, meson_command, extra_meson_args, bld_root, privdir):
 
     ret = run_dist_steps(meson_command, unpacked_src_dir, builddir, installdir, ninja_args)
     if ret > 0:
-        print('Dist check build directory was {}'.format(builddir))
+        print(f'Dist check build directory was {builddir}')
     else:
         windows_proof_rmtree(unpackdir)
         windows_proof_rmtree(builddir)
         windows_proof_rmtree(installdir)
-        print('Distribution package {} tested'.format(packagename))
+        print(f'Distribution package {packagename} tested')
     return ret
 
 def determine_archives_to_generate(options):
     result = []
     for i in options.formats.split(','):
         if i not in archive_choices:
-            sys.exit('Value "{}" not one of permitted values {}.'.format(i, archive_choices))
+            sys.exit(f'Value "{i}" not one of permitted values {archive_choices}.')
         result.append(i)
     if len(i) == 0:
         sys.exit('No archive types specified.')
@@ -264,7 +270,7 @@ def run(options):
     options.wd = os.path.abspath(options.wd)
     buildfile = Path(options.wd) / 'meson-private' / 'build.dat'
     if not buildfile.is_file():
-        raise MesonException('Directory {!r} does not seem to be a Meson build directory.'.format(options.wd))
+        raise MesonException(f'Directory {options.wd!r} does not seem to be a Meson build directory.')
     b = build.load(options.wd)
     # This import must be load delayed, otherwise it will get the default
     # value of None.
@@ -278,13 +284,13 @@ def run(options):
 
     archives = determine_archives_to_generate(options)
 
-    subprojects = []
+    subprojects = {}
     extra_meson_args = []
     if options.include_subprojects:
         subproject_dir = os.path.join(src_root, b.subproject_dir)
         for sub in b.subprojects:
             directory = wrap.get_directory(subproject_dir, sub)
-            subprojects.append(os.path.join(b.subproject_dir, directory))
+            subprojects[sub] = os.path.join(b.subproject_dir, directory)
         extra_meson_args.append('-Dwrap_mode=nodownload')
 
     if is_git(src_root):

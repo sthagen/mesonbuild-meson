@@ -9,40 +9,44 @@ from .wrap import wraptool
 
 ALL_TYPES_STRING = ', '.join(ALL_TYPES)
 
-def update_wrapdb_file(wrap, repo_dir, options):
+def update_wrapdb_file(wrap):
     patch_url = wrap.get('patch_url')
     branch, revision = wraptool.parse_patch_url(patch_url)
     new_branch, new_revision = wraptool.get_latest_version(wrap.name)
-    if new_branch == branch and new_revision == revision:
-        mlog.log('  -> Up to date.')
-        return True
-    wraptool.update_wrap_file(wrap.filename, wrap.name, new_branch, new_revision)
-    msg = ['  -> New wrap file downloaded.']
-    # Meson reconfigure won't use the new wrap file as long as the source
-    # directory exists. We don't delete it ourself to avoid data loss in case
-    # user has changes in their copy.
-    if os.path.isdir(repo_dir):
-        msg += ['To use it, delete', mlog.bold(repo_dir), 'and run', mlog.bold('meson --reconfigure')]
-    mlog.log(*msg)
-    return True
+    if new_branch != branch or new_revision != revision:
+        wraptool.update_wrap_file(wrap.filename, wrap.name, new_branch, new_revision)
+        mlog.log('  -> New wrap file downloaded.')
 
 def update_file(r, wrap, repo_dir, options):
     patch_url = wrap.values.get('patch_url', '')
     if patch_url.startswith(API_ROOT):
-        return update_wrapdb_file(wrap, repo_dir, options)
-    elif not os.path.isdir(repo_dir):
+        update_wrapdb_file(wrap)
+    if not os.path.isdir(repo_dir):
         # The subproject is not needed, or it is a tarball extracted in
         # 'libfoo-1.0' directory and the version has been bumped and the new
         # directory is 'libfoo-2.0'. In that case forcing a meson
         # reconfigure will download and use the new tarball.
-        mlog.log('  -> Subproject has not been checked out. Run', mlog.bold('meson --reconfigure'), 'to fetch it if needed.')
+        mlog.log('  -> Not used.')
+        return True
+    elif options.reset:
+        # Delete existing directory and redownload. It is possible that nothing
+        # changed but we have no way to know. Hopefully tarballs are still
+        # cached.
+        windows_proof_rmtree(repo_dir)
+        try:
+            r.resolve(wrap.name, 'meson')
+            mlog.log('  -> New version extracted')
+            return True
+        except WrapException as e:
+            mlog.log('  ->', mlog.red(str(e)))
+            return False
     else:
         # The subproject has not changed, or the new source and/or patch
         # tarballs should be extracted in the same directory than previous
         # version.
-        mlog.log('  -> Subproject has not changed, or the new source/patch needs to be extracted on the same location.\n' +
-                 '     In that case, delete', mlog.bold(repo_dir), 'and run', mlog.bold('meson --reconfigure'))
-    return True
+        mlog.log('  -> Subproject has not changed, or the new source/patch needs to be extracted on the same location.')
+        mlog.log('     Pass --reset option to delete directory and redownload.')
+        return False
 
 def git_output(cmd, workingdir):
     return quiet_git(cmd, workingdir, check=True)[1]
@@ -160,7 +164,7 @@ def update_git(r, wrap, repo_dir, options):
             mlog.log(mlog.red(str(e)))
             return False
     elif url != origin_url:
-        mlog.log('  -> URL changed from {!r} to {!r}'.format(origin_url, url))
+        mlog.log(f'  -> URL changed from {origin_url!r} to {url!r}')
         return False
     try:
         # Same as `git branch --show-current` but compatible with older git version
@@ -251,7 +255,7 @@ def update_svn(r, wrap, repo_dir, options):
     return True
 
 def update(r, wrap, repo_dir, options):
-    mlog.log('Updating {}...'.format(wrap.name))
+    mlog.log(f'Updating {wrap.name}...')
     if wrap.type == 'file':
         return update_file(r, wrap, repo_dir, options)
     elif wrap.type == 'git':
@@ -260,6 +264,8 @@ def update(r, wrap, repo_dir, options):
         return update_hg(r, wrap, repo_dir, options)
     elif wrap.type == 'svn':
         return update_svn(r, wrap, repo_dir, options)
+    elif wrap.type is None:
+        mlog.log('  -> Cannot update subproject with no wrap file')
     else:
         mlog.log('  -> Cannot update', wrap.type, 'subproject')
     return True
@@ -271,14 +277,14 @@ def checkout(r, wrap, repo_dir, options):
     if not branch_name:
         # It could be a detached git submodule for example.
         return True
-    mlog.log('Checkout {} in {}...'.format(branch_name, wrap.name))
+    mlog.log(f'Checkout {branch_name} in {wrap.name}...')
     if git_checkout(repo_dir, branch_name, create=options.b):
         git_show(repo_dir)
         return True
     return False
 
 def download(r, wrap, repo_dir, options):
-    mlog.log('Download {}...'.format(wrap.name))
+    mlog.log(f'Download {wrap.name}...')
     if os.path.isdir(repo_dir):
         mlog.log('  -> Already downloaded')
         return True
@@ -291,7 +297,7 @@ def download(r, wrap, repo_dir, options):
     return True
 
 def foreach(r, wrap, repo_dir, options):
-    mlog.log('Executing command in {}'.format(repo_dir))
+    mlog.log(f'Executing command in {repo_dir}')
     if not os.path.isdir(repo_dir):
         mlog.log('  -> Not downloaded yet')
         return True
@@ -310,7 +316,7 @@ def add_common_arguments(p):
     p.add_argument('--sourcedir', default='.',
                    help='Path to source directory')
     p.add_argument('--types', default='',
-                   help='Comma-separated list of subproject types. Supported types are: {} (default: all)'.format(ALL_TYPES_STRING))
+                   help=f'Comma-separated list of subproject types. Supported types are: {ALL_TYPES_STRING} (default: all)')
 
 def add_subprojects_argument(p):
     p.add_argument('subprojects', nargs='*',
@@ -372,7 +378,7 @@ def run(options):
     types = [t.strip() for t in options.types.split(',')] if options.types else []
     for t in types:
         if t not in ALL_TYPES:
-            raise MesonException('Unknown subproject type {!r}, supported types are: {}'.format(t, ALL_TYPES_STRING))
+            raise MesonException(f'Unknown subproject type {t!r}, supported types are: {ALL_TYPES_STRING}')
     failures = []
     for wrap in wraps:
         if types and wrap.type not in types:

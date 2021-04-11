@@ -32,12 +32,11 @@ from .. import compilers
 from ..arglist import CompilerArgs
 from ..compilers import (
     Compiler, CCompiler,
-    DmdDCompiler,
-    FortranCompiler, PGICCompiler,
-    VisualStudioCsCompiler,
+    FortranCompiler,
+    PGICCompiler,
     VisualStudioLikeCompiler,
 )
-from ..linkers import ArLinker, VisualStudioLinker
+from ..linkers import ArLinker, RSPFileSyntax
 from ..mesonlib import (
     File, LibType, MachineChoice, MesonException, OrderedSet, PerMachine,
     ProgressBar, quote_arg, unholder,
@@ -49,6 +48,8 @@ from ..interpreter import Interpreter
 
 if T.TYPE_CHECKING:
     from ..linkers import StaticLinker
+    from ..compilers.cs import CsCompiler
+
 
 FORTRAN_INCLUDE_PAT = r"^\s*#?include\s*['\"](\w+\.\w+)['\"]"
 FORTRAN_MODULE_PAT = r"^\s*\bmodule\b\s+(\w+)\s*(?:!+.*)*$"
@@ -64,7 +65,7 @@ def cmd_quote(s):
     # any terminal backslashes likewise need doubling
     s = re.sub(r'(\\*)$', lambda m: '\\' * (len(m.group(1)) * 2), s)
     # and double quote
-    s = '"{}"'.format(s)
+    s = f'"{s}"'
 
     return s
 
@@ -88,6 +89,7 @@ else:
     quote_func = quote_arg
     execute_wrapper = []
     rmfile_prefix = ['rm', '-f', '{}', '&&']
+
 
 def get_rsp_threshold():
     '''Return a conservative estimate of the commandline size in bytes
@@ -174,7 +176,7 @@ class NinjaComment:
 class NinjaRule:
     def __init__(self, rule, command, args, description,
                  rspable = False, deps = None, depfile = None, extra = None,
-                 rspfile_quote_style = 'gcc'):
+                 rspfile_quote_style: RSPFileSyntax = RSPFileSyntax.GCC):
 
         def strToCommandArg(c):
             if isinstance(c, NinjaCommandArg):
@@ -208,7 +210,7 @@ class NinjaRule:
         self.rspable = rspable  # if a rspfile can be used
         self.refcount = 0
         self.rsprefcount = 0
-        self.rspfile_quote_style = rspfile_quote_style  # rspfile quoting style is 'gcc' or 'cl'
+        self.rspfile_quote_style = rspfile_quote_style
 
         if self.depfile == '$DEPFILE':
             self.depfile += '_UNQUOTED'
@@ -226,7 +228,7 @@ class NinjaRule:
         return ninja_quote(qf(str(x)))
 
     def write(self, outfile):
-        if self.rspfile_quote_style == 'cl':
+        if self.rspfile_quote_style is RSPFileSyntax.MSVC:
             rspfile_quote_func = cmd_quote
         else:
             rspfile_quote_func = gcc_rsp_quote
@@ -238,7 +240,7 @@ class NinjaRule:
                 yield '_RSP'
 
         for rsp in rule_iter():
-            outfile.write('rule {}{}\n'.format(self.name, rsp))
+            outfile.write(f'rule {self.name}{rsp}\n')
             if rsp == '_RSP':
                 outfile.write(' command = {} @$out.rsp\n'.format(' '.join([self._quoter(x) for x in self.command])))
                 outfile.write(' rspfile = $out.rsp\n')
@@ -246,10 +248,10 @@ class NinjaRule:
             else:
                 outfile.write(' command = {}\n'.format(' '.join([self._quoter(x) for x in (self.command + self.args)])))
             if self.deps:
-                outfile.write(' deps = {}\n'.format(self.deps))
+                outfile.write(f' deps = {self.deps}\n')
             if self.depfile:
-                outfile.write(' depfile = {}\n'.format(self.depfile))
-            outfile.write(' description = {}\n'.format(self.description))
+                outfile.write(f' depfile = {self.depfile}\n')
+            outfile.write(f' description = {self.description}\n')
             if self.extra:
                 for l in self.extra.split('\n'):
                     outfile.write(' ')
@@ -364,7 +366,7 @@ class NinjaBuildElement:
             mlog.debug("Command line for building %s is long, using a response file" % self.outfilenames)
         else:
             rulename = self.rulename
-        line = 'build {}{}: {} {}'.format(outs, implicit_outs, rulename, ins)
+        line = f'build {outs}{implicit_outs}: {rulename} {ins}'
         if len(self.deps) > 0:
             line += ' | ' + ' '.join([ninja_quote(x, True) for x in sorted(self.deps)])
         if len(self.orderdeps) > 0:
@@ -386,7 +388,7 @@ class NinjaBuildElement:
         outfile.write(line)
 
         if use_rspfile:
-            if self.rule.rspfile_quote_style == 'cl':
+            if self.rule.rspfile_quote_style is RSPFileSyntax.MSVC:
                 qf = cmd_quote
             else:
                 qf = gcc_rsp_quote
@@ -396,7 +398,7 @@ class NinjaBuildElement:
         for e in self.elems:
             (name, elems) = e
             should_quote = name not in raw_names
-            line = ' {} = '.format(name)
+            line = f' {name} = '
             newelems = []
             for i in elems:
                 if not should_quote or i == '&&': # Hackety hack hack
@@ -411,7 +413,7 @@ class NinjaBuildElement:
     def check_outputs(self):
         for n in self.outfilenames:
             if n in self.all_outputs:
-                raise MesonException('Multiple producers for Ninja target "{}". Please rename your targets.'.format(n))
+                raise MesonException(f'Multiple producers for Ninja target "{n}". Please rename your targets.')
             self.all_outputs[n] = True
 
 class NinjaBackend(backends.Backend):
@@ -511,7 +513,7 @@ int dummy;
         outfilename = os.path.join(self.environment.get_build_dir(), self.ninja_filename)
         tempfilename = outfilename + '~'
         with open(tempfilename, 'w', encoding='utf-8') as outfile:
-            outfile.write('# This is the build file for project "{}"\n'.format(self.build.get_project()))
+            outfile.write(f'# This is the build file for project "{self.build.get_project()}"\n')
             outfile.write('# It is autogenerated by the Meson build system.\n')
             outfile.write('# Do not edit by hand.\n\n')
             outfile.write('ninja_required_version = 1.8.2\n\n')
@@ -563,9 +565,9 @@ int dummy;
         # rule store as being wanted in compdb
         for for_machine in MachineChoice:
             for lang in self.environment.coredata.compilers[for_machine]:
-                rules += ["%s%s" % (rule, ext) for rule in [self.get_compiler_rule_name(lang, for_machine)]
+                rules += [f"{rule}{ext}" for rule in [self.get_compiler_rule_name(lang, for_machine)]
                           for ext in ['', '_RSP']]
-                rules += ["%s%s" % (rule, ext) for rule in [self.get_pch_rule_name(lang, for_machine)]
+                rules += [f"{rule}{ext}" for rule in [self.get_pch_rule_name(lang, for_machine)]
                           for ext in ['', '_RSP']]
         compdb_options = ['-x'] if mesonlib.version_compare(self.ninja_version, '>=1.9') else []
         ninja_compdb = self.ninja_command + ['-t', 'compdb'] + compdb_options + rules
@@ -620,7 +622,7 @@ int dummy;
             # either in the source root, or generated with configure_file and
             # in the build root
             if not isinstance(s, File):
-                raise InvalidArguments('All sources in target {!r} must be of type mesonlib.File'.format(s))
+                raise InvalidArguments(f'All sources in target {s!r} must be of type mesonlib.File')
             f = s.rel_to_builddir(self.build_to_src)
             srcs[f] = s
         return srcs
@@ -962,7 +964,7 @@ int dummy;
                                                 capture=ofilenames[0] if target.capture else None,
                                                 env=target.env)
         if reason:
-            cmd_type = ' (wrapped by meson {})'.format(reason)
+            cmd_type = f' (wrapped by meson {reason})'
         else:
             cmd_type = ''
         if target.depfile is not None:
@@ -980,10 +982,10 @@ int dummy;
 
     def build_run_target_name(self, target):
         if target.subproject != '':
-            subproject_prefix = '{}@@'.format(target.subproject)
+            subproject_prefix = f'{target.subproject}@@'
         else:
             subproject_prefix = ''
-        return '{}{}'.format(subproject_prefix, target.name)
+        return f'{subproject_prefix}{target.name}'
 
     def generate_run_target(self, target):
         target_name = self.build_run_target_name(target)
@@ -998,8 +1000,8 @@ int dummy;
             meson_exe_cmd, reason = self.as_meson_exe_cmdline(target_name, target.command[0], cmd[1:],
                                                               force_serialize=True, env=target_env,
                                                               verbose=True)
-            cmd_type = ' (wrapped by meson {})'.format(reason)
-            internal_target_name = 'meson-{}'.format(target_name)
+            cmd_type = f' (wrapped by meson {reason})'
+            internal_target_name = f'meson-{target_name}'
             elem = NinjaBuildElement(self.all_outputs, internal_target_name, 'CUSTOM_COMMAND', [])
             elem.add_item('COMMAND', meson_exe_cmd)
             elem.add_item('description', desc.format(target.name, cmd_type))
@@ -1141,7 +1143,7 @@ int dummy;
 
     def add_rule(self, rule):
         if rule.name in self.ruledict:
-            raise MesonException('Tried to add rule {} twice.'.format(rule.name))
+            raise MesonException(f'Tried to add rule {rule.name} twice.')
         self.rules.append(rule)
         self.ruledict[rule.name] = rule
 
@@ -1153,7 +1155,7 @@ int dummy;
             if build.rulename in self.ruledict:
                 build.rule = self.ruledict[build.rulename]
             else:
-                mlog.warning("build statement for {} references non-existent rule {}".format(build.outfilenames, build.rulename))
+                mlog.warning(f"build statement for {build.outfilenames} references non-existent rule {build.rulename}")
 
     def write_rules(self, outfile):
         for b in self.build_elements:
@@ -1238,12 +1240,12 @@ int dummy;
                 ofilename = os.path.join(self.get_target_private_dir(target), ofilebase)
                 elem = NinjaBuildElement(self.all_outputs, ofilename, "CUSTOM_COMMAND", rel_sourcefile)
                 elem.add_item('COMMAND', ['resgen', rel_sourcefile, ofilename])
-                elem.add_item('DESC', 'Compiling resource {}'.format(rel_sourcefile))
+                elem.add_item('DESC', f'Compiling resource {rel_sourcefile}')
                 self.add_build(elem)
                 deps.append(ofilename)
                 a = '-resource:' + ofilename
             else:
-                raise InvalidArguments('Unknown resource file {}.'.format(r))
+                raise InvalidArguments(f'Unknown resource file {r}.')
             args.append(a)
         return args, deps
 
@@ -1546,13 +1548,13 @@ int dummy;
         main_rust_file = None
         for i in target.get_sources():
             if not rustc.can_compile(i):
-                raise InvalidArguments('Rust target {} contains a non-rust source file.'.format(target.get_basename()))
+                raise InvalidArguments(f'Rust target {target.get_basename()} contains a non-rust source file.')
             if main_rust_file is None:
                 main_rust_file = i.rel_to_builddir(self.build_to_src)
         for g in target.get_generated_sources():
             for i in g.get_outputs():
                 if not rustc.can_compile(i):
-                    raise InvalidArguments('Rust target {} contains a non-rust source file.'.format(target.get_basename()))
+                    raise InvalidArguments(f'Rust target {target.get_basename()} contains a non-rust source file.')
                 if isinstance(g, GeneratedList):
                     fname = os.path.join(self.get_target_private_dir(target), i)
                 else:
@@ -1581,7 +1583,7 @@ int dummy;
         # to be -C link-arg=foo
         if cratetype in {'bin', 'dylib'}:
             for a in rustc.linker.get_always_args():
-                args += ['-C', 'link-arg={}'.format(a)]
+                args += ['-C', f'link-arg={a}']
 
         opt_proxy = self.get_compiler_options_for_target(target)
 
@@ -1593,7 +1595,7 @@ int dummy;
         args += self.build.get_global_args(rustc, target.for_machine)
         args += self.build.get_project_args(rustc, target.subproject, target.for_machine)
         depfile = os.path.join(target.subdir, target.name + '.d')
-        args += ['--emit', 'dep-info={}'.format(depfile), '--emit', 'link']
+        args += ['--emit', f'dep-info={depfile}', '--emit', 'link']
         args += target.get_extra_args('rust')
         args += rustc.get_output_args(os.path.join(target.subdir, target.get_filename()))
         args += self.environment.coredata.get_external_args(target.for_machine, rustc.language)
@@ -1754,7 +1756,7 @@ int dummy;
                 abs_headers.append(absh)
                 header_imports += swiftc.get_header_import_args(absh)
             else:
-                raise InvalidArguments('Swift target {} contains a non-swift source file.'.format(target.get_basename()))
+                raise InvalidArguments(f'Swift target {target.get_basename()} contains a non-swift source file.')
         os.makedirs(self.get_target_private_dir_abs(target), exist_ok=True)
         compile_args = swiftc.get_compile_only_args()
         compile_args += swiftc.get_optimization_args(self.get_option_for_target(OptionKey('optimization'), target))
@@ -1863,7 +1865,7 @@ int dummy;
                 pool = None
             self.add_rule(NinjaRule(rule, cmdlist, args, description,
                                     rspable=static_linker.can_linker_accept_rsp(),
-                                    rspfile_quote_style='cl' if isinstance(static_linker, VisualStudioLinker) else 'gcc',
+                                    rspfile_quote_style=static_linker.rsp_file_syntax(),
                                     extra=pool))
 
     def generate_dynamic_link_rules(self):
@@ -1886,8 +1888,7 @@ int dummy;
                     pool = None
                 self.add_rule(NinjaRule(rule, command, args, description,
                                         rspable=compiler.can_linker_accept_rsp(),
-                                        rspfile_quote_style='cl' if (compiler.get_argument_syntax() == 'msvc' or
-                                                                     isinstance(compiler, DmdDCompiler)) else 'gcc',
+                                        rspfile_quote_style=compiler.rsp_file_syntax(),
                                         extra=pool))
 
         args = self.environment.get_build_command() + \
@@ -1909,14 +1910,14 @@ int dummy;
         description = 'Compiling Java object $in'
         self.add_rule(NinjaRule(rule, command, [], description))
 
-    def generate_cs_compile_rule(self, compiler):
+    def generate_cs_compile_rule(self, compiler: 'CsCompiler') -> None:
         rule = self.compiler_to_rule_name(compiler)
         command = compiler.get_exelist()
         args = ['$ARGS', '$in']
         description = 'Compiling C Sharp target $out'
         self.add_rule(NinjaRule(rule, command, args, description,
                                 rspable=mesonlib.is_windows(),
-                                rspfile_quote_style='cl' if isinstance(compiler, VisualStudioCsCompiler) else 'gcc'))
+                                rspfile_quote_style=compiler.rsp_file_syntax()))
 
     def generate_vala_compile_rules(self, compiler):
         rule = self.compiler_to_rule_name(compiler)
@@ -1954,7 +1955,7 @@ int dummy;
     def generate_fortran_dep_hack(self, crstr: str) -> None:
         if self.use_dyndeps_for_fortran():
             return
-        rule = 'FORTRAN_DEP_HACK{}'.format(crstr)
+        rule = f'FORTRAN_DEP_HACK{crstr}'
         if mesonlib.is_windows():
             cmd = ['cmd', '/C']
         else:
@@ -2001,7 +2002,7 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
         depargs = NinjaCommandArg.list(compiler.get_dependency_gen_args('$out', '$DEPFILE'), Quoting.none)
         command = compiler.get_exelist()
         args = ['$ARGS'] + depargs + NinjaCommandArg.list(compiler.get_output_args('$out'), Quoting.none) + compiler.get_compile_only_args() + ['$in']
-        description = 'Compiling {} object $out'.format(compiler.get_display_language())
+        description = f'Compiling {compiler.get_display_language()} object $out'
         if isinstance(compiler, VisualStudioLikeCompiler):
             deps = 'msvc'
             depfile = None
@@ -2010,8 +2011,7 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
             depfile = '$DEPFILE'
         self.add_rule(NinjaRule(rule, command, args, description,
                                 rspable=compiler.can_linker_accept_rsp(),
-                                rspfile_quote_style='cl' if (compiler.get_argument_syntax() == 'msvc' or
-                                                             isinstance(compiler, DmdDCompiler)) else 'gcc',
+                                rspfile_quote_style=compiler.rsp_file_syntax(),
                                 deps=deps, depfile=depfile))
 
     def generate_pch_rule_for(self, langname, compiler):
@@ -2094,7 +2094,7 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
             if len(generator.outputs) == 1:
                 sole_output = os.path.join(self.get_target_private_dir(target), outfilelist[i])
             else:
-                sole_output = '{}'.format(curfile)
+                sole_output = f'{curfile}'
             infilename = curfile.rel_to_builddir(self.build_to_src)
             base_args = generator.get_arglist(infilename)
             outfiles = genlist.get_outputs_for(curfile)
@@ -2129,13 +2129,13 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
                 elem.add_dep(extra_dependencies)
 
             if len(generator.outputs) == 1:
-                what = '{!r}'.format(sole_output)
+                what = f'{sole_output!r}'
             else:
                 # since there are multiple outputs, we log the source that caused the rebuild
-                what = 'from {!r}.'.format(sole_output)
+                what = f'from {sole_output!r}.'
             if reason:
-                reason = ' (wrapped by meson {})'.format(reason)
-            elem.add_item('DESC', 'Generating {}{}.'.format(what, reason))
+                reason = f' (wrapped by meson {reason})'
+            elem.add_item('DESC', f'Generating {what}{reason}.')
 
             if isinstance(exe, build.BuildTarget):
                 elem.add_dep(self.get_target_filename(exe))
@@ -2305,7 +2305,7 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
         elif isinstance(src, File):
             rel_src = src.rel_to_builddir(self.build_to_src)
         else:
-            raise InvalidArguments('Invalid source type: {!r}'.format(src))
+            raise InvalidArguments(f'Invalid source type: {src!r}')
         # Write the Ninja build command
         compiler_name = self.get_compiler_rule_name('llvm_ir', compiler.for_machine)
         element = NinjaBuildElement(self.all_outputs, rel_obj, compiler_name, rel_src)
@@ -2377,10 +2377,8 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
         commands += self.generate_basic_compiler_args(target, compiler, no_warn_args)
         # Add custom target dirs as includes automatically, but before
         # target-specific include directories.
-        # XXX: Not sure if anyone actually uses this? It can cause problems in
-        # situations which increase the likelihood for a header name collision,
-        # such as in subprojects.
-        commands += self.get_custom_target_dir_include_args(target, compiler)
+        if target.implicit_include_directories:
+            commands += self.get_custom_target_dir_include_args(target, compiler)
         # Add include dirs from the `include_directories:` kwarg on the target
         # and from `include_directories:` of internal deps of the target.
         #
@@ -2437,7 +2435,7 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
         order_deps = order_deps if order_deps is not None else []
 
         if isinstance(src, str) and src.endswith('.h'):
-            raise AssertionError('BUG: sources should not contain headers {!r}'.format(src))
+            raise AssertionError(f'BUG: sources should not contain headers {src!r}')
 
         compiler = get_compiler_for_source(target.compilers.values(), src)
         commands = self._generate_single_compile(target, compiler, is_generated)
@@ -2459,9 +2457,9 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
                     assert rel_src.startswith(build_dir)
                     rel_src = rel_src[len(build_dir) + 1:]
         elif is_generated:
-            raise AssertionError('BUG: broken generated source file handling for {!r}'.format(src))
+            raise AssertionError(f'BUG: broken generated source file handling for {src!r}')
         else:
-            raise InvalidArguments('Invalid source type: {!r}'.format(src))
+            raise InvalidArguments(f'Invalid source type: {src!r}')
         obj_basename = self.object_filename_from_source(target, src)
         rel_obj = os.path.join(self.get_target_private_dir(target), obj_basename)
         dep_file = compiler.depfile_for_object(rel_obj)
@@ -2537,7 +2535,7 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
         if not self.should_use_dyndeps_for_target(target):
             return
         extension = os.path.splitext(src.fname)[1][1:]
-        if not (extension in compilers.lang_suffixes['fortran'] or extension in compilers.lang_suffixes['cpp']):
+        if not (extension.lower() in compilers.lang_suffixes['fortran'] or extension in compilers.lang_suffixes['cpp']):
             return
         dep_scan_file = self.get_dep_scan_file_for(target)
         element.add_item('dyndep', dep_scan_file)
@@ -2808,7 +2806,7 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
 
         cmd = self.replace_paths(target, cmd)
         elem.add_item('COMMAND', cmd)
-        elem.add_item('description', 'Prelinking {}.'.format(prelink_name))
+        elem.add_item('description', f'Prelinking {prelink_name}.')
         self.add_build(elem)
         return [prelink_name]
 
@@ -3042,8 +3040,12 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
         # Alias that runs the target defined above
         self.create_target_alias('meson-scan-build')
 
-    def generate_clangtool(self, name):
+    def generate_clangtool(self, name, extra_arg=None):
         target_name = 'clang-' + name
+        extra_args = []
+        if extra_arg:
+            target_name += f'-{extra_arg}'
+            extra_args.append(f'--{extra_arg}')
         if not os.path.exists(os.path.join(self.environment.source_dir, '.clang-' + name)) and \
                 not os.path.exists(os.path.join(self.environment.source_dir, '_clang-' + name)):
             return
@@ -3052,7 +3054,8 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
         if ('', target_name) in self.build.run_target_names:
             return
         cmd = self.environment.get_build_command() + \
-            ['--internal', 'clang' + name, self.environment.source_dir, self.environment.build_dir]
+            ['--internal', 'clang' + name, self.environment.source_dir, self.environment.build_dir] + \
+            extra_args
         elem = NinjaBuildElement(self.all_outputs, 'meson-' + target_name, 'CUSTOM_COMMAND', 'PHONY')
         elem.add_item('COMMAND', cmd)
         elem.add_item('pool', 'console')
@@ -3063,6 +3066,7 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
         if not environment.detect_clangformat():
             return
         self.generate_clangtool('format')
+        self.generate_clangtool('format', 'check')
 
     def generate_clangtidy(self):
         import shutil

@@ -41,7 +41,7 @@ class HDF5PkgConfigDependency(PkgConfigDependency):
     def __init__(self, name: str, environment: 'Environment', kwargs: T.Dict[str, T.Any], language: T.Optional[str] = None) -> None:
         language = language or 'c'
         if language not in {'c', 'cpp', 'fortran'}:
-            raise DependencyException('Language {} is not supported with HDF5.'.format(language))
+            raise DependencyException(f'Language {language} is not supported with HDF5.')
 
         super().__init__(name, environment, kwargs, language)
         if not self.is_found:
@@ -92,7 +92,7 @@ class HDF5ConfigToolDependency(ConfigToolDependency):
     def __init__(self, name: str, environment: 'Environment', kwargs: T.Dict[str, T.Any], language: T.Optional[str] = None) -> None:
         language = language or 'c'
         if language not in {'c', 'cpp', 'fortran'}:
-            raise DependencyException('Language {} is not supported with HDF5.'.format(language))
+            raise DependencyException(f'Language {language} is not supported with HDF5.')
 
         if language == 'c':
             cenv = 'CC'
@@ -117,12 +117,12 @@ class HDF5ConfigToolDependency(ConfigToolDependency):
         # linkers.
         compiler = environment.coredata.compilers[for_machine][language]
         try:
-            os.environ['HDF5_{}'.format(cenv)] = join_args(compiler.get_exelist())
-            os.environ['HDF5_{}LINKER'.format(cenv)] = join_args(compiler.get_linker_exelist())
+            os.environ[f'HDF5_{cenv}'] = join_args(compiler.get_exelist())
+            os.environ[f'HDF5_{cenv}LINKER'] = join_args(compiler.get_linker_exelist())
             super().__init__(name, environment, nkwargs, language)
         finally:
-            del os.environ['HDF5_{}'.format(cenv)]
-            del os.environ['HDF5_{}LINKER'.format(cenv)]
+            del os.environ[f'HDF5_{cenv}']
+            del os.environ[f'HDF5_{cenv}LINKER']
         if not self.is_found:
             return
 
@@ -167,7 +167,7 @@ def hdf5_factory(env: 'Environment', for_machine: 'MachineChoice',
                                     universal_newlines=True)
             if ret.returncode == 0:
                 for pkg in ret.stdout.split('\n'):
-                    if pkg.startswith(('hdf5')):
+                    if pkg.startswith('hdf5'):
                         pkgconfig_files.add(pkg.split(' ', 1)[0])
 
         for pkg in pkgconfig_files:
