@@ -2,6 +2,7 @@ index.md
 	SimpleStart.md
 	Getting-meson.md
 		Getting-meson_zh.md
+		Getting-meson_ptbr.md
 	Quick-guide.md
 	Tutorial.md
 	Manual.md
@@ -49,6 +50,7 @@ index.md
 			Python-module.md
 			Qt4-module.md
 			Qt5-module.md
+			Qt6-module.md
 			RPM-module.md
 			Rust-module.md
 			Simd-module.md
@@ -58,6 +60,7 @@ index.md
 		Java.md
 		Vala.md
 		D.md
+		Cython.md
 		IDE-integration.md
 		Custom-build-targets.md
 		Build-system-converters.md
@@ -74,6 +77,7 @@ index.md
 	FAQ.md
 	Reproducible-builds.md
 	howtox.md
+	Wrapdb-projects.md
 	Wrap-dependency-system-manual.md
 		Adding-new-projects-to-wrapdb.md
 		Using-the-WrapDB.md
@@ -83,6 +87,7 @@ index.md
 		Shipping-prebuilt-binaries-as-wraps.md
 		fallback-wraptool.md
 	Release-notes.md
+		Release-notes-for-0.58.0.md
 		Release-notes-for-0.57.0.md
 		Release-notes-for-0.56.0.md
 		Release-notes-for-0.55.0.md

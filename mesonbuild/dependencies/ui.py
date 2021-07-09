@@ -25,16 +25,16 @@ from ..mesonlib import (
 )
 from ..environment import detect_cpu_family
 
-from .base import DependencyException, DependencyMethods
-from .base import ExternalDependency
-from .base import ConfigToolDependency, DependencyFactory
+from .base import DependencyException, DependencyMethods, DependencyTypeName, SystemDependency
+from .configtool import ConfigToolDependency
+from .factory import DependencyFactory
 
 if T.TYPE_CHECKING:
     from ..environment import Environment
 
 
-class GLDependencySystem(ExternalDependency):
-    def __init__(self, name: str, environment, kwargs):
+class GLDependencySystem(SystemDependency):
+    def __init__(self, name: str, environment: 'Environment', kwargs: T.Dict[str, T.Any]) -> None:
         super().__init__(name, environment, kwargs)
 
         if self.env.machines[self.for_machine].is_darwin():
@@ -51,13 +51,13 @@ class GLDependencySystem(ExternalDependency):
             return
 
     @staticmethod
-    def get_methods():
+    def get_methods() -> T.List[DependencyMethods]:
         if mesonlib.is_osx() or mesonlib.is_windows():
             return [DependencyMethods.PKGCONFIG, DependencyMethods.SYSTEM]
         else:
             return [DependencyMethods.PKGCONFIG]
 
-    def log_tried(self):
+    def log_tried(self) -> str:
         return 'system'
 
 class GnuStepDependency(ConfigToolDependency):
@@ -65,7 +65,7 @@ class GnuStepDependency(ConfigToolDependency):
     tools = ['gnustep-config']
     tool_name = 'gnustep-config'
 
-    def __init__(self, environment, kwargs):
+    def __init__(self, environment: 'Environment', kwargs: T.Dict[str, T.Any]) -> None:
         super().__init__('gnustep', environment, kwargs, language='objc')
         if not self.is_found:
             return
@@ -76,7 +76,7 @@ class GnuStepDependency(ConfigToolDependency):
             ['--gui-libs' if 'gui' in self.modules else '--base-libs'],
             'link_args'))
 
-    def find_config(self, versions=None, returncode: int = 0):
+    def find_config(self, versions: T.Optional[T.List[str]] = None, returncode: int = 0) -> T.Tuple[T.Optional[T.List[str]], T.Optional[str]]:
         tool = [self.tools[0]]
         try:
             p, out = Popen_safe(tool + ['--help'])[:2]
@@ -91,14 +91,16 @@ class GnuStepDependency(ConfigToolDependency):
 
         return (tool, found_version)
 
-    def weird_filter(self, elems):
+    @staticmethod
+    def weird_filter(elems: T.List[str]) -> T.List[str]:
         """When building packages, the output of the enclosing Make is
         sometimes mixed among the subprocess output. I have no idea why. As a
         hack filter out everything that is not a flag.
         """
         return [e for e in elems if e.startswith('-')]
 
-    def filter_args(self, args):
+    @staticmethod
+    def filter_args(args: T.List[str]) -> T.List[str]:
         """gnustep-config returns a bunch of garbage args such as -O2 and so
         on. Drop everything that is not needed.
         """
@@ -112,7 +114,7 @@ class GnuStepDependency(ConfigToolDependency):
                 result.append(f)
         return result
 
-    def detect_version(self):
+    def detect_version(self) -> str:
         gmake = self.get_config_value(['--variable=GNUMAKE'], 'variable')[0]
         makefile_dir = self.get_config_value(['--variable=GNUSTEP_MAKEFILES'], 'variable')[0]
         # This Makefile has the GNUStep version set
@@ -148,7 +150,7 @@ class SDL2DependencyConfigTool(ConfigToolDependency):
         self.link_args = self.get_config_value(['--libs'], 'link_args')
 
     @staticmethod
-    def get_methods():
+    def get_methods() -> T.List[DependencyMethods]:
         if mesonlib.is_osx():
             return [DependencyMethods.PKGCONFIG, DependencyMethods.CONFIG_TOOL, DependencyMethods.EXTRAFRAMEWORK]
         else:
@@ -193,9 +195,9 @@ class WxDependency(ConfigToolDependency):
         return candidates
 
 
-class VulkanDependencySystem(ExternalDependency):
+class VulkanDependencySystem(SystemDependency):
 
-    def __init__(self, name: str, environment, kwargs, language: T.Optional[str] = None):
+    def __init__(self, name: str, environment: 'Environment', kwargs: T.Dict[str, T.Any], language: T.Optional[str] = None) -> None:
         super().__init__(name, environment, kwargs, language=language)
 
         try:
@@ -222,7 +224,7 @@ class VulkanDependencySystem(ExternalDependency):
             inc_path = os.path.join(self.vulkan_sdk, inc_dir)
             header = os.path.join(inc_path, 'vulkan', 'vulkan.h')
             lib_path = os.path.join(self.vulkan_sdk, lib_dir)
-            find_lib = self.clib_compiler.find_library(lib_name, environment, lib_path)
+            find_lib = self.clib_compiler.find_library(lib_name, environment, [lib_path])
 
             if not find_lib:
                 raise DependencyException('VULKAN_SDK point to invalid directory (no lib)')
@@ -230,7 +232,8 @@ class VulkanDependencySystem(ExternalDependency):
             if not os.path.isfile(header):
                 raise DependencyException('VULKAN_SDK point to invalid directory (no include)')
 
-            self.type_name = 'vulkan_sdk'
+            # XXX: this is very odd, and may deserve being removed
+            self.type_name = DependencyTypeName('vulkan_sdk')
             self.is_found = True
             self.compile_args.append('-I' + inc_path)
             self.link_args.append('-L' + lib_path)
@@ -243,17 +246,16 @@ class VulkanDependencySystem(ExternalDependency):
             # simply try to guess it, usually works on linux
             libs = self.clib_compiler.find_library('vulkan', environment, [])
             if libs is not None and self.clib_compiler.has_header('vulkan/vulkan.h', '', environment, disable_cache=True)[0]:
-                self.type_name = 'system'
                 self.is_found = True
                 for lib in libs:
                     self.link_args.append(lib)
                 return
 
     @staticmethod
-    def get_methods():
+    def get_methods() -> T.List[DependencyMethods]:
         return [DependencyMethods.SYSTEM]
 
-    def log_tried(self):
+    def log_tried(self) -> str:
         return 'system'
 
 gl_factory = DependencyFactory(

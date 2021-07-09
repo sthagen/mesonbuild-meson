@@ -15,6 +15,7 @@
 # Public symbols for compilers sub-package when using 'from . import compilers'
 __all__ = [
     'Compiler',
+    'RunResult',
 
     'all_languages',
     'base_options',
@@ -33,6 +34,22 @@ __all__ = [
     'is_known_suffix',
     'lang_suffixes',
     'sort_clink',
+
+    'compiler_from_language',
+    'detect_compiler_for',
+    'detect_static_linker',
+    'detect_c_compiler',
+    'detect_cpp_compiler',
+    'detect_cuda_compiler',
+    'detect_fortran_compiler',
+    'detect_objc_compiler',
+    'detect_objcpp_compiler',
+    'detect_java_compiler',
+    'detect_cs_compiler',
+    'detect_vala_compiler',
+    'detect_rust_compiler',
+    'detect_d_compiler',
+    'detect_swift_compiler',
 
     'AppleClangCCompiler',
     'AppleClangCPPCompiler',
@@ -106,11 +123,13 @@ __all__ = [
     'VisualStudioLikeCompiler',
     'VisualStudioCCompiler',
     'VisualStudioCPPCompiler',
+    'CythonCompiler',
 ]
 
 # Bring symbols from each module into compilers sub-package namespace
 from .compilers import (
     Compiler,
+    RunResult,
     all_languages,
     base_options,
     clib_langs,
@@ -129,6 +148,23 @@ from .compilers import (
     lang_suffixes,
     LANGUAGES_USING_LDFLAGS,
     sort_clink,
+)
+from .detect import (
+    compiler_from_language,
+    detect_compiler_for,
+    detect_static_linker,
+    detect_c_compiler,
+    detect_cpp_compiler,
+    detect_cuda_compiler,
+    detect_objc_compiler,
+    detect_objcpp_compiler,
+    detect_fortran_compiler,
+    detect_java_compiler,
+    detect_cs_compiler,
+    detect_vala_compiler,
+    detect_rust_compiler,
+    detect_d_compiler,
+    detect_swift_compiler,
 )
 from .c import (
     CCompiler,
@@ -211,3 +247,4 @@ from .mixins.visualstudio import VisualStudioLikeCompiler
 from .mixins.gnu import GnuCompiler, GnuLikeCompiler
 from .mixins.intel import IntelGnuLikeCompiler, IntelVisualStudioLikeCompiler
 from .mixins.clang import ClangCompiler
+from .cython import CythonCompiler

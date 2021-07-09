@@ -26,7 +26,7 @@ from ..mesonlib import (
     Popen_safe, MesonException
 )
 
-from ..dependencies.base import DubDependency
+from ..dependencies import DubDependency
 from ..programs import ExternalProgram
 from ..interpreter import DependencyHolder
 
@@ -36,7 +36,9 @@ class DlangModule(ExtensionModule):
 
     def __init__(self, interpreter):
         super().__init__(interpreter)
-        self.snippets.add('generate_dub_file')
+        self.methods.update({
+            'generate_dub_file': self.generate_dub_file,
+        })
 
     def _init_dub(self):
         if DlangModule.class_dubbin is None:
@@ -55,7 +57,7 @@ class DlangModule(ExtensionModule):
             if not self.dubbin:
                 raise MesonException('DUB not found.')
 
-    def generate_dub_file(self, interpreter, state, args, kwargs):
+    def generate_dub_file(self, state, args, kwargs):
         if not DlangModule.init_dub:
             self._init_dub()
 
@@ -68,7 +70,7 @@ class DlangModule(ExtensionModule):
 
         config_path = os.path.join(args[1], 'dub.json')
         if os.path.exists(config_path):
-            with open(config_path, encoding='utf8') as ofile:
+            with open(config_path, encoding='utf-8') as ofile:
                 try:
                     config = json.load(ofile)
                 except ValueError:
@@ -106,7 +108,7 @@ class DlangModule(ExtensionModule):
             else:
                 config[key] = value
 
-        with open(config_path, 'w', encoding='utf8') as ofile:
+        with open(config_path, 'w', encoding='utf-8') as ofile:
             ofile.write(json.dumps(config, indent=4, ensure_ascii=False))
 
     def _call_dubbin(self, args, env=None):

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-# Copyright 2012-2017 The Meson development team
+# Copyright 2012-2021 The Meson development team
 
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,14 +14,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import os
+# Work around some pathlib bugs...
+from mesonbuild import _pathlib
 import sys
+sys.modules['pathlib'] = _pathlib
+
+import collections
+import os
 import time
 import shutil
 import subprocess
-import tempfile
 import platform
 import argparse
+import traceback
 from io import StringIO
 from enum import Enum
 from glob import glob
@@ -149,7 +154,7 @@ if mesonlib.is_windows() or mesonlib.is_cygwin():
 else:
     exe_suffix = ''
 
-def get_meson_script():
+def get_meson_script() -> str:
     '''
     Guess the meson that corresponds to the `mesonbuild` that has been imported
     so we can run configure and other commands in-process, since mesonmain.run
@@ -171,7 +176,7 @@ def get_meson_script():
         return meson_cmd
     raise RuntimeError(f'Could not find {meson_script!r} or a meson in PATH')
 
-def get_backend_args_for_dir(backend, builddir):
+def get_backend_args_for_dir(backend: Backend, builddir: str) -> T.List[str]:
     '''
     Visual Studio backend needs to be given the solution to build
     '''
@@ -195,7 +200,7 @@ def find_vcxproj_with_target(builddir, target):
                     return f
     raise RuntimeError(f'No vcxproj matching {p!r} in {builddir!r}')
 
-def get_builddir_target_args(backend, builddir, target):
+def get_builddir_target_args(backend: Backend, builddir, target):
     dir_args = []
     if not target:
         dir_args = get_backend_args_for_dir(backend, builddir)
@@ -225,9 +230,7 @@ def get_backend_commands(backend: Backend, debug: bool = False) -> \
         test_cmd = cmd + ['RUN_TESTS.vcxproj']
     elif backend is Backend.xcode:
         cmd = ['xcodebuild']
-        # In Xcode9 new build system's clean command fails when using a custom build directory.
-        # Maybe use it when CI uses Xcode10 we can remove '-UseNewBuildSystem=FALSE'
-        clean_cmd = cmd + ['-alltargets', 'clean', '-UseNewBuildSystem=FALSE']
+        clean_cmd = cmd + ['-alltargets', 'clean']
         test_cmd = cmd + ['-target', 'RUN_TESTS']
     elif backend is Backend.ninja:
         global NINJA_CMD
@@ -242,18 +245,11 @@ def get_backend_commands(backend: Backend, debug: bool = False) -> \
         raise AssertionError(f'Unknown backend: {backend!r}')
     return cmd, clean_cmd, test_cmd, install_cmd, uninstall_cmd
 
-def ensure_backend_detects_changes(backend):
+def ensure_backend_detects_changes(backend: Backend) -> None:
     global NINJA_1_9_OR_NEWER
     if backend is not Backend.ninja:
         return
     need_workaround = False
-    # We're not running on HFS+ which only stores dates in seconds:
-    # https://developer.apple.com/legacy/library/technotes/tn/tn1150.html#HFSPlusDates
-    # XXX: Upgrade Travis image to Apple FS when that becomes available
-    # TODO: Detect HFS+ vs APFS
-    if mesonlib.is_osx():
-        mlog.warning('Running on HFS+, enabling timestamp resolution workaround', once=True)
-        need_workaround = True
     # We're using ninja >= 1.9 which has QuLogic's patch for sub-1s resolution
     # timestamps
     if not NINJA_1_9_OR_NEWER:
@@ -264,38 +260,46 @@ def ensure_backend_detects_changes(backend):
     if need_workaround:
         time.sleep(1)
 
-def run_mtest_inprocess(commandlist):
+def run_mtest_inprocess(commandlist: T.List[str]) -> T.Tuple[int, str, str]:
     stderr = StringIO()
     stdout = StringIO()
     with mock.patch.object(sys, 'stdout', stdout), mock.patch.object(sys, 'stderr', stderr):
         returncode = mtest.run_with_args(commandlist)
     return returncode, stdout.getvalue(), stderr.getvalue()
 
-def clear_meson_configure_class_caches():
+def clear_meson_configure_class_caches() -> None:
     compilers.CCompiler.find_library_cache = {}
     compilers.CCompiler.find_framework_cache = {}
     dependencies.PkgConfigDependency.pkgbin_cache = {}
     dependencies.PkgConfigDependency.class_pkgbin = mesonlib.PerMachine(None, None)
+    mesonlib.project_meson_versions = collections.defaultdict(str)
 
-def run_configure_inprocess(commandlist, env=None):
+def run_configure_inprocess(commandlist: T.List[str], env: T.Optional[T.Dict[str, str]] = None, catch_exception: bool = False) -> T.Tuple[int, str, str]:
     stderr = StringIO()
     stdout = StringIO()
+    returncode = 0
     with mock.patch.dict(os.environ, env or {}), mock.patch.object(sys, 'stdout', stdout), mock.patch.object(sys, 'stderr', stderr):
         try:
             returncode = mesonmain.run(commandlist, get_meson_script())
+        except Exception:
+            if catch_exception:
+                returncode = 1
+                traceback.print_exc()
+            else:
+                raise
         finally:
             clear_meson_configure_class_caches()
     return returncode, stdout.getvalue(), stderr.getvalue()
 
-def run_configure_external(full_command, env=None):
+def run_configure_external(full_command: T.List[str], env: T.Optional[T.Dict[str, str]] = None) -> T.Tuple[int, str, str]:
     pc, o, e = mesonlib.Popen_safe(full_command, env=env)
     return pc.returncode, o, e
 
-def run_configure(commandlist, env=None):
+def run_configure(commandlist: T.List[str], env: T.Optional[T.Dict[str, str]] = None, catch_exception: bool = False) -> T.Tuple[int, str, str]:
     global meson_exe
     if meson_exe:
         return run_configure_external(meson_exe + commandlist, env=env)
-    return run_configure_inprocess(commandlist, env=env)
+    return run_configure_inprocess(commandlist, env=env, catch_exception=catch_exception)
 
 def print_system_info():
     print(mlog.bold('System information.'))
@@ -310,7 +314,6 @@ def print_system_info():
 def main():
     print_system_info()
     parser = argparse.ArgumentParser()
-    parser.add_argument('--cov', action='store_true')
     parser.add_argument('--backend', default=None, dest='backend',
                         choices=backendlist)
     parser.add_argument('--cross', default=[], dest='cross', action='append')
@@ -318,13 +321,6 @@ def main():
     parser.add_argument('--failfast', action='store_true')
     parser.add_argument('--no-unittests', action='store_true', default=False)
     (options, _) = parser.parse_known_args()
-    # Enable coverage early...
-    enable_coverage = options.cov
-    if enable_coverage:
-        os.makedirs('.coverage', exist_ok=True)
-        sys.argv.remove('--cov')
-        import coverage
-        coverage.process_startup()
     returncode = 0
     backend, _ = guess_backend(options.backend, shutil.which('msbuild'))
     no_unittests = options.no_unittests
@@ -348,55 +344,44 @@ def main():
     # Run tests
     # Can't pass arguments to unit tests, so set the backend to use in the environment
     env = os.environ.copy()
-    env['MESON_UNIT_TEST_BACKEND'] = backend.name
-    with tempfile.TemporaryDirectory() as temp_dir:
-        # Enable coverage on all subsequent processes.
-        if enable_coverage:
-            Path(temp_dir, 'usercustomize.py').open('w').write(
-                'import coverage\n'
-                'coverage.process_startup()\n')
-            env['COVERAGE_PROCESS_START'] = '.coveragerc'
-            if 'PYTHONPATH' in env:
-                env['PYTHONPATH'] = os.pathsep.join([temp_dir, env.get('PYTHONPATH')])
-            else:
-                env['PYTHONPATH'] = temp_dir
-        if not options.cross:
-            cmd = mesonlib.python_command + ['run_meson_command_tests.py', '-v']
+    if not options.cross:
+        cmd = mesonlib.python_command + ['run_meson_command_tests.py', '-v']
+        if options.failfast:
+            cmd += ['--failfast']
+        returncode += subprocess.call(cmd, env=env)
+        if options.failfast and returncode != 0:
+            return returncode
+        if no_unittests:
+            print('Skipping all unit tests.')
+            print(flush=True)
+            returncode = 0
+        else:
+            print(mlog.bold('Running unittests.'))
+            print(flush=True)
+            cmd = mesonlib.python_command + ['run_unittests.py', '--backend=' + backend.name, '-v']
             if options.failfast:
                 cmd += ['--failfast']
             returncode += subprocess.call(cmd, env=env)
             if options.failfast and returncode != 0:
                 return returncode
-            if no_unittests:
-                print('Skipping all unit tests.')
-                print(flush=True)
-                returncode = 0
-            else:
-                print(mlog.bold('Running unittests.'))
-                print(flush=True)
-                cmd = mesonlib.python_command + ['run_unittests.py', '-v']
-                if options.failfast:
-                    cmd += ['--failfast']
-                returncode += subprocess.call(cmd, env=env)
-                if options.failfast and returncode != 0:
-                    return returncode
-            cmd = mesonlib.python_command + ['run_project_tests.py'] + sys.argv[1:]
+        cmd = mesonlib.python_command + ['run_project_tests.py'] + sys.argv[1:]
+        returncode += subprocess.call(cmd, env=env)
+    else:
+        cross_test_args = mesonlib.python_command + ['run_cross_test.py']
+        for cf in options.cross:
+            print(mlog.bold(f'Running {cf} cross tests.'))
+            print(flush=True)
+            cmd = cross_test_args + ['cross/' + cf]
+            if options.failfast:
+                cmd += ['--failfast']
+            if options.cross_only:
+                cmd += ['--cross-only']
             returncode += subprocess.call(cmd, env=env)
-        else:
-            cross_test_args = mesonlib.python_command + ['run_cross_test.py']
-            for cf in options.cross:
-                print(mlog.bold(f'Running {cf} cross tests.'))
-                print(flush=True)
-                cmd = cross_test_args + ['cross/' + cf]
-                if options.failfast:
-                    cmd += ['--failfast']
-                if options.cross_only:
-                    cmd += ['--cross-only']
-                returncode += subprocess.call(cmd, env=env)
-                if options.failfast and returncode != 0:
-                    return returncode
+            if options.failfast and returncode != 0:
+                return returncode
     return returncode
 
 if __name__ == '__main__':
+    mesonmain.setup_vsenv()
     print('Meson build system', meson_version, 'Project and Unit Tests')
     raise SystemExit(main())

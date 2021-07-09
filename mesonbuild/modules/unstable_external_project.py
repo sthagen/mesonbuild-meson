@@ -16,43 +16,34 @@ import os, subprocess, shlex
 from pathlib import Path
 import typing as T
 
-from . import ExtensionModule, ModuleReturnValue, ModuleState
+from . import ExtensionModule, ModuleReturnValue, ModuleState, NewExtensionModule
 from .. import mlog, build
 from ..mesonlib import (MesonException, Popen_safe, MachineChoice,
                        get_variable_regex, do_replacement, extract_as_list)
-from ..interpreterbase import InterpreterObject, InterpreterException, FeatureNew
+from ..interpreterbase import InterpreterException, FeatureNew
 from ..interpreterbase import permittedKwargs, typed_pos_args
-from ..interpreter import Interpreter, DependencyHolder
 from ..compilers.compilers import CFLAGS_MAPPING, CEXE_MAPPING
-from ..dependencies.base import InternalDependency, PkgConfigDependency
-from ..environment import Environment
+from ..dependencies import InternalDependency, PkgConfigDependency
 from ..mesonlib import OptionKey
 
-class ExternalProject(InterpreterObject):
+class ExternalProject(NewExtensionModule):
     def __init__(self,
-                 interpreter: Interpreter,
-                 subdir: str,
-                 project_version: T.Dict[str, str],
-                 subproject: str,
-                 environment: Environment,
-                 build_machine: str,
-                 host_machine: str,
+                 state: ModuleState,
                  configure_command: str,
                  configure_options: T.List[str],
                  cross_configure_options: T.List[str],
                  env: build.EnvironmentVariables,
                  verbose: bool):
-        InterpreterObject.__init__(self)
+        super().__init__()
         self.methods.update({'dependency': self.dependency_method,
                              })
 
-        self.interpreter = interpreter
-        self.subdir = Path(subdir)
-        self.project_version = project_version
-        self.subproject = subproject
-        self.env = environment
-        self.build_machine = build_machine
-        self.host_machine = host_machine
+        self.subdir = Path(state.subdir)
+        self.project_version = state.project_version
+        self.subproject = state.subproject
+        self.env = state.environment
+        self.build_machine = state.build_machine
+        self.host_machine = state.host_machine
         self.configure_command = configure_command
         self.configure_options = configure_options
         self.cross_configure_options = cross_configure_options
@@ -76,18 +67,18 @@ class ExternalProject(InterpreterObject):
         # self.prefix is an absolute path, so we cannot append it to another path.
         self.rel_prefix = self.prefix.relative_to(self.prefix.root)
 
-        self.make = self.interpreter.find_program_impl('make')
+        self.make = state.find_program('make')
         self.make = self.make.get_command()[0]
 
-        self._configure()
+        self._configure(state)
 
         self.targets = self._create_targets()
 
-    def _configure(self):
+    def _configure(self, state: ModuleState):
         # Assume it's the name of a script in source dir, like 'configure',
         # 'autogen.sh', etc).
         configure_path = Path(self.src_dir, self.configure_command)
-        configure_prog = self.interpreter.find_program_impl(configure_path.as_posix())
+        configure_prog = state.find_program(configure_path.as_posix())
         configure_cmd = configure_prog.get_command()
 
         d = [('PREFIX', '--prefix=@PREFIX@', self.prefix.as_posix()),
@@ -171,7 +162,7 @@ class ExternalProject(InterpreterObject):
         log_filename = Path(mlog.log_dir, f'{self.name}-{step}.log')
         output = None
         if not self.verbose:
-            output = open(log_filename, 'w')
+            output = open(log_filename, 'w', encoding='utf-8')
             output.write(m + '\n')
             output.flush()
         else:
@@ -221,7 +212,7 @@ class ExternalProject(InterpreterObject):
 
     @permittedKwargs({'subdir'})
     @typed_pos_args('external_project.dependency', str)
-    def dependency_method(self, args: T.Tuple[str], kwargs):
+    def dependency_method(self, state, args: T.Tuple[str], kwargs):
         libname = args[0]
 
         subdir = kwargs.get('subdir', '')
@@ -245,7 +236,7 @@ class ExternalProject(InterpreterObject):
         variables = []
         dep = InternalDependency(version, incdir, compile_args, link_args, libs,
                                  libs_whole, sources, final_deps, variables)
-        return DependencyHolder(dep, self.subproject)
+        return dep
 
 
 class ExternalProjectModule(ExtensionModule):
@@ -265,13 +256,7 @@ class ExternalProjectModule(ExtensionModule):
             cross_configure_options = ['--host=@HOST@']
         verbose = kwargs.get('verbose', False)
         env = self.interpreter.unpack_env_kwarg(kwargs)
-        project = ExternalProject(self.interpreter,
-                                  state.subdir,
-                                  state.project_version,
-                                  state.subproject,
-                                  state.environment,
-                                  state.build_machine,
-                                  state.host_machine,
+        project = ExternalProject(state,
                                   configure_command,
                                   configure_options,
                                   cross_configure_options,

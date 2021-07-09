@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import os
 import re
 import functools
 import typing as T
@@ -22,7 +21,8 @@ from .. import mlog
 from .. import mesonlib
 from ..environment import Environment
 
-from .base import DependencyException, ExternalDependency, PkgConfigDependency
+from .base import DependencyException, SystemDependency
+from .pkgconfig import PkgConfigDependency
 from .misc import threads_factory
 
 if T.TYPE_CHECKING:
@@ -340,7 +340,7 @@ class BoostLibraryFile():
     def get_link_args(self) -> T.List[str]:
         return [self.path.as_posix()]
 
-class BoostDependency(ExternalDependency):
+class BoostDependency(SystemDependency):
     def __init__(self, environment: Environment, kwargs: T.Dict[str, T.Any]) -> None:
         super().__init__('boost', environment, kwargs, language='cpp')
         buildtype = environment.coredata.get_option(mesonlib.OptionKey('buildtype'))
@@ -717,7 +717,7 @@ class BoostDependency(ExternalDependency):
         # also work, however, this is slower (since it the compiler has to be
         # invoked) and overkill since the layout of the header is always the same.
         assert hfile.exists()
-        raw = hfile.read_text()
+        raw = hfile.read_text(encoding='utf-8')
         m = re.search(r'#define\s+BOOST_VERSION\s+([0-9]+)', raw)
         if not m:
             mlog.debug(f'Failed to extract version information from {hfile}')

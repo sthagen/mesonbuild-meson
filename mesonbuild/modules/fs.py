@@ -19,33 +19,57 @@ from pathlib import Path, PurePath, PureWindowsPath
 
 from .. import mlog
 from . import ExtensionModule
-from . import ModuleReturnValue
 from ..mesonlib import (
     File,
     FileOrString,
     MesonException,
     path_is_in_root,
 )
-from ..interpreterbase import FeatureNew, typed_pos_args, noKwargs, permittedKwargs
+from ..interpreterbase import FeatureNew, KwargInfo, typed_kwargs, typed_pos_args, noKwargs
 
 if T.TYPE_CHECKING:
     from . import ModuleState
     from ..interpreter import Interpreter
+
+    from typing_extensions import TypedDict
+
+    class ReadKwArgs(TypedDict):
+        """Keyword Arguments for fs.read."""
+
+        encoding: str
 
 
 class FSModule(ExtensionModule):
 
     def __init__(self, interpreter: 'Interpreter') -> None:
         super().__init__(interpreter)
-        self.snippets.add('generate_dub_file')
+        self.methods.update({
+            'expanduser': self.expanduser,
+            'is_absolute': self.is_absolute,
+            'as_posix': self.as_posix,
+            'exists': self.exists,
+            'is_symlink': self.is_symlink,
+            'is_file': self.is_file,
+            'is_dir': self.is_dir,
+            'hash': self.hash,
+            'size': self.size,
+            'is_samepath': self.is_samepath,
+            'replace_suffix': self.replace_suffix,
+            'parent': self.parent,
+            'name': self.name,
+            'stem': self.stem,
+            'read': self.read,
+        })
 
-    def _absolute_dir(self, state: 'ModuleState', arg: str) -> Path:
+    def _absolute_dir(self, state: 'ModuleState', arg: 'FileOrString') -> Path:
         """
         make an absolute path from a relative path, WITHOUT resolving symlinks
         """
+        if isinstance(arg, File):
+            return Path(arg.absolute_path(state.source_root, self.interpreter.environment.get_build_dir()))
         return Path(state.source_root) / Path(state.subdir) / Path(arg).expanduser()
 
-    def _resolve_dir(self, state: 'ModuleState', arg: str) -> Path:
+    def _resolve_dir(self, state: 'ModuleState', arg: 'FileOrString') -> Path:
         """
         resolves symlinks and makes absolute a directory relative to calling meson.build,
         if not already absolute
@@ -59,58 +83,57 @@ class FSModule(ExtensionModule):
             pass
         return path
 
-    def _check(self, check: str, state: 'ModuleState', args: T.Sequence[str]) -> ModuleReturnValue:
-        test_file = self._resolve_dir(state, args[0])
-        val = getattr(test_file, check)()
-        if isinstance(val, Path):
-            val = str(val)
-        return ModuleReturnValue(val, [])
-
     @noKwargs
     @FeatureNew('fs.expanduser', '0.54.0')
     @typed_pos_args('fs.expanduser', str)
-    def expanduser(self, state: 'ModuleState', args: T.Tuple[str], kwargs: T.Dict[str, T.Any]) -> ModuleReturnValue:
-        return ModuleReturnValue(str(Path(args[0]).expanduser()), [])
+    def expanduser(self, state: 'ModuleState', args: T.Tuple[str], kwargs: T.Dict[str, T.Any]) -> str:
+        return str(Path(args[0]).expanduser())
 
     @noKwargs
     @FeatureNew('fs.is_absolute', '0.54.0')
-    @typed_pos_args('fs.is_absolute', str)
-    def is_absolute(self, state: 'ModuleState', args: T.Tuple[str], kwargs: T.Dict[str, T.Any]) -> ModuleReturnValue:
-        return ModuleReturnValue(PurePath(args[0]).is_absolute(), [])
+    @typed_pos_args('fs.is_absolute', (str, File))
+    def is_absolute(self, state: 'ModuleState', args: T.Tuple['FileOrString'], kwargs: T.Dict[str, T.Any]) -> bool:
+        if isinstance(args[0], File):
+            FeatureNew('fs.is_absolute_file', '0.59.0').use(state.subproject)
+        return PurePath(str(args[0])).is_absolute()
 
     @noKwargs
     @FeatureNew('fs.as_posix', '0.54.0')
     @typed_pos_args('fs.as_posix', str)
-    def as_posix(self, state: 'ModuleState', args: T.Tuple[str], kwargs: T.Dict[str, T.Any]) -> ModuleReturnValue:
+    def as_posix(self, state: 'ModuleState', args: T.Tuple[str], kwargs: T.Dict[str, T.Any]) -> str:
         """
         this function assumes you are passing a Windows path, even if on a Unix-like system
         and so ALL '\' are turned to '/', even if you meant to escape a character
         """
-        return ModuleReturnValue(PureWindowsPath(args[0]).as_posix(), [])
+        return PureWindowsPath(args[0]).as_posix()
 
     @noKwargs
     @typed_pos_args('fs.exists', str)
-    def exists(self, state: 'ModuleState', args: T.Tuple[str], kwargs: T.Dict[str, T.Any]) -> ModuleReturnValue:
-        return self._check('exists', state, args)
+    def exists(self, state: 'ModuleState', args: T.Tuple[str], kwargs: T.Dict[str, T.Any]) -> bool:
+        return self._resolve_dir(state, args[0]).exists()
 
     @noKwargs
-    @typed_pos_args('fs.is_symlink', str)
-    def is_symlink(self, state: 'ModuleState', args: T.Tuple[str], kwargs: T.Dict[str, T.Any]) -> ModuleReturnValue:
-        return ModuleReturnValue(self._absolute_dir(state, args[0]).is_symlink(), [])
+    @typed_pos_args('fs.is_symlink', (str, File))
+    def is_symlink(self, state: 'ModuleState', args: T.Tuple['FileOrString'], kwargs: T.Dict[str, T.Any]) -> bool:
+        if isinstance(args[0], File):
+            FeatureNew('fs.is_symlink_file', '0.59.0').use(state.subproject)
+        return self._absolute_dir(state, args[0]).is_symlink()
 
     @noKwargs
     @typed_pos_args('fs.is_file', str)
-    def is_file(self, state: 'ModuleState', args: T.Tuple[str], kwargs: T.Dict[str, T.Any]) -> ModuleReturnValue:
-        return self._check('is_file', state, args)
+    def is_file(self, state: 'ModuleState', args: T.Tuple[str], kwargs: T.Dict[str, T.Any]) -> bool:
+        return self._resolve_dir(state, args[0]).is_file()
 
     @noKwargs
     @typed_pos_args('fs.is_dir', str)
-    def is_dir(self, state: 'ModuleState', args: T.Tuple[str], kwargs: T.Dict[str, T.Any]) -> ModuleReturnValue:
-        return self._check('is_dir', state, args)
+    def is_dir(self, state: 'ModuleState', args: T.Tuple[str], kwargs: T.Dict[str, T.Any]) -> bool:
+        return self._resolve_dir(state, args[0]).is_dir()
 
     @noKwargs
-    @typed_pos_args('fs.hash', str, str)
-    def hash(self, state: 'ModuleState', args: T.Tuple[str, str], kwargs: T.Dict[str, T.Any]) -> ModuleReturnValue:
+    @typed_pos_args('fs.hash', (str, File), str)
+    def hash(self, state: 'ModuleState', args: T.Tuple['FileOrString', str], kwargs: T.Dict[str, T.Any]) -> str:
+        if isinstance(args[0], File):
+            FeatureNew('fs.hash_file', '0.59.0').use(state.subproject)
         file = self._resolve_dir(state, args[0])
         if not file.is_file():
             raise MesonException(f'{file} is not a file and therefore cannot be hashed')
@@ -120,66 +143,78 @@ class FSModule(ExtensionModule):
             raise MesonException('hash algorithm {} is not available'.format(args[1]))
         mlog.debug('computing {} sum of {} size {} bytes'.format(args[1], file, file.stat().st_size))
         h.update(file.read_bytes())
-        return ModuleReturnValue(h.hexdigest(), [])
+        return h.hexdigest()
 
     @noKwargs
-    @typed_pos_args('fs.size', str)
-    def size(self, state: 'ModuleState', args: T.Tuple[str], kwargs: T.Dict[str, T.Any]) -> ModuleReturnValue:
+    @typed_pos_args('fs.size', (str, File))
+    def size(self, state: 'ModuleState', args: T.Tuple['FileOrString'], kwargs: T.Dict[str, T.Any]) -> int:
+        if isinstance(args[0], File):
+            FeatureNew('fs.size_file', '0.59.0').use(state.subproject)
         file = self._resolve_dir(state, args[0])
         if not file.is_file():
             raise MesonException(f'{file} is not a file and therefore cannot be sized')
         try:
-            return ModuleReturnValue(file.stat().st_size, [])
+            return file.stat().st_size
         except ValueError:
             raise MesonException('{} size could not be determined'.format(args[0]))
 
     @noKwargs
-    @typed_pos_args('fs.is_samepath', str, str)
-    def is_samepath(self, state: 'ModuleState', args: T.Tuple[str, str], kwargs: T.Dict[str, T.Any]) -> ModuleReturnValue:
+    @typed_pos_args('fs.is_samepath', (str, File), (str, File))
+    def is_samepath(self, state: 'ModuleState', args: T.Tuple['FileOrString', 'FileOrString'], kwargs: T.Dict[str, T.Any]) -> bool:
+        if isinstance(args[0], File) or isinstance(args[1], File):
+            FeatureNew('fs.is_samepath_file', '0.59.0').use(state.subproject)
         file1 = self._resolve_dir(state, args[0])
         file2 = self._resolve_dir(state, args[1])
         if not file1.exists():
-            return ModuleReturnValue(False, [])
+            return False
         if not file2.exists():
-            return ModuleReturnValue(False, [])
+            return False
         try:
-            return ModuleReturnValue(file1.samefile(file2), [])
+            return file1.samefile(file2)
         except OSError:
-            return ModuleReturnValue(False, [])
+            return False
 
     @noKwargs
-    @typed_pos_args('fs.replace_suffix', str, str)
-    def replace_suffix(self, state: 'ModuleState', args: T.Tuple[str, str], kwargs: T.Dict[str, T.Any]) -> ModuleReturnValue:
-        original = PurePath(args[0])
+    @typed_pos_args('fs.replace_suffix', (str, File), str)
+    def replace_suffix(self, state: 'ModuleState', args: T.Tuple['FileOrString', str], kwargs: T.Dict[str, T.Any]) -> str:
+        if isinstance(args[0], File):
+            FeatureNew('fs.replace_suffix_file', '0.59.0').use(state.subproject)
+        original = PurePath(str(args[0]))
         new = original.with_suffix(args[1])
-        return ModuleReturnValue(str(new), [])
+        return str(new)
 
     @noKwargs
-    @typed_pos_args('fs.parent', str)
-    def parent(self, state: 'ModuleState', args: T.Tuple[str], kwargs: T.Dict[str, T.Any]) -> ModuleReturnValue:
-        original = PurePath(args[0])
+    @typed_pos_args('fs.parent', (str, File))
+    def parent(self, state: 'ModuleState', args: T.Tuple['FileOrString'], kwargs: T.Dict[str, T.Any]) -> str:
+        if isinstance(args[0], File):
+            FeatureNew('fs.parent_file', '0.59.0').use(state.subproject)
+        original = PurePath(str(args[0]))
         new = original.parent
-        return ModuleReturnValue(str(new), [])
+        return str(new)
 
     @noKwargs
-    @typed_pos_args('fs.name', str)
-    def name(self, state: 'ModuleState', args: T.Tuple[str], kwargs: T.Dict[str, T.Any]) -> ModuleReturnValue:
-        original = PurePath(args[0])
+    @typed_pos_args('fs.name', (str, File))
+    def name(self, state: 'ModuleState', args: T.Tuple['FileOrString'], kwargs: T.Dict[str, T.Any]) -> str:
+        if isinstance(args[0], File):
+            FeatureNew('fs.name_file', '0.59.0').use(state.subproject)
+        original = PurePath(str(args[0]))
         new = original.name
-        return ModuleReturnValue(str(new), [])
+        return str(new)
 
     @noKwargs
-    @typed_pos_args('fs.stem', str)
+    @typed_pos_args('fs.stem', (str, File))
     @FeatureNew('fs.stem', '0.54.0')
-    def stem(self, state: 'ModuleState', args: T.Tuple[str], kwargs: T.Dict[str, T.Any]) -> ModuleReturnValue:
-        original = PurePath(args[0])
+    def stem(self, state: 'ModuleState', args: T.Tuple['FileOrString'], kwargs: T.Dict[str, T.Any]) -> str:
+        if isinstance(args[0], File):
+            FeatureNew('fs.stem_file', '0.59.0').use(state.subproject)
+        original = PurePath(str(args[0]))
         new = original.stem
-        return ModuleReturnValue(str(new), [])
+        return str(new)
 
     @FeatureNew('fs.read', '0.57.0')
-    @permittedKwargs({'encoding'})
     @typed_pos_args('fs.read', (str, File))
-    def read(self, state: 'ModuleState', args: T.Tuple['FileOrString'], kwargs: T.Dict[str, T.Any]) -> ModuleReturnValue:
+    @typed_kwargs('fs.read', KwargInfo('encoding', str, default='utf-8'))
+    def read(self, state: 'ModuleState', args: T.Tuple['FileOrString'], kwargs: 'ReadKwArgs') -> str:
         """Read a file from the source tree and return its value as a decoded
         string.
 
@@ -189,10 +224,7 @@ class FSModule(ExtensionModule):
         loops)
         """
         path = args[0]
-        encoding: str = kwargs.get('encoding', 'utf-8')
-        if not isinstance(encoding, str):
-            raise MesonException('`encoding` parameter must be a string')
-
+        encoding = kwargs['encoding']
         src_dir = self.interpreter.environment.source_dir
         sub_dir = self.interpreter.subdir
         build_dir = self.interpreter.environment.get_build_dir()
@@ -219,7 +251,7 @@ class FSModule(ExtensionModule):
         # part of the build configuration (e.g. `project(..., version:
         # fs.read_file('VERSION')` or `configure_file(...)`
         self.interpreter.add_build_def_file(path)
-        return ModuleReturnValue(data, [])
+        return data
 
 
 def initialize(*args: T.Any, **kwargs: T.Any) -> FSModule:

@@ -38,10 +38,10 @@ def array_arg(value: str) -> T.List[str]:
 
 def validate_builddir(builddir: Path) -> None:
     if not (builddir / 'meson-private' / 'coredata.dat' ).is_file():
-        raise MesonException('Current directory is not a meson build directory: `{}`.\n'
+        raise MesonException(f'Current directory is not a meson build directory: `{builddir}`.\n'
                              'Please specify a valid build dir or change the working directory to it.\n'
                              'It is also possible that the build directory was generated with an old\n'
-                             'meson version. Please regenerate it in this case.'.format(builddir))
+                             'meson version. Please regenerate it in this case.')
 
 def get_backend_from_coredata(builddir: Path) -> str:
     """
@@ -58,7 +58,7 @@ def parse_introspect_data(builddir: Path) -> T.Dict[str, T.List[dict]]:
     path_to_intro = builddir / 'meson-info' / 'intro-targets.json'
     if not path_to_intro.exists():
         raise MesonException(f'`{path_to_intro.name}` is missing! Directory is not configured yet?')
-    with path_to_intro.open() as f:
+    with path_to_intro.open(encoding='utf-8') as f:
         schema = json.load(f)
 
     parsed_data = defaultdict(list) # type: T.Dict[str, T.List[dict]]

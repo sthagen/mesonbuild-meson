@@ -15,7 +15,7 @@
 # This class contains the basic functionality needed to run any interpreter
 # or an interpreter-based tool.
 
-from .common import CMakeException, CMakeTarget, TargetOptions, CMakeConfiguration, language_map, check_cmake_args
+from .common import CMakeException, CMakeTarget, TargetOptions, CMakeConfiguration, language_map, backend_generator_map, cmake_get_generator_args, check_cmake_args
 from .client import CMakeClient, RequestCMakeInputs, RequestConfigure, RequestCompute, RequestCodeModel, ReplyCMakeInputs, ReplyCodeModel
 from .fileapi import CMakeFileAPI
 from .executor import CMakeExecutor
@@ -24,8 +24,9 @@ from .traceparser import CMakeTraceParser, CMakeGeneratorTarget
 from .. import mlog, mesonlib
 from ..mesonlib import MachineChoice, OrderedSet, version_compare, path_is_in_root, relative_to_if_possible, OptionKey
 from ..mesondata import mesondata
-from ..compilers.compilers import lang_suffixes, header_suffixes, obj_suffixes, lib_suffixes, is_header
+from ..compilers.compilers import assembler_suffixes, lang_suffixes, header_suffixes, obj_suffixes, lib_suffixes, is_header
 from ..programs import ExternalProgram
+from ..coredata import FORBIDDEN_TARGET_NAMES
 from enum import Enum
 from functools import lru_cache
 from pathlib import Path
@@ -51,6 +52,7 @@ from ..mparser import (
 
 
 if T.TYPE_CHECKING:
+    from .._typing import ImmutableListProtocol
     from ..build import Build
     from ..backend.backends import Backend
     from ..environment import Environment
@@ -73,15 +75,6 @@ disable_policy_warnings = [
     'CMP0089',
     'CMP0102',
 ]
-
-backend_generator_map = {
-    'ninja': 'Ninja',
-    'xcode': 'Xcode',
-    'vs2010': 'Visual Studio 10 2010',
-    'vs2015': 'Visual Studio 15 2017',
-    'vs2017': 'Visual Studio 15 2017',
-    'vs2019': 'Visual Studio 16 2019',
-}
 
 target_type_map = {
     'STATIC_LIBRARY': 'static_library',
@@ -128,7 +121,9 @@ transfer_dependencies_from = ['header_only']
 _cmake_name_regex = re.compile(r'[^_a-zA-Z0-9]')
 def _sanitize_cmake_name(name: str) -> str:
     name = _cmake_name_regex.sub('_', name)
-    return 'cm_' + name
+    if name in FORBIDDEN_TARGET_NAMES or name.startswith('meson'):
+        name = 'cm_' + name
+    return name
 
 class OutputTargetMap:
     rm_so_version = re.compile(r'(\.[0-9]+)+$')
@@ -443,7 +438,7 @@ class ConverterTarget:
         self.link_libraries = temp
 
         # Filter out files that are not supported by the language
-        supported = list(header_suffixes) + list(obj_suffixes)
+        supported = list(assembler_suffixes) + list(header_suffixes) + list(obj_suffixes)
         for i in self.languages:
             supported += list(lang_suffixes[i])
         supported = [f'.{x}' for x in supported]
@@ -591,14 +586,14 @@ class ConverterTarget:
             self.compile_opts[lang] += [x for x in opts if x not in self.compile_opts[lang]]
 
     @lru_cache(maxsize=None)
-    def _all_source_suffixes(self) -> T.List[str]:
+    def _all_source_suffixes(self) -> 'ImmutableListProtocol[str]':
         suffixes = []  # type: T.List[str]
         for exts in lang_suffixes.values():
             suffixes += [x for x in exts]
         return suffixes
 
     @lru_cache(maxsize=None)
-    def _all_lang_stds(self, lang: str) -> T.List[str]:
+    def _all_lang_stds(self, lang: str) -> 'ImmutableListProtocol[str]':
         try:
             res = self.env.coredata.options[OptionKey('std', machine=MachineChoice.BUILD, lang=lang)].choices
         except KeyError:
@@ -892,15 +887,14 @@ class CMakeInterpreter:
         self.trace = CMakeTraceParser(cmake_exe.version(), self.build_dir, permissive=True)
 
         preload_file = mesondata['cmake/data/preload.cmake'].write_to_private(self.env)
-        toolchain = CMakeToolchain(self.env, self.for_machine, CMakeExecScope.SUBPROJECT, self.build_dir.parent, preload_file)
+        toolchain = CMakeToolchain(cmake_exe, self.env, self.for_machine, CMakeExecScope.SUBPROJECT, self.build_dir, preload_file)
         toolchain_file = toolchain.write()
 
         # TODO: drop this check once the deprecated `cmake_args` kwarg is removed
         extra_cmake_options = check_cmake_args(extra_cmake_options)
 
-        generator = backend_generator_map[self.backend_name]
         cmake_args = []
-        cmake_args += ['-G', generator]
+        cmake_args += cmake_get_generator_args(self.env)
         cmake_args += [f'-DCMAKE_INSTALL_PREFIX={self.install_prefix}']
         cmake_args += extra_cmake_options
         trace_args = self.trace.trace_args()
@@ -953,6 +947,7 @@ class CMakeInterpreter:
             cmake_files = self.fileapi.get_cmake_sources()
             self.bs_files = [x.file for x in cmake_files if not x.is_cmake and not x.is_temp]
             self.bs_files = [relative_to_if_possible(x, Path(self.env.get_source_dir())) for x in self.bs_files]
+            self.bs_files = [x for x in self.bs_files if not path_is_in_root(x, Path(self.env.get_build_dir()), resolve=True)]
             self.bs_files = list(OrderedSet(self.bs_files))
 
             # Load the codemodel configurations
@@ -980,6 +975,7 @@ class CMakeInterpreter:
         src_dir = bs_reply.src_dir
         self.bs_files = [x.file for x in bs_reply.build_files if not x.is_cmake and not x.is_temp]
         self.bs_files = [relative_to_if_possible(src_dir / x, Path(self.env.get_source_dir()), resolve=True) for x in self.bs_files]
+        self.bs_files = [x for x in self.bs_files if not path_is_in_root(x, Path(self.env.get_build_dir()), resolve=True)]
         self.bs_files = list(OrderedSet(self.bs_files))
         self.codemodel_configs = cm_reply.configs
 

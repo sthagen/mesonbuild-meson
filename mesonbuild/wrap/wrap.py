@@ -42,10 +42,8 @@ try:
     # regarding 'imported but unused' can be safely ignored
     import ssl  # noqa
     has_ssl = True
-    API_ROOT = 'https://wrapdb.mesonbuild.com/v1/'
 except ImportError:
     has_ssl = False
-    API_ROOT = 'http://wrapdb.mesonbuild.com/v1/'
 
 REQ_TIMEOUT = 600.0
 SSL_WARNING_PRINTED = False
@@ -103,6 +101,8 @@ class PackageDefinition:
         self.name = self.basename[:-5] if self.has_wrap else self.basename
         self.directory = self.name
         self.provided_deps[self.name] = None
+        self.original_filename = fname
+        self.redirected = False
         if self.has_wrap:
             self.parse_wrap()
         self.directory = self.values.get('directory', self.name)
@@ -111,6 +111,7 @@ class PackageDefinition:
         if self.type and self.type not in ALL_TYPES:
             raise WrapException(f'Unknown wrap type {self.type!r}')
         self.filesdir = os.path.join(os.path.dirname(self.filename), 'packagefiles')
+        # What the original file name was before redirection
 
     def parse_wrap(self) -> None:
         try:
@@ -139,6 +140,7 @@ class PackageDefinition:
                 raise WrapException(f'wrap-redirect {fname} filename does not exist')
             self.filename = str(fname)
             self.parse_wrap()
+            self.redirected = True
             return
         self.parse_provide_section(config)
 
@@ -250,19 +252,19 @@ class Resolver:
         for k, v in other_resolver.provided_programs.items():
             self.provided_programs.setdefault(k, v)
 
-    def find_dep_provider(self, packagename: str) -> T.Optional[T.Union[str, T.List[str]]]:
+    def find_dep_provider(self, packagename: str) -> T.Tuple[T.Optional[str], T.Optional[str]]:
         # Python's ini parser converts all key values to lowercase.
         # Thus the query name must also be in lower case.
         packagename = packagename.lower()
-        # Return value is in the same format as fallback kwarg:
-        # ['subproject_name', 'variable_name'], or 'subproject_name'.
         wrap = self.provided_deps.get(packagename)
         if wrap:
             dep_var = wrap.provided_deps.get(packagename)
-            if dep_var:
-                return [wrap.name, dep_var]
-            return wrap.name
-        return None
+            return wrap.name, dep_var
+        return None, None
+
+    def get_varname(self, subp_name: str, depname: str) -> T.Optional[str]:
+        wrap = self.wraps.get(subp_name)
+        return wrap.provided_deps.get(depname) if wrap else None
 
     def find_program_provider(self, names: T.List[str]) -> T.Optional[str]:
         for name in names:
@@ -293,7 +295,7 @@ class Resolver:
                 mlog.log('Using', mlog.bold(rel))
                 # Write a dummy wrap file in main project that redirect to the
                 # wrap we picked.
-                with open(main_fname, 'w') as f:
+                with open(main_fname, 'w', encoding='utf-8') as f:
                     f.write(textwrap.dedent('''\
                         [wrap-redirect]
                         filename = {}
@@ -415,7 +417,7 @@ class Resolver:
             verbose_git(['remote', 'add', 'origin', self.wrap.get('url')], self.dirname, check=True)
             revno = self.wrap.get('revision')
             verbose_git(['fetch', *depth_option, 'origin', revno], self.dirname, check=True)
-            verbose_git(['checkout', revno], self.dirname, check=True)
+            verbose_git(['checkout', revno, '--'], self.dirname, check=True)
             if self.wrap.values.get('clone-recursive', '').lower() == 'true':
                 verbose_git(['submodule', 'update', '--init', '--checkout',
                              '--recursive', *depth_option], self.dirname, check=True)
@@ -426,9 +428,9 @@ class Resolver:
             if not is_shallow:
                 verbose_git(['clone', self.wrap.get('url'), self.directory], self.subdir_root, check=True)
                 if revno.lower() != 'head':
-                    if not verbose_git(['checkout', revno], self.dirname):
+                    if not verbose_git(['checkout', revno, '--'], self.dirname):
                         verbose_git(['fetch', self.wrap.get('url'), revno], self.dirname, check=True)
-                        verbose_git(['checkout', revno], self.dirname, check=True)
+                        verbose_git(['checkout', revno, '--'], self.dirname, check=True)
             else:
                 verbose_git(['clone', *depth_option, '--branch', revno, self.wrap.get('url'),
                              self.directory], self.subdir_root, check=True)

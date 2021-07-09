@@ -15,24 +15,56 @@
 from .boost import BoostDependency
 from .cuda import CudaDependency
 from .hdf5 import hdf5_factory
-from .base import (  # noqa: F401
-    Dependency, DependencyException, DependencyMethods, ExternalDependency,
-    NotFoundDependency, ExternalLibrary, ExtraFrameworkDependency,
-    InternalDependency, PkgConfigDependency, CMakeDependency,
-    find_external_dependency, get_dep_identifier, packages,
-    _packages_accept_language, DependencyFactory)
-from .dev import ValgrindDependency, gmock_factory, gtest_factory, llvm_factory, zlib_factory
+from .base import Dependency, InternalDependency, ExternalDependency, NotFoundDependency
+from .base import (
+        ExternalLibrary, DependencyException, DependencyMethods,
+        BuiltinDependency, SystemDependency)
+from .cmake import CMakeDependency
+from .configtool import ConfigToolDependency
+from .dub import DubDependency
+from .framework import ExtraFrameworkDependency
+from .pkgconfig import PkgConfigDependency
+from .factory import DependencyFactory
+from .detect import find_external_dependency, get_dep_identifier, packages, _packages_accept_language
+from .dev import (
+    ValgrindDependency, JDKSystemDependency, gmock_factory, gtest_factory,
+    llvm_factory, zlib_factory)
 from .coarrays import coarray_factory
 from .mpi import mpi_factory
 from .scalapack import scalapack_factory
 from .misc import (
     BlocksDependency, OpenMPDependency, cups_factory, curses_factory, gpgme_factory,
     libgcrypt_factory, libwmf_factory, netcdf_factory, pcap_factory, python3_factory,
-    shaderc_factory, threads_factory,
+    shaderc_factory, threads_factory, ThreadDependency, intl_factory,
 )
 from .platform import AppleFrameworks
 from .qt import qt4_factory, qt5_factory, qt6_factory
 from .ui import GnuStepDependency, WxDependency, gl_factory, sdl2_factory, vulkan_factory
+
+__all__ = [
+    'Dependency',
+    'InternalDependency',
+    'ExternalDependency',
+    'SystemDependency',
+    'BuiltinDependency',
+    'NotFoundDependency',
+    'ExternalLibrary',
+    'DependencyException',
+    'DependencyMethods',
+
+    'CMakeDependency',
+    'ConfigToolDependency',
+    'DubDependency',
+    'ExtraFrameworkDependency',
+    'PkgConfigDependency',
+
+    'DependencyFactory',
+
+    'ThreadDependency',
+
+    'find_external_dependency',
+    'get_dep_identifier',
+]
 
 """Dependency representations and discovery logic.
 
@@ -188,7 +220,7 @@ this approach, and no new dependencies should do this.
 # of:
 # - An ExternalDependency subclass
 # - A DependencyFactory object
-# - A callable with a signature of (Environment, MachineChoice, Dict[str, Any]) -> List[Callable[[], DependencyType]]
+# - A callable with a signature of (Environment, MachineChoice, Dict[str, Any]) -> List[Callable[[], ExternalDependency]]
 packages.update({
     # From dev:
     'gtest': gtest_factory,
@@ -196,6 +228,7 @@ packages.update({
     'llvm': llvm_factory,
     'valgrind': ValgrindDependency,
     'zlib': zlib_factory,
+    'jdk': JDKSystemDependency,
 
     'boost': BoostDependency,
     'cuda': CudaDependency,
@@ -219,6 +252,7 @@ packages.update({
     'libgcrypt': libgcrypt_factory,
     'gpgme': gpgme_factory,
     'shaderc': shaderc_factory,
+    'intl': intl_factory,
 
     # From platform:
     'appleframeworks': AppleFrameworks,

@@ -36,12 +36,17 @@ def parse_pattern_file(fname: Path) -> T.List[str]:
     return patterns
 
 def run_clang_format(exelist: T.List[str], fname: Path, check: bool) -> subprocess.CompletedProcess:
+    if check:
+        original = fname.read_bytes()
     before = fname.stat().st_mtime
-    ret = subprocess.run(exelist + ['-style=file', '-i', str(fname)])
+    args = ['-style=file', '-i', str(fname)]
+    ret = subprocess.run(exelist + args)
     after = fname.stat().st_mtime
     if before != after:
         print('File reformatted: ', fname)
         if check:
+            # Restore the original if only checking.
+            fname.write_bytes(original)
             ret.returncode = 1
     return ret
 
@@ -55,7 +60,7 @@ def clangformat(exelist: T.List[str], srcdir: Path, builddir: Path, check: bool)
     ignore.extend([str(srcdir / p) for p in patterns])
     suffixes = set(lang_suffixes['c']).union(set(lang_suffixes['cpp']))
     suffixes.add('h')
-    suffixes = set([f'.{s}' for s in suffixes])
+    suffixes = {f'.{s}' for s in suffixes}
     futures = []
     returncode = 0
     with ThreadPoolExecutor() as e:

@@ -30,11 +30,14 @@ keyword arguments.
   also be provided and they will be added into the `Libs` field. Since 0.45.0
   dependencies of built libraries will be automatically added, see the
   [Implicit dependencies](#implicit-dependencies) section below for the exact
-  rules.
+  rules. Since 0.58.0 custom_target() objects are supported as long as they are
+  linkable (has known extension such as `.a`, `.so`, etc).
 - `libraries_private` list of built libraries or strings to put in the
   `Libs.private` field. Since 0.45.0 dependencies of built libraries will be
   automatically added, see the [Implicit dependencies](#implicit-dependencies)
-  section below for the exact rules.
+  section below for the exact rules. Since 0.58.0 custom_target() objects are
+  supported as long as they are linkable (has known extension such as `.a`,
+  `.so`, etc).
 - `name` the name of this library, used to set the `Name:` field
 - `subdirs` which subdirs of `include` should be added to the header
   search path, for example if you install headers into
@@ -52,12 +55,20 @@ keyword arguments.
   `includedir` are reserved and may not be used. *Since 0.56.0* it can also be a
   dictionary but ordering of Meson dictionaries are not guaranteed, which could
   cause issues when some variables reference other variables.
+  Spaces in values are escaped with `\`, this is required in the case the value is
+  a path that and is used in `cflags` or `libs` arguments. *Since 0.59.0* if
+  escaping is not desired (e.g. space separate list of values) `unescaped_variables`
+  keyword argument should be used instead.
+- `uninstalled_variables` used instead of the `variables` keyword argument, when
+  generating the uninstalled pkg-config file. Since *0.54.0*
+  Spaces in values are escaped with `\`, this is required in the case the value is
+  a path that and is used in `cflags` or `libs` arguments. *Since 0.59.0* if
+  escaping is not desired (e.g. space separate list of values)
+  `unescaped_uninstalled_variables` keyword argument should be used instead.
 - `version` a string describing the version of this library, used to set the
   `Version:` field. (*since 0.46.0*) Defaults to the project version if unspecified.
 - `d_module_versions` a list of module version flags used when compiling
    D sources referred to by this pkg-config file
-- `uninstalled_variables` used instead of the `variables` keyword argument, when
-  generating the uninstalled pkg-config file. Since *0.54.0*
 - `dataonly` field. (*since 0.54.0*) this is used for architecture-independent
    pkg-config files in projects which also have architecture-dependent outputs.
 - `conflicts` (*since 0.36.0, incorrectly issued a warning prior to 0.54.0*) list of strings to be put in the `Conflicts` field.

@@ -16,10 +16,20 @@
 # or an interpreter-based tool.
 
 from .visitor import AstVisitor
-from .. import interpreterbase, mparser, mesonlib
+from .. import mparser, mesonlib
 from .. import environment
 
-from ..interpreterbase import InvalidArguments, BreakRequest, ContinueRequest, TYPE_nvar, TYPE_nkwargs
+from ..interpreterbase import (
+    MesonInterpreterObject,
+    InterpreterBase,
+    InvalidArguments,
+    BreakRequest,
+    ContinueRequest,
+    default_resolve_key,
+    TYPE_nvar,
+    TYPE_nkwargs,
+)
+
 from ..mparser import (
     AndNode,
     ArgumentNode,
@@ -45,28 +55,31 @@ from ..mparser import (
 import os, sys
 import typing as T
 
-class DontCareObject(interpreterbase.InterpreterObject):
+class DontCareObject(MesonInterpreterObject):
     pass
 
-class MockExecutable(interpreterbase.InterpreterObject):
+class MockExecutable(MesonInterpreterObject):
     pass
 
-class MockStaticLibrary(interpreterbase.InterpreterObject):
+class MockStaticLibrary(MesonInterpreterObject):
     pass
 
-class MockSharedLibrary(interpreterbase.InterpreterObject):
+class MockSharedLibrary(MesonInterpreterObject):
     pass
 
-class MockCustomTarget(interpreterbase.InterpreterObject):
+class MockCustomTarget(MesonInterpreterObject):
     pass
 
-class MockRunTarget(interpreterbase.InterpreterObject):
+class MockRunTarget(MesonInterpreterObject):
     pass
 
 ADD_SOURCE = 0
 REMOVE_SOURCE = 1
 
-class AstInterpreter(interpreterbase.InterpreterBase):
+_T = T.TypeVar('_T')
+_V = T.TypeVar('_V')
+
+class AstInterpreter(InterpreterBase):
     def __init__(self, source_root: str, subdir: str, subproject: str, visitors: T.Optional[T.List[AstVisitor]] = None):
         super().__init__(source_root, subdir, subproject)
         self.visitors = visitors if visitors is not None else []
@@ -131,6 +144,12 @@ class AstInterpreter(interpreterbase.InterpreterBase):
                            'range': self.func_do_nothing,
                            })
 
+    def _unholder_args(self, args: _T, kwargs: _V) -> T.Tuple[_T, _V]:
+        return args, kwargs
+
+    def _holderify(self, res: _T) -> _T:
+        return res
+
     def func_do_nothing(self, node: BaseNode, args: T.List[TYPE_nvar], kwargs: T.Dict[str, TYPE_nvar]) -> bool:
         return True
 
@@ -160,7 +179,7 @@ class AstInterpreter(interpreterbase.InterpreterBase):
         if not os.path.isfile(absname):
             sys.stderr.write(f'Unable to find build file {buildfilename} --> Skipping\n')
             return
-        with open(absname, encoding='utf8') as f:
+        with open(absname, encoding='utf-8') as f:
             code = f.read()
         assert(isinstance(code, str))
         try:
@@ -224,7 +243,7 @@ class AstInterpreter(interpreterbase.InterpreterBase):
     def reduce_arguments(
                 self,
                 args: mparser.ArgumentNode,
-                key_resolver: T.Callable[[mparser.BaseNode], str] = interpreterbase.default_resolve_key,
+                key_resolver: T.Callable[[mparser.BaseNode], str] = default_resolve_key,
                 duplicate_key_error: T.Optional[str] = None,
             ) -> T.Tuple[T.List[TYPE_nvar], TYPE_nkwargs]:
         if isinstance(args, ArgumentNode):

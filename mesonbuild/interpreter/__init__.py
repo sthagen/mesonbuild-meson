@@ -16,10 +16,10 @@
 
 """Meson interpreter."""
 
-from .interpreter import Interpreter, permitted_kwargs
+from .interpreter import Interpreter, permitted_dependency_kwargs
 from .compiler import CompilerHolder
 from .interpreterobjects import (ExecutableHolder, BuildTargetHolder, CustomTargetHolder,
                                  CustomTargetIndexHolder, MachineHolder, Test,
-                                 ConfigurationDataHolder, SubprojectHolder, DependencyHolder,
+                                 ConfigurationDataObject, SubprojectHolder, DependencyHolder,
                                  GeneratedListHolder, ExternalProgramHolder,
                                  extract_required_kwarg)

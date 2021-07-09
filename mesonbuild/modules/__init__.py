@@ -16,14 +16,16 @@
 # are UI-related.
 
 import os
+import typing as T
 
 from .. import build
-from ..mesonlib import unholder, relpath
-import typing as T
+from ..mesonlib import relpath, HoldableObject
+from ..interpreterbase.decorators import noKwargs, noPosargs
 
 if T.TYPE_CHECKING:
     from ..interpreter import Interpreter
-    from ..interpreterbase import TYPE_var, TYPE_nvar, TYPE_nkwargs
+    from ..interpreterbase import TYPE_var, TYPE_kwargs
+    from ..programs import ExternalProgram
 
 class ModuleState:
     """Object passed to all module methods.
@@ -33,6 +35,9 @@ class ModuleState:
     """
 
     def __init__(self, interpreter: 'Interpreter') -> None:
+        # Keep it private, it should be accessed only through methods.
+        self._interpreter = interpreter
+
         self.source_root = interpreter.environment.get_source_dir()
         self.build_to_src = relpath(interpreter.environment.get_source_dir(),
                                     interpreter.environment.get_build_dir())
@@ -56,47 +61,107 @@ class ModuleState:
         self.target_machine = interpreter.builtin['target_machine'].held_object
         self.current_node = interpreter.current_node
 
-class ModuleObject:
+    def get_include_args(self, include_dirs: T.Iterable[T.Union[str, build.IncludeDirs]], prefix: str = '-I') -> T.List[str]:
+        if not include_dirs:
+            return []
+
+        srcdir = self.environment.get_source_dir()
+        builddir = self.environment.get_build_dir()
+
+        dirs_str: T.List[str] = []
+        for dirs in include_dirs:
+            if isinstance(dirs, str):
+                dirs_str += [f'{prefix}{dirs}']
+                continue
+
+            # Should be build.IncludeDirs object.
+            basedir = dirs.get_curdir()
+            for d in dirs.get_incdirs():
+                expdir = os.path.join(basedir, d)
+                srctreedir = os.path.join(srcdir, expdir)
+                buildtreedir = os.path.join(builddir, expdir)
+                dirs_str += [f'{prefix}{buildtreedir}',
+                             f'{prefix}{srctreedir}']
+            for d in dirs.get_extra_build_dirs():
+                dirs_str += [f'{prefix}{d}']
+
+        return dirs_str
+
+    def find_program(self, prog: T.Union[str, T.List[str]], required: bool = True,
+                     version_func: T.Optional[T.Callable[['ExternalProgram'], str]] = None,
+                     wanted: T.Optional[str] = None) -> 'ExternalProgram':
+        return self._interpreter.find_program_impl(prog, required=required, version_func=version_func, wanted=wanted)
+
+
+class ModuleObject(HoldableObject):
     """Base class for all objects returned by modules
     """
-    def __init__(self, interpreter: T.Optional['Interpreter'] = None) -> None:
-        self.methods = {}  # type: T.Dict[str, T.Callable[[T.List[TYPE_nvar], TYPE_nkwargs], TYPE_var]]
-        # FIXME: Port all modules to stop using self.interpreter and use API on
-        # ModuleState instead.
-        self.interpreter = interpreter
-        # FIXME: Port all modules to remove snippets methods.
-        self.snippets: T.Set[str] = set()
+    def __init__(self) -> None:
+        self.methods: T.Dict[
+            str,
+            T.Callable[[ModuleState, T.List['TYPE_var'], 'TYPE_kwargs'], T.Union[ModuleReturnValue, 'TYPE_var']]
+        ] = {}
 
-# FIXME: Port all modules to use ModuleObject directly.
-class ExtensionModule(ModuleObject):
+
+class MutableModuleObject(ModuleObject):
     pass
 
-def get_include_args(include_dirs, prefix='-I'):
-    '''
-    Expand include arguments to refer to the source and build dirs
-    by using @SOURCE_ROOT@ and @BUILD_ROOT@ for later substitution
-    '''
-    if not include_dirs:
-        return []
 
-    dirs_str = []
-    for dirs in unholder(include_dirs):
-        if isinstance(dirs, str):
-            dirs_str += [f'{prefix}{dirs}']
-            continue
+# FIXME: Port all modules to stop using self.interpreter and use API on
+# ModuleState instead. Modules should stop using this class and instead use
+# ModuleObject base class.
+class ExtensionModule(ModuleObject):
+    def __init__(self, interpreter: 'Interpreter') -> None:
+        super().__init__()
+        self.interpreter = interpreter
+        self.methods.update({
+            'found': self.found_method,
+        })
 
-        # Should be build.IncludeDirs object.
-        basedir = dirs.get_curdir()
-        for d in dirs.get_incdirs():
-            expdir = os.path.join(basedir, d)
-            srctreedir = os.path.join('@SOURCE_ROOT@', expdir)
-            buildtreedir = os.path.join('@BUILD_ROOT@', expdir)
-            dirs_str += [f'{prefix}{buildtreedir}',
-                         f'{prefix}{srctreedir}']
-        for d in dirs.get_extra_build_dirs():
-            dirs_str += [f'{prefix}{d}']
+    @noPosargs
+    @noKwargs
+    def found_method(self, state: 'ModuleState', args: T.List['TYPE_var'], kwargs: 'TYPE_kwargs') -> bool:
+        return self.found()
 
-    return dirs_str
+    @staticmethod
+    def found() -> bool:
+        return True
+
+
+class NewExtensionModule(ModuleObject):
+
+    """Class for modern modules
+
+    provides the found method.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.methods.update({
+            'found': self.found_method,
+        })
+
+    @noPosargs
+    @noKwargs
+    def found_method(self, state: 'ModuleState', args: T.List['TYPE_var'], kwargs: 'TYPE_kwargs') -> bool:
+        return self.found()
+
+    @staticmethod
+    def found() -> bool:
+        return True
+
+
+class NotFoundExtensionModule(NewExtensionModule):
+
+    """Class for modern modules
+
+    provides the found method.
+    """
+
+    @staticmethod
+    def found() -> bool:
+        return False
+
 
 def is_module_library(fname):
     '''
@@ -110,7 +175,7 @@ def is_module_library(fname):
 
 
 class ModuleReturnValue:
-    def __init__(self, return_value: 'TYPE_var', new_objects: T.List['TYPE_var']) -> None:
+    def __init__(self, return_value: T.Optional['TYPE_var'], new_objects: T.List['TYPE_var']) -> None:
         self.return_value = return_value
         assert(isinstance(new_objects, list))
         self.new_objects = new_objects

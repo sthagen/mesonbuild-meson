@@ -383,6 +383,10 @@ following.
   `{'NAME1': 'value1', 'NAME2': 'value2'}` or `['NAME1=value1', 'NAME2=value2']`,
   or an [`environment()` object](#environment-object) which allows more
   sophisticated environment juggling.
+- `feed` *(since 0.59.0)*: there are some compilers that can't be told to read
+  their input from a file and instead read it from standard input. When this
+  argument is set to true, Meson feeds the input file to `stdin`. Note that
+  your argument list may not contain `@INPUT@` when feed mode is active.
 
 The list of strings passed to the `command` keyword argument accept
 the following special string substitutions:
@@ -443,7 +447,8 @@ keyword arguments:
 - `link_whole` *(since 0.46.0)*: libraries to link fully, same as [`executable`](#executable).
 - `sources`: sources to add to targets (or generated header files
   that should be built before sources including them are built)
-- `version`: the version of this dependency, such as `1.2.3`
+- `version`: the version of this dependency, such as `1.2.3`. Defaults to the
+  project version.
 - `variables` *(since 0.54.0)*: a dictionary of arbitrary strings, this is meant to be used
   in subprojects where special variables would be provided via cmake or
   pkg-config. *since 0.56.0* it can also be a list of `'key=value'` strings.
@@ -514,6 +519,8 @@ This function supports the following keyword arguments:
   in this case the subproject must use
   `meson.override_dependency('dependency_name', subproj_dep)`
   to specify the dependency object used in the superproject.
+  If the value is an empty list, it has the same effect as
+  `allow_fallback: false`.
 - `language` *(since 0.42.0)*: defines what language-specific
   dependency to find if it's available for multiple languages.
 - `method`: defines the way the dependency is detected, the default is
@@ -966,18 +973,20 @@ a non-existing variable will cause a fatal error.
 
 ### import()
 
-``` meson
-    module_object import(module_name)
+```
+  module_object import(string, required : bool | feature, disabler : bool)
 ```
 
-Imports the given extension module. Returns an opaque object that can
-be used to call the methods of the module. Here's an example for a
-hypothetical `testmod` module.
+Imports the given extension module. Returns an object that can be used to call
+the methods of the module. Here's an example for a hypothetical `testmod`
+module.
 
 ```meson
     tmod = import('testmod')
     tmod.do_something()
 ```
+
+*Since 0.59.0* the required and disabler keyword arguments
 
 ### include_directories()
 
@@ -1981,8 +1990,8 @@ the following methods.
   *used as the `script_name` parameter.
 
 - `backend()` *(since 0.37.0)*: returns a string representing the
-  current backend: `ninja`, `vs2010`, `vs2015`, `vs2017`, `vs2019`,
-  or `xcode`.
+  current backend: `ninja`, `vs2010`, `vs2012`, `vs2013`, `vs2015`,
+  `vs2017`, `vs2019`, or `xcode`.
 
 - `build_root()`: returns a string with the absolute path to the build
   root directory. *(deprecated since 0.56.0)*: this function will return the
@@ -2121,6 +2130,15 @@ the following methods.
   ...
   meson.add_devenv(devenv)
   ```
+  After configuring and compiling that project, a terminal can be opened with
+  the environment set:
+  ```sh
+  $ meson devenv -C <builddir>
+  $ echo $PLUGINS_PATH
+  /path/to/source/subdir
+  ```
+  See [`meson devenv`](Commands.md#devenv) command documentation for a list of
+  environment variables that are set by default by Meson.
 
 ### `build_machine` object
 
@@ -2201,8 +2219,8 @@ are immutable, all operations return their results as a new string.
 - `join(list_of_strings)`: the opposite of split, for example
   `'.'.join(['a', 'b', 'c']` yields `'a.b.c'`.
 
-- `replace('old_substr', 'new_str')`: replaces instances of `old_substr` in the
-  string with `new_str` and returns a new string
+- `replace('old_substr', 'new_str')` *(since 0.58.0)*: replaces instances of
+  `old_substr` in the string with `new_str` and returns a new string
 
 - `split(split_character)`: splits the string at the specified
   character (or whitespace if not set) and returns the parts in an
@@ -2542,12 +2560,20 @@ module](#shared_module).
   object files generated for those source files. This is typically used
   to take single object files and link them to unit tests or to compile
   some source files with custom flags. To use the object file(s)
-  in another build target, use the `objects:` keyword argument.
+  in another build target, use the [`objects:`](#executable) keyword
+  argument or include them in the command line of a
+  [`custom_target`](#custom_target)`.
 
 - `full_path()`: returns a full path pointing to the result target file.
   NOTE: In most cases using the object itself will do the same job as
   this and will also allow Meson to setup inter-target dependencies
   correctly. Please file a bug if that doesn't work for you.
+
+- `path()` *(since 0.59.0)* **(deprecated)**: does the exact same
+  as `full_path()`. **NOTE:** This function is solely kept for compatebility
+  with [`external program`](#external-program-object) objects. It will be
+  removed once the, also deprecated, corresponding `path()` function in the
+  `external program` object is removed.
 
 - `private_dir_include()`: returns a opaque value that works like
   `include_directories` but points to the private directory of this
@@ -2555,6 +2581,11 @@ module](#shared_module).
   some generated internal headers of this target
 
 - `name()` *(since 0.54.0)*: returns the target name.
+
+- `found()` *(since 0.59.0)*: Always returns `true`. This function is meant
+  to make executables objects feature compatible with
+  [`external program`](#external-program-object) objects. This simplifies
+  use-cases where an executable is used instead of an external program.
 
 
 ### `configuration` data object
@@ -2808,6 +2839,31 @@ The following methods are defined for all [`feature` options](Build-options.md#f
 - `enabled()`: returns whether the feature was set to `'enabled'`
 - `disabled()`: returns whether the feature was set to `'disabled'`
 - `auto()`: returns whether the feature was set to `'auto'`
+- `allowed()` *(since 0.59.0)*: returns whether the feature was set to `'enabled'` or `'auto'`
+- `disable_auto_if(value)` *(since 0.59.0)*: returns the feature, with
+  `'auto'` converted to `'disabled'` if value is true.
+
+  | Feature / Condition | True      | False |
+  | ------------------- | ----      | ----- |
+  | Enabled             | Enabled   | Enabled |
+  | Disabled            | Disabled  | Disabled |
+  | Auto                | Disabled  | Auto |
+
+- `require(value, error_message: '')` *(since 0.59.0)*: returns
+  the object itself if the value is true; an error if the object is
+  `'enabled'` and the value is false; a disabled feature if the object
+  is `'auto'` or `'disabled'` and the value is false.
+
+`require` is useful to restrict the applicability of `'auto'` features,
+for example based on other features or on properties of the host machine:
+
+```
+if get_option('directx').require(host_machine.system() == 'windows',
+       error_message: 'DirectX only available on Windows').allowed() then
+  src += ['directx.c']
+  config.set10('HAVE_DIRECTX', 1)
+endif
+```
 
 ### `generator` object
 
@@ -2857,3 +2913,11 @@ sample piece of code with [`compiler.run()`](#compiler-object) or
 - `returncode()`: the return code of executing the compiled binary
 - `stderr()`: the standard error produced when the command was run
 - `stdout()`: the standard out produced when the command was run
+
+### `module` object
+
+Modules provide their own specific implementation methods, but all modules
+proivide the following methods:
+
+- `bool found()`: returns True if the module was successfully imported,
+  otherwise false. *Since 0.59.0*

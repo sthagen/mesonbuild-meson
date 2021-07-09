@@ -21,6 +21,9 @@ import typing as T
 from contextlib import contextmanager
 from pathlib import Path
 
+if T.TYPE_CHECKING:
+    from ._typing import StringProtocol
+
 """This is (mostly) a standalone module used to write logging
 information about Meson runs. Some output goes to screen,
 some to logging dir and some goes to both."""
@@ -97,7 +100,7 @@ def set_verbose() -> None:
 def initialize(logdir: str, fatal_warnings: bool = False) -> None:
     global log_dir, log_file, log_fatal_warnings
     log_dir = logdir
-    log_file = open(os.path.join(logdir, log_fname), 'w', encoding='utf8')
+    log_file = open(os.path.join(logdir, log_fname), 'w', encoding='utf-8')
     log_fatal_warnings = fatal_warnings
 
 def set_timestamp_start(start: float) -> None:
@@ -136,9 +139,11 @@ class AnsiDecorator:
     def __str__(self) -> str:
         return self.get_text(colorize_console())
 
+TV_Loggable = T.Union[str, AnsiDecorator, 'StringProtocol']
+TV_LoggableList = T.List[TV_Loggable]
 
 class AnsiText:
-    def __init__(self, *args: T.List[T.Union[str, AnsiDecorator]]):
+    def __init__(self, *args: TV_LoggableList):
         self.args = args
 
     def __len__(self) -> int:
@@ -186,7 +191,7 @@ def normal_cyan(text: str) -> AnsiDecorator:
 
 # This really should be AnsiDecorator or anything that implements
 # __str__(), but that requires protocols from typing_extensions
-def process_markup(args: T.Sequence[T.Union[AnsiDecorator, str]], keep: bool) -> T.List[str]:
+def process_markup(args: T.Sequence[TV_Loggable], keep: bool) -> T.List[str]:
     arr = []  # type: T.List[str]
     if log_timestamp_start is not None:
         arr = ['[{:.3f}]'.format(time.monotonic() - log_timestamp_start)]
@@ -225,7 +230,7 @@ def force_print(*args: str, nested: str, **kwargs: T.Any) -> None:
         print(cleaned, end='')
 
 # We really want a heterogeneous dict for this, but that's in typing_extensions
-def debug(*args: T.Union[str, AnsiDecorator], **kwargs: T.Any) -> None:
+def debug(*args: TV_Loggable, **kwargs: T.Any) -> None:
     arr = process_markup(args, False)
     if log_file is not None:
         print(*arr, file=log_file, **kwargs)
@@ -241,14 +246,14 @@ def cmd_ci_include(file: str) -> None:
     _debug_log_cmd('ci_include', [file])
 
 
-def log(*args: T.Union[str, AnsiDecorator], is_error: bool = False,
+def log(*args: TV_Loggable, is_error: bool = False,
         once: bool = False, **kwargs: T.Any) -> None:
     if once:
         return log_once(*args, is_error=is_error, **kwargs)
     return _log(*args, is_error=is_error, **kwargs)
 
 
-def _log(*args: T.Union[str, AnsiDecorator], is_error: bool = False,
+def _log(*args: TV_Loggable, is_error: bool = False,
         **kwargs: T.Any) -> None:
     nested = kwargs.pop('nested', True)
     arr = process_markup(args, False)
@@ -260,14 +265,20 @@ def _log(*args: T.Union[str, AnsiDecorator], is_error: bool = False,
     if not log_errors_only or is_error:
         force_print(*arr, nested=nested, **kwargs)
 
-def log_once(*args: T.Union[str, AnsiDecorator], is_error: bool = False,
+def log_once(*args: TV_Loggable, is_error: bool = False,
              **kwargs: T.Any) -> None:
     """Log variant that only prints a given message one time per meson invocation.
 
     This considers ansi decorated values by the values they wrap without
     regard for the AnsiDecorator itself.
     """
-    t = tuple(a.text if isinstance(a, AnsiDecorator) else a for a in args)
+    def to_str(x: TV_Loggable) -> str:
+        if isinstance(x, str):
+            return x
+        if isinstance(x, AnsiDecorator):
+            return x.text
+        return str(x)
+    t = tuple(to_str(a) for a in args)
     if t in _logged_once:
         return
     _logged_once.add(t)
@@ -283,14 +294,14 @@ def log_once(*args: T.Union[str, AnsiDecorator], is_error: bool = False,
 def get_error_location_string(fname: str, lineno: str) -> str:
     return f'{fname}:{lineno}:'
 
-def _log_error(severity: str, *rargs: T.Union[str, AnsiDecorator],
+def _log_error(severity: str, *rargs: TV_Loggable,
                once: bool = False, fatal: bool = True, **kwargs: T.Any) -> None:
     from .mesonlib import MesonException, relpath
 
     # The typing requirements here are non-obvious. Lists are invariant,
     # therefore T.List[A] and T.List[T.Union[A, B]] are not able to be joined
     if severity == 'notice':
-        label = [bold('NOTICE:')]  # type: T.List[T.Union[str, AnsiDecorator]]
+        label = [bold('NOTICE:')]  # type: TV_LoggableList
     elif severity == 'warning':
         label = [yellow('WARNING:')]
     elif severity == 'error':
@@ -308,7 +319,7 @@ def _log_error(severity: str, *rargs: T.Union[str, AnsiDecorator],
         location_str = get_error_location_string(location_file, location.lineno)
         # Unions are frankly awful, and we have to T.cast here to get mypy
         # to understand that the list concatenation is safe
-        location_list = T.cast(T.List[T.Union[str, AnsiDecorator]], [location_str])
+        location_list = T.cast(TV_LoggableList, [location_str])
         args = location_list + args
 
     log(*args, once=once, **kwargs)
@@ -319,16 +330,16 @@ def _log_error(severity: str, *rargs: T.Union[str, AnsiDecorator],
     if log_fatal_warnings and fatal:
         raise MesonException("Fatal warnings enabled, aborting")
 
-def error(*args: T.Union[str, AnsiDecorator], **kwargs: T.Any) -> None:
+def error(*args: TV_Loggable, **kwargs: T.Any) -> None:
     return _log_error('error', *args, **kwargs, is_error=True)
 
-def warning(*args: T.Union[str, AnsiDecorator], **kwargs: T.Any) -> None:
+def warning(*args: TV_Loggable, **kwargs: T.Any) -> None:
     return _log_error('warning', *args, **kwargs, is_error=True)
 
-def deprecation(*args: T.Union[str, AnsiDecorator], **kwargs: T.Any) -> None:
+def deprecation(*args: TV_Loggable, **kwargs: T.Any) -> None:
     return _log_error('deprecation', *args, **kwargs, is_error=True)
 
-def notice(*args: T.Union[str, AnsiDecorator], **kwargs: T.Any) -> None:
+def notice(*args: TV_Loggable, **kwargs: T.Any) -> None:
     return _log_error('notice', *args, **kwargs, is_error=False)
 
 def get_relative_path(target: Path, current: Path) -> Path:

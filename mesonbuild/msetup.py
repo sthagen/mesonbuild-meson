@@ -101,6 +101,7 @@ class MesonApp:
                         else:
                             mesonlib.windows_proof_rm(l)
                 finally:
+                    self.add_vcs_ignore_files(self.build_dir)
                     for b, f in restore:
                         os.makedirs(os.path.dirname(f), exist_ok=True)
                         shutil.move(b, f)
@@ -147,9 +148,9 @@ class MesonApp:
     def add_vcs_ignore_files(self, build_dir: str) -> None:
         if os.listdir(build_dir):
             return
-        with open(os.path.join(build_dir, '.gitignore'), 'w') as ofile:
+        with open(os.path.join(build_dir, '.gitignore'), 'w', encoding='utf-8') as ofile:
             ofile.write(git_ignore_file)
-        with open(os.path.join(build_dir, '.hgignore'), 'w') as ofile:
+        with open(os.path.join(build_dir, '.hgignore'), 'w', encoding='utf-8') as ofile:
             ofile.write(hg_ignore_file)
 
     def validate_dirs(self, dir1: str, dir2: str, reconfigure: bool, wipe: bool) -> T.Tuple[str, str]:

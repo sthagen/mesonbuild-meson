@@ -19,9 +19,10 @@ from itertools import chain
 from pathlib import PurePath
 from collections import OrderedDict
 from .mesonlib import (
+    HoldableObject,
     MesonException, EnvironmentException, MachineChoice, PerMachine,
-    default_libdir, default_libexecdir, default_prefix, split_args,
-    OptionKey, OptionType,
+    PerMachineDefaultable, default_libdir, default_libexecdir,
+    default_prefix, split_args, OptionKey, OptionType, stringlistify,
 )
 from .wrap import WrapMode
 import ast
@@ -36,13 +37,14 @@ if T.TYPE_CHECKING:
     from .compilers.compilers import Compiler, CompileResult  # noqa: F401
     from .environment import Environment
     from .mesonlib import OptionOverrideProxy
+    from .cmake.traceparser import CMakeCacheEntry
 
     OptionDictType = T.Union[T.Dict[str, 'UserOption[T.Any]'], OptionOverrideProxy]
     KeyedOptionDictType = T.Union[T.Dict['OptionKey', 'UserOption[T.Any]'], OptionOverrideProxy]
     CompilerCheckCacheKey = T.Tuple[T.Tuple[str, ...], str, str, T.Tuple[str, ...], str]
 
-version = '0.57.999'
-backendlist = ['ninja', 'vs', 'vs2010', 'vs2015', 'vs2017', 'vs2019', 'xcode']
+version = '0.59.0.rc1'
+backendlist = ['ninja', 'vs', 'vs2010', 'vs2012', 'vs2013', 'vs2015', 'vs2017', 'vs2019', 'xcode']
 
 default_yielding = False
 
@@ -53,14 +55,13 @@ _T = T.TypeVar('_T')
 class MesonVersionMismatchException(MesonException):
     '''Build directory generated with Meson version is incompatible with current version'''
     def __init__(self, old_version: str, current_version: str) -> None:
-        super().__init__('Build directory has been generated with Meson version {}, '
-                         'which is incompatible with the current version {}.'
-                         .format(old_version, current_version))
+        super().__init__(f'Build directory has been generated with Meson version {old_version}, '
+                         f'which is incompatible with the current version {current_version}.')
         self.old_version = old_version
         self.current_version = current_version
 
 
-class UserOption(T.Generic[_T]):
+class UserOption(T.Generic[_T], HoldableObject):
     def __init__(self, description: str, choices: T.Optional[T.Union[str, T.List[_T]]], yielding: T.Optional[bool]):
         super().__init__()
         self.choices = choices
@@ -235,7 +236,7 @@ class UserArrayOption(UserOption[T.List[str]]):
             mlog.deprecation(msg)
         for i in newvalue:
             if not isinstance(i, str):
-                raise MesonException('String array element "{}" is not a string.'.format(str(newvalue)))
+                raise MesonException(f'String array element "{newvalue!s}" is not a string.')
         if self.choices:
             bad = [x for x in newvalue if x not in self.choices]
             if bad:
@@ -254,6 +255,7 @@ class UserFeatureOption(UserComboOption):
 
     def __init__(self, description: str, value: T.Any, yielding: T.Optional[bool] = None):
         super().__init__(description, self.static_choices, value, yielding)
+        self.name: T.Optional[str] = None  # TODO: Refactor options to all store their name
 
     def is_enabled(self) -> bool:
         return self.value == 'enabled'
@@ -265,8 +267,7 @@ class UserFeatureOption(UserComboOption):
         return self.value == 'auto'
 
 if T.TYPE_CHECKING:
-    CacheKeyType = T.Tuple[T.Tuple[T.Any, ...], ...]
-    SubCacheKeyType = T.Tuple[T.Any, ...]
+    from .dependencies.detect import TV_DepIDEntry, TV_DepID
 
 
 class DependencyCacheType(enum.Enum):
@@ -290,15 +291,15 @@ class DependencySubCache:
 
     def __init__(self, type_: DependencyCacheType):
         self.types = [type_]
-        self.__cache = {}  # type: T.Dict[SubCacheKeyType, dependencies.Dependency]
+        self.__cache: T.Dict[T.Tuple[str, ...], 'dependencies.Dependency'] = {}
 
-    def __getitem__(self, key: 'SubCacheKeyType') -> 'dependencies.Dependency':
+    def __getitem__(self, key: T.Tuple[str, ...]) -> 'dependencies.Dependency':
         return self.__cache[key]
 
-    def __setitem__(self, key: 'SubCacheKeyType', value: 'dependencies.Dependency') -> None:
+    def __setitem__(self, key: T.Tuple[str, ...], value: 'dependencies.Dependency') -> None:
         self.__cache[key] = value
 
-    def __contains__(self, key: 'SubCacheKeyType') -> bool:
+    def __contains__(self, key: T.Tuple[str, ...]) -> bool:
         return key in self.__cache
 
     def values(self) -> T.Iterable['dependencies.Dependency']:
@@ -314,30 +315,31 @@ class DependencyCache:
     """
 
     def __init__(self, builtins: 'KeyedOptionDictType', for_machine: MachineChoice):
-        self.__cache = OrderedDict()  # type: T.MutableMapping[CacheKeyType, DependencySubCache]
+        self.__cache = OrderedDict()  # type: T.MutableMapping[TV_DepID, DependencySubCache]
         self.__builtins = builtins
         self.__pkg_conf_key = OptionKey('pkg_config_path', machine=for_machine)
         self.__cmake_key = OptionKey('cmake_prefix_path', machine=for_machine)
 
-    def __calculate_subkey(self, type_: DependencyCacheType) -> T.Tuple[T.Any, ...]:
-        if type_ is DependencyCacheType.PKG_CONFIG:
-            return tuple(self.__builtins[self.__pkg_conf_key].value)
-        elif type_ is DependencyCacheType.CMAKE:
-            return tuple(self.__builtins[self.__cmake_key].value)
-        assert type_ is DependencyCacheType.OTHER, 'Someone forgot to update subkey calculations for a new type'
-        return tuple()
+    def __calculate_subkey(self, type_: DependencyCacheType) -> T.Tuple[str, ...]:
+        data: T.Dict[str, T.List[str]] = {
+            DependencyCacheType.PKG_CONFIG: stringlistify(self.__builtins[self.__pkg_conf_key].value),
+            DependencyCacheType.CMAKE: stringlistify(self.__builtins[self.__cmake_key].value),
+            DependencyCacheType.OTHER: [],
+        }
+        assert type_ in data, 'Someone forgot to update subkey calculations for a new type'
+        return tuple(data[type_])
 
-    def __iter__(self) -> T.Iterator['CacheKeyType']:
+    def __iter__(self) -> T.Iterator['TV_DepID']:
         return self.keys()
 
-    def put(self, key: 'CacheKeyType', dep: 'dependencies.Dependency') -> None:
+    def put(self, key: 'TV_DepID', dep: 'dependencies.Dependency') -> None:
         t = DependencyCacheType.from_type(dep)
         if key not in self.__cache:
             self.__cache[key] = DependencySubCache(t)
         subkey = self.__calculate_subkey(t)
         self.__cache[key][subkey] = dep
 
-    def get(self, key: 'CacheKeyType') -> T.Optional['dependencies.Dependency']:
+    def get(self, key: 'TV_DepID') -> T.Optional['dependencies.Dependency']:
         """Get a value from the cache.
 
         If there is no cache entry then None will be returned.
@@ -359,10 +361,10 @@ class DependencyCache:
         for c in self.__cache.values():
             yield from c.values()
 
-    def keys(self) -> T.Iterator['CacheKeyType']:
+    def keys(self) -> T.Iterator['TV_DepID']:
         return iter(self.__cache.keys())
 
-    def items(self) -> T.Iterator[T.Tuple['CacheKeyType', T.List['dependencies.Dependency']]]:
+    def items(self) -> T.Iterator[T.Tuple['TV_DepID', T.List['dependencies.Dependency']]]:
         for k, v in self.__cache.items():
             vs = []
             for t in v.types:
@@ -373,6 +375,34 @@ class DependencyCache:
 
     def clear(self) -> None:
         self.__cache.clear()
+
+
+class CMakeStateCache:
+    """Class that stores internal CMake compiler states.
+
+    This cache is used to reduce the startup overhead of CMake by caching
+    all internal CMake compiler variables.
+    """
+
+    def __init__(self) -> None:
+        self.__cache: T.Dict[str, T.Dict[str, T.List[str]]] = {}
+        self.cmake_cache: T.Dict[str, 'CMakeCacheEntry'] = {}
+
+    def __iter__(self) -> T.Iterator[T.Tuple[str, T.Dict[str, T.List[str]]]]:
+        return iter(self.__cache.items())
+
+    def items(self) -> T.Iterator[T.Tuple[str, T.Dict[str, T.List[str]]]]:
+        return iter(self.__cache.items())
+
+    def update(self, language: str, variables: T.Dict[str, T.List[str]]):
+        if language not in self.__cache:
+            self.__cache[language] = {}
+        self.__cache[language].update(variables)
+
+    @property
+    def languages(self) -> T.Set[str]:
+        return set(self.__cache.keys())
+
 
 # Can't bind this near the class method it seems, sadly.
 _V = T.TypeVar('_V')
@@ -401,10 +431,21 @@ class CoreData:
         self.cross_files = self.__load_config_files(options, scratch_dir, 'cross')
         self.compilers = PerMachine(OrderedDict(), OrderedDict())  # type: PerMachine[T.Dict[str, Compiler]]
 
-        build_cache = DependencyCache(self.options, MachineChoice.BUILD)
-        host_cache = DependencyCache(self.options, MachineChoice.HOST)
-        self.deps = PerMachine(build_cache, host_cache)  # type: PerMachine[DependencyCache]
+        # Set of subprojects that have already been initialized once, this is
+        # required to be stored and reloaded with the coredata, as we don't
+        # want to overwrite options for such subprojects.
+        self.initialized_subprojects: T.Set[str] = set()
+
+        # For host == build configuraitons these caches should be the same.
+        self.deps: PerMachine[DependencyCache] = PerMachineDefaultable.default(
+            self.is_cross_build(),
+            DependencyCache(self.options, MachineChoice.BUILD),
+            DependencyCache(self.options, MachineChoice.HOST))
+
         self.compiler_check_cache = OrderedDict()  # type: T.Dict[CompilerCheckCacheKey, compiler.CompileResult]
+
+        # CMake cache
+        self.cmake_cache: PerMachine[CMakeStateCache] = PerMachine(CMakeStateCache(), CMakeStateCache())
 
         # Only to print a warning if it changes between Meson invocations.
         self.config_files = self.__load_config_files(options, scratch_dir, 'native')
@@ -439,8 +480,8 @@ class CoreData:
                     # the contents of that file into the meson private (scratch)
                     # directory so that it can be re-read when wiping/reconfiguring
                     copy = os.path.join(scratch_dir, f'{uuid.uuid4()}.{ftype}.ini')
-                    with open(f) as rf:
-                        with open(copy, 'w') as wf:
+                    with open(f, encoding='utf-8') as rf:
+                        with open(copy, 'w', encoding='utf-8') as wf:
                             wf.write(rf.read())
                     real.append(copy)
 
@@ -479,8 +520,7 @@ class CoreData:
     def sanitize_prefix(self, prefix):
         prefix = os.path.expanduser(prefix)
         if not os.path.isabs(prefix):
-            raise MesonException('prefix value {!r} must be an absolute path'
-                                 ''.format(prefix))
+            raise MesonException(f'prefix value {prefix!r} must be an absolute path')
         if prefix.endswith('/') or prefix.endswith('\\'):
             # On Windows we need to preserve the trailing slash if the
             # string is of type 'C:\' because 'C:' is not an absolute path.
@@ -594,6 +634,15 @@ class CoreData:
 
         if key.name == 'buildtype':
             self._set_others_from_buildtype(value)
+        elif key.name in {'wrap_mode', 'force_fallback_for'}:
+            # We could have the system dependency cached for a dependency that
+            # is now forced to use subproject fallback. We probably could have
+            # more fine grained cache invalidation, but better be safe.
+            self.clear_deps_cache()
+
+    def clear_deps_cache(self):
+        self.deps.host.clear()
+        self.deps.build.clear()
 
     def get_nondefault_buildtype_args(self):
         result= []
@@ -853,7 +902,7 @@ class MachineFileParser():
             except MesonException:
                 raise EnvironmentException(f'Malformed value in machine file variable {entry!r}.')
             except KeyError as e:
-                raise EnvironmentException('Undefined constant {!r} in machine file variable {!r}.'.format(e.args[0], entry))
+                raise EnvironmentException(f'Undefined constant {e.args[0]!r} in machine file variable {entry!r}.')
             section[entry] = res
             self.scope[entry] = res
         return section
@@ -922,7 +971,7 @@ def write_cmd_line_file(build_dir: str, options: argparse.Namespace) -> None:
 
     config['options'] = {str(k): str(v) for k, v in options.cmd_line_options.items()}
     config['properties'] = properties
-    with open(filename, 'w') as f:
+    with open(filename, 'w', encoding='utf-8') as f:
         config.write(f)
 
 def update_cmd_line_file(build_dir: str, options: argparse.Namespace):
@@ -930,7 +979,7 @@ def update_cmd_line_file(build_dir: str, options: argparse.Namespace):
     config = CmdLineFileParser()
     config.read(filename)
     config['options'].update({str(k): str(v) for k, v in options.cmd_line_options.items()})
-    with open(filename, 'w') as f:
+    with open(filename, 'w', encoding='utf-8') as f:
         config.write(f)
 
 def get_cmd_line_options(build_dir: str, options: argparse.Namespace) -> str:
@@ -956,9 +1005,9 @@ def load(build_dir: str) -> CoreData:
         raise MesonException(load_fail_msg)
     except (ModuleNotFoundError, AttributeError):
         raise MesonException(
-            "Coredata file {!r} references functions or classes that don't "
+            f"Coredata file {filename!r} references functions or classes that don't "
             "exist. This probably means that it was generated with an old "
-            "version of meson.".format(filename))
+            "version of meson.")
     if not isinstance(obj, CoreData):
         raise MesonException(load_fail_msg)
     if major_versions_differ(obj.version, version):
@@ -1019,7 +1068,7 @@ def parse_cmd_line_options(args: argparse.Namespace) -> None:
             if key in args.cmd_line_options:
                 cmdline_name = BuiltinOption.argparse_name_to_arg(name)
                 raise MesonException(
-                    'Got argument {0} as both -D{0} and {1}. Pick one.'.format(name, cmdline_name))
+                    f'Got argument {name} as both -D{name} and {cmdline_name}. Pick one.')
             args.cmd_line_options[key] = value
             delattr(args, name)
 

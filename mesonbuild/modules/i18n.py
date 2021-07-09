@@ -57,11 +57,16 @@ PRESET_ARGS = {
 
 
 class I18nModule(ExtensionModule):
+    def __init__(self, interpreter):
+        super().__init__(interpreter)
+        self.methods.update({
+            'merge_file': self.merge_file,
+            'gettext': self.gettext,
+        })
 
     @staticmethod
     def nogettext_warning():
         mlog.warning('Gettext not found, all translation targets will be ignored.', once=True)
-        return ModuleReturnValue(None, [])
 
     @staticmethod
     def _get_data_dirs(state, dirs):
@@ -74,7 +79,8 @@ class I18nModule(ExtensionModule):
     @permittedKwargs(build.CustomTarget.known_kwargs | {'data_dirs', 'po_dir', 'type', 'args'})
     def merge_file(self, state, args, kwargs):
         if not shutil.which('xgettext'):
-            return self.nogettext_warning()
+            self.nogettext_warning()
+            return
         podir = kwargs.pop('po_dir', None)
         if not podir:
             raise MesonException('i18n: po_dir is a required kwarg')
@@ -102,7 +108,8 @@ class I18nModule(ExtensionModule):
         kwargs['command'] = command
 
         inputfile = kwargs['input']
-        if hasattr(inputfile, 'held_object'):
+        # I have no idea why/how this if isinstance(inputfile, mesonlib.HoldableObject) works / used to work...
+        if isinstance(inputfile, mesonlib.HoldableObject):
             ct = build.CustomTarget(kwargs['output'] + '_merge', state.subdir, state.subproject, kwargs)
         else:
             if isinstance(inputfile, list):
@@ -128,7 +135,8 @@ class I18nModule(ExtensionModule):
         if len(args) != 1:
             raise coredata.MesonException('Gettext requires one positional argument (package name).')
         if not shutil.which('xgettext'):
-            return self.nogettext_warning()
+            self.nogettext_warning()
+            return
         packagename = args[0]
         languages = mesonlib.stringlistify(kwargs.get('languages', []))
         datadirs = self._get_data_dirs(state, mesonlib.stringlistify(kwargs.get('data_dirs', [])))

@@ -7,24 +7,24 @@ import subprocess
 import sys
 import typing as T
 
+from mesonbuild.mesonlib import version_compare
+
 modules = [
     # fully typed submodules
-    'mesonbuild/ast',
+    # 'mesonbuild/ast',
     'mesonbuild/cmake',
     'mesonbuild/compilers',
+    'mesonbuild/dependencies',
+    'mesonbuild/interpreterbase',
+    'mesonbuild/linkers',
     'mesonbuild/scripts',
     'mesonbuild/wrap',
 
     # specific files
     'mesonbuild/arglist.py',
     # 'mesonbuild/coredata.py',
-    'mesonbuild/dependencies/boost.py',
-    'mesonbuild/dependencies/hdf5.py',
-    'mesonbuild/dependencies/mpi.py',
-    'mesonbuild/dependencies/qt.py',
     'mesonbuild/envconfig.py',
-    'mesonbuild/interpreterbase.py',
-    'mesonbuild/linkers.py',
+    'mesonbuild/interpreter/interpreterobjects.py',
     'mesonbuild/mcompile.py',
     'mesonbuild/mdevenv.py',
     'mesonbuild/mesonlib/platform.py',
@@ -35,13 +35,16 @@ modules = [
     'mesonbuild/mlog.py',
     'mesonbuild/modules/fs.py',
     'mesonbuild/modules/unstable_rust.py',
+    'mesonbuild/modules/qt.py',
     'mesonbuild/mparser.py',
     'mesonbuild/msetup.py',
     'mesonbuild/mtest.py',
     'mesonbuild/optinterpreter.py',
     'mesonbuild/programs.py',
 
+    'run_custom_lint.py',
     'run_mypy.py',
+    'run_project_tests.py',
     'run_single_test.py',
     'tools'
 ]
@@ -56,6 +59,10 @@ def check_mypy() -> None:
         import mypy
     except ImportError:
         print('Failed import mypy')
+        sys.exit(1)
+    from mypy.version import __version__ as mypy_version
+    if not version_compare(mypy_version, '>=0.812'):
+        print('mypy >=0.812 is required, older versions report spurious errors')
         sys.exit(1)
 
 def main() -> int:

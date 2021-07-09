@@ -22,7 +22,6 @@ from mesonbuild import mlog, build
 from mesonbuild.coredata import MesonException
 from . import ModuleReturnValue
 from . import ExtensionModule
-from . import get_include_args
 from ..dependencies import Dependency, InternalDependency
 from ..interpreterbase import FeatureNew, InvalidArguments, noPosargs, noKwargs
 from ..interpreter import CustomTargetHolder
@@ -106,7 +105,6 @@ class HotdocTargetBuilder:
                 self.cmd.extend([option, value])
 
     def check_extra_arg_type(self, arg, value):
-        value = getattr(value, 'held_object', value)
         if isinstance(value, list):
             for v in value:
                 self.check_extra_arg_type(arg, v)
@@ -189,9 +187,8 @@ class HotdocTargetBuilder:
     def process_dependencies(self, deps):
         cflags = set()
         for dep in mesonlib.listify(ensure_list(deps)):
-            dep = getattr(dep, "held_object", dep)
             if isinstance(dep, InternalDependency):
-                inc_args = get_include_args(dep.include_directories)
+                inc_args = self.state.get_include_args(dep.include_directories)
                 cflags.update([self.replace_dirs_in_string(x)
                                for x in inc_args])
                 cflags.update(self.process_dependencies(dep.libraries))
@@ -233,7 +230,6 @@ class HotdocTargetBuilder:
     def flatten_config_command(self):
         cmd = []
         for arg in mesonlib.listify(self.cmd, flatten=True):
-            arg = getattr(arg, 'held_object', arg)
             if isinstance(arg, mesonlib.File):
                 arg = arg.absolute_path(self.state.environment.get_source_dir(),
                                         self.state.environment.get_build_dir())
@@ -314,7 +310,7 @@ class HotdocTargetBuilder:
         hotdoc_config_name = fullname + '.json'
         hotdoc_config_path = os.path.join(
             self.builddir, self.subdir, hotdoc_config_name)
-        with open(hotdoc_config_path, 'w') as f:
+        with open(hotdoc_config_path, 'w', encoding='utf-8') as f:
             f.write('{}')
 
         self.cmd += ['--conf-file', hotdoc_config_path]
@@ -372,7 +368,7 @@ class HotdocTargetHolder(CustomTargetHolder):
     def config_path_method(self, *args, **kwargs):
         conf = self.held_object.hotdoc_conf.absolute_path(self.interpreter.environment.source_dir,
                                                           self.interpreter.environment.build_dir)
-        return self.interpreter.holderify(conf)
+        return conf
 
 
 class HotdocTarget(build.CustomTarget):
@@ -406,11 +402,14 @@ class HotDocModule(ExtensionModule):
         except Exception as e:
             raise MesonException('hotdoc {} required but not found. ({})'.format(
                 MIN_HOTDOC_VERSION, e))
+        self.methods.update({
+            'has_extensions': self.has_extensions,
+            'generate_doc': self.generate_doc,
+        })
 
     @noKwargs
     def has_extensions(self, state, args, kwargs):
-        res = self.hotdoc.run_hotdoc(['--has-extension=%s' % extension for extension in args]) == 0
-        return ModuleReturnValue(res, [res])
+        return self.hotdoc.run_hotdoc(['--has-extension=%s' % extension for extension in args]) == 0
 
     def generate_doc(self, state, args, kwargs):
         if len(args) != 1:
@@ -420,7 +419,7 @@ class HotDocModule(ExtensionModule):
         project_name = args[0]
         builder = HotdocTargetBuilder(project_name, state, self.hotdoc, self.interpreter, kwargs)
         target, install_script = builder.make_targets()
-        targets = [HotdocTargetHolder(target, self.interpreter)]
+        targets = [target]
         if install_script:
             targets.append(install_script)
 
@@ -428,4 +427,6 @@ class HotDocModule(ExtensionModule):
 
 
 def initialize(interpreter):
-    return HotDocModule(interpreter)
+    mod = HotDocModule(interpreter)
+    mod.interpreter.append_holder_map(HotdocTarget, HotdocTargetHolder)
+    return mod

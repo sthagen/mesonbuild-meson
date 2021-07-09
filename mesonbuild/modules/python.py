@@ -26,21 +26,18 @@ from ..interpreterbase import (
     InvalidArguments,
     FeatureNew, FeatureNewKwargs, disablerIfNotFound
 )
-from ..interpreter import ExternalProgramHolder, extract_required_kwarg, permitted_kwargs
+from ..interpreter import ExternalProgramHolder, extract_required_kwarg, permitted_dependency_kwargs
 from ..build import known_shmod_kwargs
 from .. import mlog
 from ..environment import detect_cpu_family
-from ..dependencies.base import (
-    DependencyMethods, ExternalDependency,
-    PkgConfigDependency, NotFoundDependency
-)
+from ..dependencies import DependencyMethods, PkgConfigDependency, NotFoundDependency, SystemDependency
 from ..programs import ExternalProgram, NonExistingExternalProgram
 
 mod_kwargs = {'subdir'}
 mod_kwargs.update(known_shmod_kwargs)
 mod_kwargs -= {'name_prefix', 'name_suffix'}
 
-class PythonDependency(ExternalDependency):
+class PythonDependency(SystemDependency):
 
     def __init__(self, python_holder, environment, kwargs):
         super().__init__('python', environment, kwargs)
@@ -53,6 +50,7 @@ class PythonDependency(ExternalDependency):
         self.variables = python_holder.variables
         self.paths = python_holder.paths
         self.link_libpython = python_holder.link_libpython
+        self.info: T.Optional[T.Dict[str, str]] = None
         if mesonlib.version_compare(self.version, '>= 3.0'):
             self.major_version = 3
         else:
@@ -281,12 +279,20 @@ print (json.dumps ({
 }))
 '''
 
+class PythonExternalProgram(ExternalProgram):
+    def __init__(self, name: str, command: T.Optional[T.List[str]] = None, ext_prog: T.Optional[ExternalProgram] = None):
+        if ext_prog is None:
+            super().__init__(name, command=command, silent=True)
+        else:
+            self.name = ext_prog.name
+            self.command = ext_prog.command
+            self.path = ext_prog.path
+        self.info: T.Dict[str, str] = {}
 
 class PythonInstallation(ExternalProgramHolder):
-    def __init__(self, interpreter, python, info):
-        ExternalProgramHolder.__init__(self, python, interpreter.subproject)
-        self.interpreter = interpreter
-        self.subproject = self.interpreter.subproject
+    def __init__(self, python, interpreter):
+        ExternalProgramHolder.__init__(self, python, interpreter)
+        info = python.info
         prefix = self.interpreter.environment.coredata.get_option(mesonlib.OptionKey('prefix'))
         self.variables = info['variables']
         self.paths = info['paths']
@@ -328,11 +334,10 @@ class PythonInstallation(ExternalProgramHolder):
         # behavior. See https://github.com/mesonbuild/meson/issues/4117
         if not self.link_libpython:
             new_deps = []
-            for holder in mesonlib.extract_as_list(kwargs, 'dependencies'):
-                dep = holder.held_object
+            for dep in mesonlib.extract_as_list(kwargs, 'dependencies'):
                 if isinstance(dep, PythonDependency):
-                    holder = self.interpreter.holderify(dep.get_partial_dependency(compile_args=True))
-                new_deps.append(holder)
+                    dep = dep.get_partial_dependency(compile_args=True)
+                new_deps.append(dep)
             kwargs['dependencies'] = new_deps
 
         suffix = self.variables.get('EXT_SUFFIX') or self.variables.get('SO') or self.variables.get('.so')
@@ -347,7 +352,7 @@ class PythonInstallation(ExternalProgramHolder):
 
         return self.interpreter.func_shared_module(None, args, kwargs)
 
-    @permittedKwargs(permitted_kwargs['dependency'])
+    @permittedKwargs(permitted_dependency_kwargs | {'embed'})
     @FeatureNewKwargs('python_installation.dependency', '0.53.0', ['embed'])
     def dependency_method(self, args, kwargs):
         if args:
@@ -363,7 +368,7 @@ class PythonInstallation(ExternalProgramHolder):
             dep = PythonDependency(self, self.interpreter.environment, kwargs)
             if required and not dep.found():
                 raise mesonlib.MesonException('Python dependency not found')
-        return self.interpreter.holderify(dep)
+        return dep
 
     @permittedKwargs(['pure', 'subdir'])
     def install_sources_method(self, args, kwargs):
@@ -380,7 +385,7 @@ class PythonInstallation(ExternalProgramHolder):
         else:
             kwargs['install_dir'] = os.path.join(self.platlib_install_path, subdir)
 
-        return self.interpreter.holderify(self.interpreter.func_install_data(None, args, kwargs))
+        return self.interpreter.func_install_data(None, args, kwargs)
 
     @noPosargs
     @permittedKwargs(['pure', 'subdir'])
@@ -473,7 +478,9 @@ class PythonModule(ExtensionModule):
     @FeatureNew('Python Module', '0.46.0')
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.snippets.add('find_installation')
+        self.methods.update({
+            'find_installation': self.find_installation,
+        })
 
     # https://www.python.org/dev/peps/pep-0397/
     def _get_win_pythonpath(self, name_or_path):
@@ -502,7 +509,7 @@ class PythonModule(ExtensionModule):
     @FeatureNewKwargs('python.find_installation', '0.51.0', ['modules'])
     @disablerIfNotFound
     @permittedKwargs({'required', 'modules'})
-    def find_installation(self, interpreter, state, args, kwargs):
+    def find_installation(self, state, args, kwargs):
         feature_check = FeatureNew('Passing "feature" option to find_installation', '0.48.0')
         disabled, required, feature = extract_required_kwarg(kwargs, state.subproject, feature_check)
         want_modules = mesonlib.extract_as_list(kwargs, 'modules')  # type: T.List[str]
@@ -520,25 +527,26 @@ class PythonModule(ExtensionModule):
 
         if disabled:
             mlog.log('Program', name_or_path or 'python', 'found:', mlog.red('NO'), '(disabled by:', mlog.bold(feature), ')')
-            return ExternalProgramHolder(NonExistingExternalProgram(), state.subproject)
+            return NonExistingExternalProgram()
 
         if not name_or_path:
-            python = ExternalProgram('python3', mesonlib.python_command, silent=True)
+            python = PythonExternalProgram('python3', mesonlib.python_command)
         else:
-            python = ExternalProgram.from_entry('python3', name_or_path)
+            tmp_python = ExternalProgram.from_entry('python3', name_or_path)
+            python = PythonExternalProgram('python3', ext_prog=tmp_python)
 
             if not python.found() and mesonlib.is_windows():
                 pythonpath = self._get_win_pythonpath(name_or_path)
                 if pythonpath is not None:
                     name_or_path = pythonpath
-                    python = ExternalProgram(name_or_path, silent=True)
+                    python = PythonExternalProgram(name_or_path)
 
             # Last ditch effort, python2 or python3 can be named python
             # on various platforms, let's not give up just yet, if an executable
             # named python is available and has a compatible version, let's use
             # it
             if not python.found() and name_or_path in ['python2', 'python3']:
-                python = ExternalProgram('python', silent=True)
+                python = PythonExternalProgram('python')
 
         if python.found() and want_modules:
             for mod in want_modules:
@@ -567,11 +575,11 @@ class PythonModule(ExtensionModule):
         if not python.found():
             if required:
                 raise mesonlib.MesonException('{} not found'.format(name_or_path or 'python'))
-            res = ExternalProgramHolder(NonExistingExternalProgram(), state.subproject)
+            return NonExistingExternalProgram()
         elif missing_modules:
             if required:
                 raise mesonlib.MesonException('{} is missing modules: {}'.format(name_or_path or 'python', ', '.join(missing_modules)))
-            res = ExternalProgramHolder(NonExistingExternalProgram(), state.subproject)
+            return NonExistingExternalProgram()
         else:
             # Sanity check, we expect to have something that at least quacks in tune
             try:
@@ -587,14 +595,17 @@ class PythonModule(ExtensionModule):
                 mlog.debug(stderr)
 
             if isinstance(info, dict) and 'version' in info and self._check_version(name_or_path, info['version']):
-                res = PythonInstallation(interpreter, python, info)
+                python.info = info
+                return python
             else:
-                res = ExternalProgramHolder(NonExistingExternalProgram(), state.subproject)
                 if required:
                     raise mesonlib.MesonException(f'{python} is not a valid python or it is missing setuptools')
+                return NonExistingExternalProgram()
 
-        return res
+        raise mesonlib.MesonBugException('Unreachable code was reached (PythonModule.find_installation).')
 
 
 def initialize(*args, **kwargs):
-    return PythonModule(*args, **kwargs)
+    mod = PythonModule(*args, **kwargs)
+    mod.interpreter.append_holder_map(PythonExternalProgram, PythonInstallation)
+    return mod

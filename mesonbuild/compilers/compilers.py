@@ -23,6 +23,7 @@ from .. import coredata
 from .. import mlog
 from .. import mesonlib
 from ..mesonlib import (
+    HoldableObject,
     EnvironmentException, MachineChoice, MesonException,
     Popen_safe, LibType, TemporaryDirectoryWinProof, OptionKey,
 )
@@ -51,7 +52,7 @@ lib_suffixes = ('a', 'lib', 'dll', 'dll.a', 'dylib', 'so')  # type: T.Tuple[str,
 # This means we can't include .h headers here since they could be C, C++, ObjC, etc.
 lang_suffixes = {
     'c': ('c',),
-    'cpp': ('cpp', 'cc', 'cxx', 'c++', 'hh', 'hpp', 'ipp', 'hxx', 'ino', 'ixx'),
+    'cpp': ('cpp', 'cc', 'cxx', 'c++', 'hh', 'hpp', 'ipp', 'hxx', 'ino', 'ixx', 'C'),
     'cuda': ('cu',),
     # f90, f95, f03, f08 are for free-form fortran ('f90' recommended)
     # f, for, ftn, fpp are for fixed-form fortran ('f' or 'for' recommended)
@@ -64,6 +65,7 @@ lang_suffixes = {
     'cs': ('cs',),
     'swift': ('swift',),
     'java': ('java',),
+    'cython': ('pyx', ),
 }  # type: T.Dict[str, T.Tuple[str, ...]]
 all_languages = lang_suffixes.keys()
 cpp_suffixes = lang_suffixes['cpp'] + ('h',)  # type: T.Tuple[str, ...]
@@ -71,6 +73,8 @@ c_suffixes = lang_suffixes['c'] + ('h',)  # type: T.Tuple[str, ...]
 # List of languages that by default consume and output libraries following the
 # C ABI; these can generally be used interchangeably
 clib_langs = ('objcpp', 'cpp', 'objc', 'c', 'fortran',)  # type: T.Tuple[str, ...]
+# List of assembler suffixes that can be linked with C code directly by the linker
+assembler_suffixes: T.Tuple[str, ...] = ('s', 'S')
 # List of languages that can be linked with C code directly by the linker
 # used in build.py:process_compilers() and build.py:get_dynamic_linker()
 clink_langs = ('d', 'cuda') + clib_langs  # type: T.Tuple[str, ...]
@@ -97,6 +101,7 @@ CFLAGS_MAPPING: T.Mapping[str, str] = {
     'd': 'DFLAGS',
     'vala': 'VALAFLAGS',
     'rust': 'RUSTFLAGS',
+    'cython': 'CYTHONFLAGS',
 }
 
 CEXE_MAPPING: T.Mapping = {
@@ -433,7 +438,7 @@ def get_base_link_args(options: 'KeyedOptionDictType', linker: 'Compiler',
 class CrossNoRunException(MesonException):
     pass
 
-class RunResult:
+class RunResult(HoldableObject):
     def __init__(self, compiled: bool, returncode: int = 999,
                  stdout: str = 'UNDEFINED', stderr: str = 'UNDEFINED'):
         self.compiled = compiled
@@ -442,7 +447,7 @@ class RunResult:
         self.stderr = stderr
 
 
-class CompileResult:
+class CompileResult(HoldableObject):
 
     """The result of Compiler.compiles (and friends)."""
 
@@ -465,7 +470,7 @@ class CompileResult:
         self.text_mode = text_mode
 
 
-class Compiler(metaclass=abc.ABCMeta):
+class Compiler(HoldableObject, metaclass=abc.ABCMeta):
     # Libraries to ignore in find_library() since they are provided by the
     # compiler or the C library. Currently only used for MSVC.
     ignore_libs = []  # type: T.List[str]
@@ -510,7 +515,9 @@ class Compiler(metaclass=abc.ABCMeta):
     def can_compile(self, src: 'mesonlib.FileOrString') -> bool:
         if isinstance(src, mesonlib.File):
             src = src.fname
-        suffix = os.path.splitext(src)[1].lower()
+        suffix = os.path.splitext(src)[1]
+        if suffix != '.C':
+            suffix = suffix.lower()
         return bool(suffix) and suffix[1:] in self.can_compile_suffixes
 
     def get_id(self) -> str:
@@ -581,6 +588,9 @@ class Compiler(metaclass=abc.ABCMeta):
 
     def get_linker_output_args(self, outputname: str) -> T.List[str]:
         return self.linker.get_output_args(outputname)
+
+    def get_linker_search_args(self, dirname: str) -> T.List[str]:
+        return self.linker.get_search_args(dirname)
 
     def get_builtin_define(self, define: str) -> T.Optional[str]:
         raise EnvironmentException('%s does not support get_builtin_define.' % self.id)
@@ -755,14 +765,14 @@ class Compiler(metaclass=abc.ABCMeta):
             if isinstance(code, str):
                 srcname = os.path.join(tmpdirname,
                                     'testfile.' + self.default_suffix)
-                with open(srcname, 'w') as ofile:
+                with open(srcname, 'w', encoding='utf-8') as ofile:
                     ofile.write(code)
                 # ccache would result in a cache miss
                 no_ccache = True
                 contents = code
             elif isinstance(code, mesonlib.File):
                 srcname = code.fname
-                with open(code.fname) as f:
+                with open(code.fname, encoding='utf-8') as f:
                     contents = f.read()
 
             # Construct the compiler command-line
@@ -1021,6 +1031,7 @@ class Compiler(metaclass=abc.ABCMeta):
         raise EnvironmentException('This compiler does not have a preprocessor')
 
     def get_default_include_dirs(self) -> T.List[str]:
+        # TODO: This is a candidate for returning an immutable list
         return []
 
     def get_largefile_args(self) -> T.List[str]:
@@ -1045,6 +1056,22 @@ class Compiler(metaclass=abc.ABCMeta):
     def get_library_dirs(self, env: 'Environment',
                          elf_class: T.Optional[int] = None) -> T.List[str]:
         return []
+
+    def get_return_value(self,
+                         fname: str,
+                         rtype: str,
+                         prefix: str,
+                         env: 'Environment',
+                         extra_args: T.Optional[T.List[str]],
+                         dependencies: T.Optional[T.List['Dependency']]) -> T.Union[str, int]:
+        raise EnvironmentException(f'{self.id} does not support get_return_value')
+
+    def find_framework(self,
+                       name: str,
+                       env: 'Environment',
+                       extra_dirs: T.List[str],
+                       allow_system: bool = True) -> T.Optional[T.List[str]]:
+        raise EnvironmentException(f'{self.id} does not support find_framework')
 
     def find_framework_paths(self, env: 'Environment') -> T.List[str]:
         raise EnvironmentException(f'{self.id} does not support find_framework_paths')
@@ -1224,6 +1251,10 @@ class Compiler(metaclass=abc.ABCMeta):
         be implemented
         """
         return self.linker.rsp_file_syntax()
+
+    def get_debug_args(self, is_debug: bool) -> T.List[str]:
+        """Arguments required for a debug build."""
+        return []
 
 
 def get_global_options(lang: str,

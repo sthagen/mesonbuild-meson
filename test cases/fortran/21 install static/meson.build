@@ -3,13 +3,13 @@
 #   - Is an install:true static library to trigger certain codepath (promotion to link_whole)
 #   - Does fortran code 'generation' with configure_file
 #   - Uses .F90 ext (capital F typically denotes a dependence on preprocessor treatment, which however is not used)
-project('try-static-subproject-dependency', 'fortran', default_options: ['default_library=static'])
+project('try-static-subproject-dependency', 'fortran')
 
 static_dep = dependency('static_hello', fallback: ['static_hello', 'static_hello_dep'])
 
 mainsrc = 'main_lib.f90'
 mainsrc = configure_file(
-    command: [find_program('cp'), '@INPUT@', '@OUTPUT@'],
+    copy: true,
     input: mainsrc,
     output: 'main_lib_output.F90'
 )

@@ -12,10 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import os.path, subprocess
 import typing as T
 
-from ..mesonlib import EnvironmentException, MachineChoice
+from .. import coredata
+from ..mesonlib import MachineChoice, OptionKey
 
 from .compilers import Compiler
 from .mixins.clike import CLikeCompiler
@@ -48,29 +48,8 @@ class ObjCCompiler(CLikeCompiler, Compiler):
         return 'Objective-C'
 
     def sanity_check(self, work_dir: str, environment: 'Environment') -> None:
-        # TODO try to use sanity_check_impl instead of duplicated code
-        source_name = os.path.join(work_dir, 'sanitycheckobjc.m')
-        binary_name = os.path.join(work_dir, 'sanitycheckobjc')
-        extra_flags: T.List[str] = []
-        extra_flags += environment.coredata.get_external_args(self.for_machine, self.language)
-        if self.is_cross:
-            extra_flags += self.get_compile_only_args()
-        else:
-            extra_flags += environment.coredata.get_external_link_args(self.for_machine, self.language)
-        with open(source_name, 'w') as ofile:
-            ofile.write('#import<stddef.h>\n'
-                        'int main(void) { return 0; }\n')
-        pc = subprocess.Popen(self.exelist + extra_flags + [source_name, '-o', binary_name])
-        pc.wait()
-        if pc.returncode != 0:
-            raise EnvironmentException('ObjC compiler %s can not compile programs.' % self.name_string())
-        if self.is_cross:
-            # Can't check if the binaries run so we have to assume they do
-            return
-        pe = subprocess.Popen(binary_name)
-        pe.wait()
-        if pe.returncode != 0:
-            raise EnvironmentException('Executables created by ObjC compiler %s are not runnable.' % self.name_string())
+        code = '#import<stddef.h>\nint main(void) { return 0; }\n'
+        return self._sanity_check_impl(work_dir, environment, 'sanitycheckobjc.m', code)
 
 
 class GnuObjCCompiler(GnuCompiler, ObjCCompiler):
@@ -106,6 +85,23 @@ class ClangObjCCompiler(ClangCompiler, ObjCCompiler):
                           '2': default_warn_args + ['-Wextra'],
                           '3': default_warn_args + ['-Wextra', '-Wpedantic']}
 
+    def get_options(self) -> 'coredata.KeyedOptionDictType':
+        opts = super().get_options()
+        opts.update({
+            OptionKey('std', machine=self.for_machine, lang='c'): coredata.UserComboOption(
+                'C language standard to use',
+                ['none', 'c89', 'c99', 'c11', 'c17', 'gnu99', 'gnu11'],
+                'none',
+            )
+        })
+        return opts
+
+    def get_option_compile_args(self, options: 'coredata.KeyedOptionDictType') -> T.List[str]:
+        args = []
+        std = options[OptionKey('std', machine=self.for_machine, lang='c')]
+        if std.value != 'none':
+            args.append('-std=' + std.value)
+        return args
 
 class AppleClangObjCCompiler(ClangObjCCompiler):
 

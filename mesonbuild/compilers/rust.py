@@ -65,7 +65,7 @@ class RustCompiler(Compiler):
     def sanity_check(self, work_dir: str, environment: 'Environment') -> None:
         source_name = os.path.join(work_dir, 'sanity.rs')
         output_name = os.path.join(work_dir, 'rusttest')
-        with open(source_name, 'w') as ofile:
+        with open(source_name, 'w', encoding='utf-8') as ofile:
             ofile.write(textwrap.dedent(
                 '''fn main() {
                 }
@@ -162,3 +162,9 @@ class RustCompiler(Compiler):
         if colortype in {'always', 'never', 'auto'}:
             return [f'--color={colortype}']
         raise MesonException(f'Invalid color type for rust {colortype}')
+
+    def get_linker_always_args(self) -> T.List[str]:
+        args: T.List[str] = []
+        for a in super().get_linker_always_args():
+            args.extend(['-C', f'link-arg={a}'])
+        return args

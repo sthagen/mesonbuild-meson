@@ -14,7 +14,6 @@
 
 import copy
 import os
-import pickle
 import xml.dom.minidom
 import xml.etree.ElementTree as ET
 import uuid
@@ -28,7 +27,7 @@ from .. import mlog
 from .. import compilers
 from ..interpreter import Interpreter
 from ..mesonlib import (
-    MesonException, python_command, replace_if_different, OptionKey,
+    File, MesonException, python_command, replace_if_different, OptionKey, version_compare,
 )
 from ..environment import Environment, build_filename
 
@@ -38,8 +37,14 @@ def autodetect_vs_version(build: T.Optional[build.Build], interpreter: T.Optiona
     if not vs_install_dir:
         raise MesonException('Could not detect Visual Studio: Environment variable VSINSTALLDIR is not set!\n'
                              'Are you running meson from the Visual Studio Developer Command Prompt?')
-    # VisualStudioVersion is set since Visual Studio 12.0, but sometimes
+    # VisualStudioVersion is set since Visual Studio 11.0, but sometimes
     # vcvarsall.bat doesn't set it, so also use VSINSTALLDIR
+    if vs_version == '11.0' or 'Visual Studio 11' in vs_install_dir:
+        from mesonbuild.backend.vs2012backend import Vs2012Backend
+        return Vs2012Backend(build, interpreter)
+    if vs_version == '12.0' or 'Visual Studio 12' in vs_install_dir:
+        from mesonbuild.backend.vs2013backend import Vs2013Backend
+        return Vs2013Backend(build, interpreter)
     if vs_version == '14.0' or 'Visual Studio 14' in vs_install_dir:
         from mesonbuild.backend.vs2015backend import Vs2015Backend
         return Vs2015Backend(build, interpreter)
@@ -79,12 +84,6 @@ def split_o_flags_args(args):
 
 def generate_guid_from_path(path, path_type):
     return str(uuid.uuid5(uuid.NAMESPACE_URL, 'meson-vs-' + path_type + ':' + str(path))).upper()
-
-class RegenInfo:
-    def __init__(self, source_dir, build_dir, depfiles):
-        self.source_dir = source_dir
-        self.build_dir = build_dir
-        self.depfiles = depfiles
 
 class Vs2010Backend(backends.Backend):
     def __init__(self, build: T.Optional[build.Build], interpreter: T.Optional[Interpreter]):
@@ -188,6 +187,10 @@ class Vs2010Backend(backends.Backend):
         self.buildtype = self.environment.coredata.get_option(OptionKey('buildtype'))
         self.optimization = self.environment.coredata.get_option(OptionKey('optimization'))
         self.debug = self.environment.coredata.get_option(OptionKey('debug'))
+        try:
+            self.sanitize = self.environment.coredata.get_option(OptionKey('b_sanitize'))
+        except MesonException:
+            self.sanitize = 'none'
         sln_filename = os.path.join(self.environment.get_build_dir(), self.build.project_name + '.sln')
         projlist = self.generate_projects()
         self.gen_testproj('RUN_TESTS', os.path.join(self.environment.get_build_dir(), 'RUN_TESTS.vcxproj'))
@@ -203,18 +206,8 @@ class Vs2010Backend(backends.Backend):
 
     @staticmethod
     def touch_regen_timestamp(build_dir: str) -> None:
-        with open(Vs2010Backend.get_regen_stampfile(build_dir), 'w'):
+        with open(Vs2010Backend.get_regen_stampfile(build_dir), 'w', encoding='utf-8'):
             pass
-
-    def generate_regen_info(self):
-        deps = self.get_regen_filelist()
-        regeninfo = RegenInfo(self.environment.get_source_dir(),
-                              self.environment.get_build_dir(),
-                              deps)
-        filename = os.path.join(self.environment.get_scratch_dir(),
-                                'regeninfo.dump')
-        with open(filename, 'wb') as f:
-            pickle.dump(regeninfo, f)
 
     def get_vcvars_command(self):
         has_arch_values = 'VSCMD_ARG_TGT_ARCH' in os.environ and 'VSCMD_ARG_HOST_ARCH' in os.environ
@@ -223,7 +216,7 @@ class Vs2010Backend(backends.Backend):
         if 'VCINSTALLDIR' in os.environ:
             vs_version = os.environ['VisualStudioVersion'] \
                 if 'VisualStudioVersion' in os.environ else None
-            relative_path = 'Auxiliary\\Build\\' if vs_version >= '15.0' else ''
+            relative_path = 'Auxiliary\\Build\\' if vs_version is not None and vs_version >= '15.0' else ''
             script_path = os.environ['VCINSTALLDIR'] + relative_path + 'vcvarsall.bat'
             if os.path.exists(script_path):
                 if has_arch_values:
@@ -570,6 +563,7 @@ class Vs2010Backend(backends.Backend):
                                                    workdir=tdir_abs,
                                                    extra_bdeps=extra_bdeps,
                                                    capture=ofilenames[0] if target.capture else None,
+                                                   feed=srcs[0] if target.feed else None,
                                                    force_serialize=True,
                                                    env=target.env)
         if target.build_always_stale:
@@ -577,7 +571,8 @@ class Vs2010Backend(backends.Backend):
             ofilenames += [self.nonexistent_file(os.path.join(self.environment.get_scratch_dir(),
                                                  'outofdate.file'))]
         self.add_custom_build(root, 'custom_target', ' '.join(self.quote_arguments(wrapper_cmd)),
-                              deps=wrapper_cmd[-1:] + srcs + depend_files, outputs=ofilenames)
+                              deps=wrapper_cmd[-1:] + srcs + depend_files, outputs=ofilenames,
+                              verify_files=not target.build_always_stale)
         ET.SubElement(root, 'Import', Project=r'$(VCTargetsPath)\Microsoft.Cpp.targets')
         self.generate_custom_generator_commands(target, root)
         self.add_regen_dependency(root)
@@ -629,6 +624,8 @@ class Vs2010Backend(backends.Backend):
         # Remove arguments that have a top level XML entry so
         # they are not used twice.
         # FIXME add args as needed.
+        if entry[1:].startswith('fsanitize'):
+            return True
         return entry[1:].startswith('M')
 
     def add_additional_options(self, lang, parent_node, file_args):
@@ -783,6 +780,7 @@ class Vs2010Backend(backends.Backend):
         build_args = compiler.get_buildtype_args(self.buildtype)
         build_args += compiler.get_optimization_args(self.optimization)
         build_args += compiler.get_debug_args(self.debug)
+        build_args += compiler.sanitizer_compile_args(self.sanitize)
         buildtype_link_args = compiler.get_buildtype_linker_args(self.buildtype)
         vscrt_type = self.environment.coredata.options[OptionKey('b_vscrt')]
         project_name = target.name
@@ -858,6 +856,9 @@ class Vs2010Backend(backends.Backend):
         else:
             ET.SubElement(type_config, 'UseDebugLibraries').text = 'false'
             ET.SubElement(clconf, 'RuntimeLibrary').text = 'MultiThreadedDLL'
+        # Sanitizers
+        if '/fsanitize=address' in build_args:
+            ET.SubElement(type_config, 'EnableASAN').text = 'true'
         # Debug format
         if '/ZI' in build_args:
             ET.SubElement(clconf, 'DebugInformationFormat').text = 'EditAndContinue'
@@ -1155,8 +1156,32 @@ class Vs2010Backend(backends.Backend):
                 lobj = self.build.targets[t.get_id()]
             linkname = os.path.join(down, self.get_target_filename_for_linking(lobj))
             if t in target.link_whole_targets:
-                # /WHOLEARCHIVE:foo must go into AdditionalOptions
-                extra_link_args += compiler.get_link_whole_for(linkname)
+                if compiler.id == 'msvc' and version_compare(compiler.version, '<19.00.23918'):
+                    # Expand our object lists manually if we are on pre-Visual Studio 2015 Update 2
+                    l = t.extract_all_objects(False)
+
+                    # Unforunately, we can't use self.object_filename_from_source()
+                    gensrclist: T.List[File] = []
+                    for gen in l.genlist:
+                        for src in gen.get_outputs():
+                            if self.environment.is_source(src) and not self.environment.is_header(src):
+                                path = self.get_target_generated_dir(t, gen, src)
+                                gen_src_ext = '.' + os.path.splitext(path)[1][1:]
+                                extra_link_args.append(path[:-len(gen_src_ext)] + '.obj')
+
+                    for src in l.srclist:
+                        obj_basename = None
+                        if self.environment.is_source(src) and not self.environment.is_header(src):
+                            obj_basename = self.object_filename_from_source(t, src)
+                            target_private_dir = self.relpath(self.get_target_private_dir(t),
+                                                              self.get_target_dir(t))
+                            rel_obj = os.path.join(target_private_dir, obj_basename)
+                            extra_link_args.append(rel_obj)
+
+                    extra_link_args.extend(self.flatten_object_list(t))
+                else:
+                    # /WHOLEARCHIVE:foo must go into AdditionalOptions
+                    extra_link_args += compiler.get_link_whole_for(linkname)
                 # To force Visual Studio to build this project even though it
                 # has no sources, we include a reference to the vcxproj file
                 # that builds this target. Technically we should add this only
@@ -1490,7 +1515,7 @@ class Vs2010Backend(backends.Backend):
         self.add_regen_dependency(root)
         self._prettyprint_vcxproj_xml(ET.ElementTree(root), ofname)
 
-    def add_custom_build(self, node, rulename, command, deps=None, outputs=None, msg=None):
+    def add_custom_build(self, node, rulename, command, deps=None, outputs=None, msg=None, verify_files=True):
         igroup = ET.SubElement(node, 'ItemGroup')
         rulefile = os.path.join(self.environment.get_scratch_dir(), rulename + '.rule')
         if not os.path.exists(rulefile):
@@ -1500,6 +1525,8 @@ class Vs2010Backend(backends.Backend):
         if msg:
             message = ET.SubElement(custombuild, 'Message')
             message.text = msg
+        if not verify_files:
+            ET.SubElement(custombuild, 'VerifyInputsAndOutputsExist').text = 'false'
         cmd_templ = '''setlocal
 %s
 if %%errorlevel%% neq 0 goto :cmEnd

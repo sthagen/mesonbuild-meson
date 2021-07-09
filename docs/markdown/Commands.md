@@ -228,7 +228,9 @@ meson setup builddir
 
 {{ subprojects_usage.inc }}
 
-Manages subprojects of the Meson project.
+Manages subprojects of the Meson project. *Since 0.59.0* commands are run on
+multiple subprojects in parallel by default, use `--num-processes=1` if it is
+not desired.
 
 {{ subprojects_arguments.inc }}
 
@@ -302,5 +304,9 @@ These variables are set in environment in addition to those set using `meson.add
   `PATH` on Windows.
 - `GI_TYPELIB_PATH` includes every directory where a GObject Introspection
   typelib is built. This is automatically set when using `gnome.generate_gir()`.
+- `GSETTINGS_SCHEMA_DIR` *Since 0.59.0* includes every directory where a GSettings
+  schemas is compiled. This is automatically set when using `gnome.compile_schemas()`.
+  Note that this requires GLib >= 2.64 when `gnome.compile_schemas()` is used in
+  more than one directory.
 
 {{ devenv_arguments.inc }}

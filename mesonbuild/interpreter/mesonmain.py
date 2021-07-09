@@ -5,22 +5,24 @@ from .. import dependencies
 from .. import build
 from .. import mlog
 
-from ..mesonlib import unholder, MachineChoice, OptionKey
+from ..mesonlib import MachineChoice, OptionKey
 from ..programs import OverrideProgram, ExternalProgram
-from ..interpreterbase import (InterpreterObject, FeatureNewKwargs, FeatureNew, FeatureDeprecated,
+from ..interpreterbase import (MesonInterpreterObject, FeatureNewKwargs, FeatureNew, FeatureDeprecated,
                                typed_pos_args, permittedKwargs, noArgsFlattening, noPosargs, noKwargs,
                                MesonVersionString, InterpreterException)
 
-from .compiler import CompilerHolder
 from .interpreterobjects import (ExecutableHolder, ExternalProgramHolder,
                                  CustomTargetHolder, CustomTargetIndexHolder,
-                                 EnvironmentVariablesHolder)
+                                 EnvironmentVariablesObject)
 
 import typing as T
 
-class MesonMain(InterpreterObject):
+if T.TYPE_CHECKING:
+    from .interpreter import Interpreter
+
+class MesonMain(MesonInterpreterObject):
     def __init__(self, build: 'build.Build', interpreter: 'Interpreter'):
-        InterpreterObject.__init__(self)
+        super().__init__()
         self.build = build
         self.interpreter = interpreter
         self.methods.update({'get_compiler': self.get_compiler_method,
@@ -54,11 +56,11 @@ class MesonMain(InterpreterObject):
                              'add_devenv': self.add_devenv_method,
                              })
 
-    def _find_source_script(self, prog: T.Union[str, mesonlib.File, ExecutableHolder], args):
-        
-        if isinstance(prog, (ExecutableHolder, ExternalProgramHolder)):
-            return self.interpreter.backend.get_executable_serialisation([unholder(prog)] + args)
-        found = self.interpreter.func_find_program({}, prog, {}).held_object
+    def _find_source_script(self, prog: T.Union[str, mesonlib.File, build.Executable, ExternalProgram], args):
+
+        if isinstance(prog, (build.Executable, ExternalProgram)):
+            return self.interpreter.backend.get_executable_serialisation([prog] + args)
+        found = self.interpreter.func_find_program({}, prog, {})
         es = self.interpreter.backend.get_executable_serialisation([found] + args)
         es.subproject = self.interpreter.subproject
         return es
@@ -72,7 +74,6 @@ class MesonMain(InterpreterObject):
         script_args = []  # T.List[str]
         new = False
         for a in args:
-            a = unholder(a)
             if isinstance(a, str):
                 script_args.append(a)
             elif isinstance(a, mesonlib.File):
@@ -97,12 +98,12 @@ class MesonMain(InterpreterObject):
                 new = True
             else:
                 raise InterpreterException(
-                    'Arguments to {} must be strings, Files, or CustomTargets, '
-                    'Indexes of CustomTargets'.format(name))
+                   f'Arguments to {name} must be strings, Files, or CustomTargets, '
+                    'Indexes of CustomTargets')
         if new:
             FeatureNew.single_use(
-                'Calling "{}" with File, CustomTaget, Index of CustomTarget, '
-                'Executable, or ExternalProgram'.format(name),
+                f'Calling "{name}" with File, CustomTaget, Index of CustomTarget, '
+                'Executable, or ExternalProgram',
                 '0.55.0', self.interpreter.subproject)
         return script_args
 
@@ -252,7 +253,7 @@ class MesonMain(InterpreterObject):
         for_machine = self.interpreter.machine_from_native_kwarg(kwargs)
         clist = self.interpreter.coredata.compilers[for_machine]
         if cname in clist:
-            return CompilerHolder(clist[cname], self.build.environment, self.interpreter.subproject)
+            return clist[cname]
         raise InterpreterException(f'Tried to access compiler for language "{cname}", not specified for {for_machine.get_lower_case_name()} machine.')
 
     @noPosargs
@@ -284,7 +285,6 @@ class MesonMain(InterpreterObject):
         name, exe = args
         if not isinstance(name, str):
             raise InterpreterException('First argument must be a string')
-        exe = unholder(exe)
         if isinstance(exe, mesonlib.File):
             abspath = exe.absolute_path(self.interpreter.environment.source_dir,
                                         self.interpreter.environment.build_dir)
@@ -304,7 +304,6 @@ class MesonMain(InterpreterObject):
         dep = args[1]
         if not isinstance(name, str) or not name:
             raise InterpreterException('First argument must be a string and cannot be empty')
-        dep = unholder(dep)
         if not isinstance(dep, dependencies.Dependency):
             raise InterpreterException('Second argument must be a dependency object')
         identifier = dependencies.get_dep_identifier(name, kwargs)
@@ -375,9 +374,9 @@ class MesonMain(InterpreterObject):
 
     @FeatureNew('add_devenv', '0.58.0')
     @noKwargs
-    @typed_pos_args('add_devenv', (str, list, dict, EnvironmentVariablesHolder))
-    def add_devenv_method(self, args: T.Union[str, list, dict, EnvironmentVariablesHolder], kwargs: T.Dict[str, T.Any]) -> None:
+    @typed_pos_args('add_devenv', (str, list, dict, EnvironmentVariablesObject))
+    def add_devenv_method(self, args: T.Union[str, list, dict, EnvironmentVariablesObject], kwargs: T.Dict[str, T.Any]) -> None:
         env = args[0]
         if isinstance(env, (str, list, dict)):
-            env = EnvironmentVariablesHolder(env)
-        self.build.devenv.append(env.held_object)
+            env = EnvironmentVariablesObject(env)
+        self.build.devenv.append(env.vars)

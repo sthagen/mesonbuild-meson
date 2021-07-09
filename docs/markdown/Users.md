@@ -21,8 +21,8 @@ topic](https://github.com/topics/meson).
  - [Budgie Desktop](https://github.com/budgie-desktop/budgie-desktop), a desktop environment built on GNOME technologies
  - [Bzip2](https://gitlab.com/federicomenaquintero/bzip2), the bzip2 compressor/decompressor
  - [Cage](https://github.com/Hjdskes/cage), a Wayland kiosk
+ - [canfigger](https://github.com/andy5995/canfigger), simple configuration file parser library
  - [casync](https://github.com/systemd/casync), Content-Addressable Data Synchronization Tool
- - [Chicken Libraries](https://github.com/chicken-libraries), Collection of C libraries. Data structures, algorithms, and more.
  - [cinnamon-desktop](https://github.com/linuxmint/cinnamon-desktop), the cinnamon desktop library
  - [Cozy](https://github.com/geigi/cozy), a modern audio book player for Linux and macOS using GTK+ 3
  - [dav1d](https://code.videolan.org/videolan/dav1d), an AV1 decoder
@@ -108,7 +108,7 @@ format files
  - [OTS](https://github.com/khaledhosny/ots), the OpenType Sanitizer, parses and serializes OpenType files (OTF, TTF) and WOFF and WOFF2 font files, validating and sanitizing them as it goes. Used by Chromium and Firefox
  - [Outlier](https://github.com/kerolasa/outlier), a small Hello World style Meson example project
  - [p11-kit](https://github.com/p11-glue/p11-kit), PKCS#11 module aggregator
- - [Pacman](https://git.archlinux.org/pacman.git/tree/), a package manager for Arch Linux
+ - [Pacman](https://gitlab.archlinux.org/pacman/pacman.git), a package manager for Arch Linux
  - [Pango](https://git.gnome.org/browse/pango/), an Internationalized text layout and rendering library
  - [Parzip](https://github.com/jpakkane/parzip), a multithreaded reimplementation of Zip
  - [Peek](https://github.com/phw/peek), simple animated GIF screen recorder with an easy to use interface
@@ -121,6 +121,7 @@ format files
  - [Polari](https://gitlab.gnome.org/GNOME/polari), an IRC client
  - [qboot](https://github.com/bonzini/qboot), a minimal x86 firmware for booting Linux kernels
  - [radare2](https://github.com/radare/radare2), unix-like reverse engineering framework and commandline tools (not the default)
+ - [rmw](https://remove-to-waste.info), safe-remove utility for the command line
  - [Rizin](https://rizin.re), Free and Open Source Reverse Engineering Framework
  - [QEMU](https://qemu.org), a processor emulator and virtualizer
  - [RxDock](https://gitlab.com/rxdock/rxdock), a protein-ligand docking software designed for high throughput virtual screening (fork of rDock)
@@ -136,6 +137,7 @@ format files
  - [Terminology](https://github.com/billiob/terminology), a terminal emulator based on the Enlightenment Foundation Libraries
  - [Tilix](https://github.com/gnunn1/tilix), a tiling terminal emulator for Linux using GTK+ 3
  - [Tizonia](https://github.com/tizonia/tizonia-openmax-il), a command-line cloud music player for Linux with support for Spotify, Google Play Music, YouTube, SoundCloud, TuneIn, Plex servers and Chromecast devices
+ - [UFJF-MLTK](https://github.com/mateus558/UFJF-Machine-Learning-Toolkit), A C++ cross-platform framework for machine learning algorithms development and testing
  - [Vala Language Server](https://github.com/benwaffle/vala-language-server), code intelligence engine for the Vala and Genie programming languages
  - [Valum](https://github.com/valum-framework/valum), a micro web framework written in Vala
  - [Venom](https://github.com/naxuroqa/Venom), a modern Tox client for the GNU/Linux desktop

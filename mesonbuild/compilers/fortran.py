@@ -71,7 +71,7 @@ class FortranCompiler(CLikeCompiler, Compiler):
         if binary_name.is_file():
             binary_name.unlink()
 
-        source_name.write_text('print *, "Fortran compilation is working."; end')
+        source_name.write_text('print *, "Fortran compilation is working."; end', encoding='utf-8')
 
         extra_flags: T.List[str] = []
         extra_flags += environment.coredata.get_external_args(self.for_machine, self.language)
@@ -222,9 +222,8 @@ class GnuFortranCompiler(GnuCompiler, FortranCompiler):
         __has_include which breaks with GCC-Fortran 10:
         https://github.com/mesonbuild/meson/issues/7017
         '''
-        fargs = {'prefix': prefix, 'header': hname}
-        code = '{prefix}\n#include <{header}>'
-        return self.compiles(code.format(**fargs), env, extra_args=extra_args,
+        code = f'{prefix}\n#include <{hname}>'
+        return self.compiles(code, env, extra_args=extra_args,
                              dependencies=dependencies, mode='preprocess', disable_cache=disable_cache)
 
 

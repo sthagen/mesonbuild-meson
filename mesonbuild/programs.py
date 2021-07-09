@@ -19,6 +19,7 @@ import os
 import shutil
 import stat
 import sys
+import re
 import typing as T
 from pathlib import Path
 
@@ -28,9 +29,10 @@ from .mesonlib import MachineChoice
 
 if T.TYPE_CHECKING:
     from .environment import Environment
+    from .interpreter import Interpreter
 
 
-class ExternalProgram:
+class ExternalProgram(mesonlib.HoldableObject):
 
     """A program that is found on the system."""
 
@@ -41,7 +43,8 @@ class ExternalProgram:
                  silent: bool = False, search_dir: T.Optional[str] = None,
                  extra_search_dirs: T.Optional[T.List[str]] = None):
         self.name = name
-        self.path = None  # type: T.Optional[str]
+        self.path: T.Optional[str] = None
+        self.cached_version: T.Optional[str] = None
         if command is not None:
             self.command = mesonlib.listify(command)
             if mesonlib.is_windows():
@@ -96,6 +99,24 @@ class ExternalProgram:
     def description(self) -> str:
         '''Human friendly description of the command'''
         return ' '.join(self.command)
+
+    def get_version(self, interpreter: 'Interpreter') -> str:
+        if not self.cached_version:
+            raw_cmd = self.get_command() + ['--version']
+            cmd: T.List[T.Union[str, ExternalProgram]] = [self, '--version']
+            res = interpreter.run_command_impl(interpreter.current_node, cmd, {}, True)
+            if res.returncode != 0:
+                m = 'Running {!r} failed'
+                raise mesonlib.MesonException(m.format(raw_cmd))
+            output = res.stdout.strip()
+            if not output:
+                output = res.stderr.strip()
+            match = re.search(r'([0-9][0-9\.]+)', output)
+            if not match:
+                m = 'Could not find a version number in output of {!r}'
+                raise mesonlib.MesonException(m.format(raw_cmd))
+            self.cached_version = match.group(1)
+        return self.cached_version
 
     @classmethod
     def from_bin_list(cls, env: 'Environment', for_machine: MachineChoice, name: str) -> 'ExternalProgram':
@@ -155,7 +176,7 @@ class ExternalProgram:
         or if we're on Windows (which does not understand shebangs).
         """
         try:
-            with open(script) as f:
+            with open(script, encoding='utf-8') as f:
                 first_line = f.readline().strip()
             if first_line.startswith('#!'):
                 # In a shebang, everything before the first space is assumed to
