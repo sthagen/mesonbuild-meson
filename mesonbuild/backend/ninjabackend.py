@@ -11,18 +11,20 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-import typing as T
-import os
-import re
-import pickle
-import shlex
-import subprocess
+
 from collections import OrderedDict
 from enum import Enum, unique
-import itertools
-from textwrap import dedent
-from pathlib import PurePath, Path
 from functools import lru_cache
+from pathlib import PurePath, Path
+from textwrap import dedent
+import itertools
+import json
+import os
+import pickle
+import re
+import shlex
+import subprocess
+import typing as T
 
 from . import backends
 from .. import modules
@@ -567,6 +569,9 @@ class NinjaBackend(backends.Backend):
         # fully created.
         os.replace(tempfilename, outfilename)
         mlog.cmd_ci_include(outfilename)  # For CI debugging
+        # Refresh Ninja's caches. https://github.com/ninja-build/ninja/pull/1685
+        if mesonlib.version_compare(self.ninja_version, '>=1.10.2') and os.path.exists('.ninja_deps'):
+            subprocess.call(self.ninja_command + ['-t', 'restat'])
         self.generate_compdb()
 
     # http://clang.llvm.org/docs/JSONCompilationDatabase.html
@@ -912,9 +917,16 @@ class NinjaBackend(backends.Backend):
         pickle_base = target.name + '.dat'
         pickle_file = os.path.join(self.get_target_private_dir(target), pickle_base).replace('\\', '/')
         pickle_abs = os.path.join(self.get_target_private_dir_abs(target), pickle_base).replace('\\', '/')
+        json_abs = os.path.join(self.get_target_private_dir_abs(target), f'{target.name}-deps.json').replace('\\', '/')
         rule_name = 'depscan'
         scan_sources = self.select_sources_to_scan(compiled_sources)
-        elem = NinjaBuildElement(self.all_outputs, depscan_file, rule_name, scan_sources)
+
+        # Dump the sources as a json list. This avoids potential probllems where
+        # the number of sources passed to depscan exceedes the limit imposed by
+        # the OS.
+        with open(json_abs, 'w', encoding='utf-8') as f:
+            json.dump(scan_sources, f)
+        elem = NinjaBuildElement(self.all_outputs, depscan_file, rule_name, json_abs)
         elem.add_item('picklefile', pickle_file)
         scaninfo = TargetDependencyScannerInfo(self.get_target_private_dir(target), source2object)
         with open(pickle_abs, 'wb') as p:
@@ -972,7 +984,7 @@ class NinjaBackend(backends.Backend):
             for output in d.get_outputs():
                 elem.add_dep(os.path.join(self.get_target_dir(d), output))
 
-        cmd, reason = self.as_meson_exe_cmdline(target.name, target.command[0], cmd[1:],
+        cmd, reason = self.as_meson_exe_cmdline(target.command[0], cmd[1:],
                                                 extra_bdeps=target.get_transitive_build_target_deps(),
                                                 capture=ofilenames[0] if target.capture else None,
                                                 feed=srcs[0] if target.feed else None,
@@ -1010,7 +1022,7 @@ class NinjaBackend(backends.Backend):
         else:
             target_env = self.get_run_target_env(target)
             _, _, cmd = self.eval_custom_target_command(target)
-            meson_exe_cmd, reason = self.as_meson_exe_cmdline(target_name, target.command[0], cmd[1:],
+            meson_exe_cmd, reason = self.as_meson_exe_cmdline(target.command[0], cmd[1:],
                                                               force_serialize=True, env=target_env,
                                                               verbose=True)
             cmd_type = f' (wrapped by meson {reason})'
@@ -1063,6 +1075,13 @@ class NinjaBackend(backends.Backend):
         self.add_build(e)
         # Alias that runs the target defined above
         self.create_target_alias('meson-coverage-xml')
+
+        e = NinjaBuildElement(self.all_outputs, 'meson-coverage-sonarqube', 'CUSTOM_COMMAND', 'PHONY')
+        self.generate_coverage_command(e, ['--sonarqube'])
+        e.add_item('description', 'Generates Sonarqube XML coverage report')
+        self.add_build(e)
+        # Alias that runs the target defined above
+        self.create_target_alias('meson-coverage-sonarqube')
 
         e = NinjaBuildElement(self.all_outputs, 'meson-coverage-text', 'CUSTOM_COMMAND', 'PHONY')
         self.generate_coverage_command(e, ['--text'])
@@ -1503,6 +1522,7 @@ class NinjaBackend(backends.Backend):
             args += ['--vapi', os.path.join('..', target.vala_vapi)]
             valac_outputs.append(vapiname)
             target.outputs += [target.vala_header, target.vala_vapi]
+            target.install_tag += ['devel', 'devel']
             # Install header and vapi to default locations if user requests this
             if len(target.install_dir) > 1 and target.install_dir[1] is True:
                 target.install_dir[1] = self.environment.get_includedir()
@@ -1514,6 +1534,7 @@ class NinjaBackend(backends.Backend):
                 args += ['--gir', os.path.join('..', target.vala_gir)]
                 valac_outputs.append(girname)
                 target.outputs.append(target.vala_gir)
+                target.install_tag.append('devel')
                 # Install GIR to default location if requested by user
                 if len(target.install_dir) > 3 and target.install_dir[3] is True:
                     target.install_dir[3] = os.path.join(self.environment.get_datadir(), 'gir-1.0')
@@ -1601,7 +1622,7 @@ class NinjaBackend(backends.Backend):
                     # TODO: introspection?
                     cython_sources.append(output)
                 else:
-                    generated_sources[ssrc] = mesonlib.File.from_built_file(gen.subdir, ssrc)
+                    generated_sources[ssrc] = mesonlib.File.from_built_file(gen.get_subdir(), ssrc)
 
         return static_sources, generated_sources, cython_sources
 
@@ -1682,9 +1703,9 @@ class NinjaBackend(backends.Backend):
                 args += ['--extern', '{}={}'.format(d.name, os.path.join(d.subdir, d.filename))]
             elif d.typename == 'static library':
                 # Rustc doesn't follow Meson's convention that static libraries
-                # are called .a, and implementation libraries are .lib, so we
-                # have to manually handle that.
-                if rustc.linker.id == 'link':
+                # are called .a, and import libraries are .lib, so we have to
+                # manually handle that.
+                if rustc.linker.id in {'link', 'lld-link'}:
                     args += ['-C', f'link-arg={self.get_target_filename_for_linking(d)}']
                 else:
                     args += ['-l', f'static={d.name}']
@@ -2059,8 +2080,7 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
 
     def generate_compile_rule_for(self, langname, compiler):
         if langname == 'java':
-            if self.environment.machines.matches_build_machine(compiler.for_machine):
-                self.generate_java_compile_rule(compiler)
+            self.generate_java_compile_rule(compiler)
             return
         if langname == 'cs':
             if self.environment.machines.matches_build_machine(compiler.for_machine):
@@ -2198,8 +2218,7 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
                 outfilelist = outfilelist[len(generator.outputs):]
             args = self.replace_paths(target, args, override_subdir=subdir)
             cmdlist = exe_arr + self.replace_extra_args(args, genlist)
-            cmdlist, reason = self.as_meson_exe_cmdline('generator ' + cmdlist[0],
-                                                        cmdlist[0], cmdlist[1:],
+            cmdlist, reason = self.as_meson_exe_cmdline(cmdlist[0], cmdlist[1:],
                                                         capture=outfiles[0] if generator.capture else None)
             abs_pdir = os.path.join(self.environment.get_build_dir(), self.get_target_dir(target))
             os.makedirs(abs_pdir, exist_ok=True)
@@ -2292,11 +2311,6 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
 
         mod_files = _scan_fortran_file_deps(src, srcdir, dirname, tdeps, compiler)
         return mod_files
-
-    def get_no_stdlib_args(self, target, compiler):
-        if compiler.language in self.build.stdlibs[target.for_machine]:
-            return compiler.get_no_stdinc_args()
-        return []
 
     def get_no_stdlib_link_args(self, target, linker):
         if hasattr(linker, 'language') and linker.language in self.build.stdlibs[target.for_machine]:
@@ -2474,8 +2488,7 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
                 commands += compiler.get_include_args(d, i.is_system)
         # Add per-target compile args, f.ex, `c_args : ['-DFOO']`. We set these
         # near the end since these are supposed to override everything else.
-        commands += self.escape_extra_args(compiler,
-                                           target.get_extra_args(compiler.get_language()))
+        commands += self.escape_extra_args(target.get_extra_args(compiler.get_language()))
 
         # D specific additional flags
         if compiler.language == 'd':
@@ -3071,7 +3084,7 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
             except OSError:
                 mlog.debug("Library versioning disabled because we do not have symlink creation privileges.")
 
-    def generate_custom_target_clean(self, trees):
+    def generate_custom_target_clean(self, trees: T.List[str]) -> str:
         e = NinjaBuildElement(self.all_outputs, 'meson-clean-ctlist', 'CUSTOM_COMMAND', 'PHONY')
         d = CleanTrees(self.environment.get_build_dir(), trees)
         d_file = os.path.join(self.environment.get_scratch_dir(), 'cleantrees.dat')

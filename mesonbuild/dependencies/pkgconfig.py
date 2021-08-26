@@ -12,8 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .base import ExternalDependency, DependencyException, DependencyMethods, sort_libpaths, DependencyTypeName
-from ..mesonlib import LibType, MachineChoice, OptionKey, OrderedSet, PerMachine, Popen_safe
+from .base import ExternalDependency, DependencyException, sort_libpaths, DependencyTypeName
+from ..mesonlib import MachineChoice, OptionKey, OrderedSet, PerMachine, Popen_safe
 from ..programs import find_external_program, ExternalProgram
 from .. import mlog
 from pathlib import PurePath
@@ -267,7 +267,6 @@ class PkgConfigDependency(ExternalDependency):
         libs_found: OrderedSet[str] = OrderedSet()
         # Track not-found libraries to know whether to add library paths
         libs_notfound = []
-        libtype = LibType.STATIC if self.static else LibType.PREFER_SHARED
         # Generate link arguments for this library
         link_args = []
         for lib in full_args:
@@ -277,13 +276,37 @@ class PkgConfigDependency(ExternalDependency):
             elif lib.startswith('-L'):
                 # We already handled library paths above
                 continue
+            elif lib.startswith('-l:'):
+                # see: https://stackoverflow.com/questions/48532868/gcc-library-option-with-a-colon-llibevent-a
+                # also : See the documentation of -lnamespec | --library=namespec in the linker manual
+                #                     https://sourceware.org/binutils/docs-2.18/ld/Options.html
+
+                # Don't resolve the same -l:libfoo.a argument again
+                if lib in libs_found:
+                    continue
+                libfilename = lib[3:]
+                foundname = None
+                for libdir in libpaths:
+                    target = os.path.join(libdir, libfilename)
+                    if os.path.exists(target):
+                        foundname = target
+                        break
+                if foundname is None:
+                    if lib in libs_notfound:
+                        continue
+                    else:
+                        mlog.warning('Library {!r} not found for dependency {!r}, may '
+                                    'not be successfully linked'.format(libfilename, self.name))
+                    libs_notfound.append(lib)
+                else:
+                    lib = foundname
             elif lib.startswith('-l'):
                 # Don't resolve the same -lfoo argument again
                 if lib in libs_found:
                     continue
                 if self.clib_compiler:
                     args = self.clib_compiler.find_library(lib[2:], self.env,
-                                                           libpaths, libtype)
+                                                           libpaths, self.libtype)
                 # If the project only uses a non-clib language such as D, Rust,
                 # C#, Python, etc, all we can do is limp along by adding the
                 # arguments as-is and then adding the libpaths at the end.
@@ -395,10 +418,6 @@ class PkgConfigDependency(ExternalDependency):
 
         mlog.debug(f'Got pkgconfig variable {variable_name} : {variable}')
         return variable
-
-    @staticmethod
-    def get_methods() -> T.List[DependencyMethods]:
-        return [DependencyMethods.PKGCONFIG]
 
     def check_pkgconfig(self, pkgbin: ExternalProgram) -> T.Optional[str]:
         if not pkgbin.found():

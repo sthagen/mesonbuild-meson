@@ -12,18 +12,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# This file contains the detection logic for external dependencies that
-# are UI-related.
+# This file contains the base representation for import('modname')
 
 import os
 import typing as T
 
-from .. import build
+from .. import build, mesonlib
 from ..mesonlib import relpath, HoldableObject
 from ..interpreterbase.decorators import noKwargs, noPosargs
 
 if T.TYPE_CHECKING:
-    from ..interpreter import Interpreter
+    from ..interpreter import Interpreter, MachineHolder
     from ..interpreterbase import TYPE_var, TYPE_kwargs
     from ..programs import ExternalProgram
 
@@ -56,9 +55,9 @@ class ModuleState:
         self.man = interpreter.build.get_man()
         self.global_args = interpreter.build.global_args.host
         self.project_args = interpreter.build.projects_args.host.get(interpreter.subproject, {})
-        self.build_machine = interpreter.builtin['build_machine'].held_object
-        self.host_machine = interpreter.builtin['host_machine'].held_object
-        self.target_machine = interpreter.builtin['target_machine'].held_object
+        self.build_machine = T.cast('MachineHolder', interpreter.builtin['build_machine']).held_object
+        self.host_machine = T.cast('MachineHolder', interpreter.builtin['host_machine']).held_object
+        self.target_machine = T.cast('MachineHolder', interpreter.builtin['target_machine']).held_object
         self.current_node = interpreter.current_node
 
     def get_include_args(self, include_dirs: T.Iterable[T.Union[str, build.IncludeDirs]], prefix: str = '-I') -> T.List[str]:
@@ -91,6 +90,17 @@ class ModuleState:
                      version_func: T.Optional[T.Callable[['ExternalProgram'], str]] = None,
                      wanted: T.Optional[str] = None) -> 'ExternalProgram':
         return self._interpreter.find_program_impl(prog, required=required, version_func=version_func, wanted=wanted)
+
+    def test(self, args: T.Tuple[str, T.Union[build.Executable, build.Jar, 'ExternalProgram', mesonlib.File]],
+             workdir: T.Optional[str] = None,
+             env: T.Union[T.List[str], T.Dict[str, str], str] = None,
+             depends: T.List[T.Union[build.CustomTarget, build.BuildTarget]] = None) -> None:
+        kwargs = {'workdir': workdir,
+                  'env': env,
+                  'depends': depends,
+                  }
+        # TODO: Use interpreter internal API, but we need to go through @typed_kwargs
+        self._interpreter.func_test(self.current_node, args, kwargs)
 
 
 class ModuleObject(HoldableObject):

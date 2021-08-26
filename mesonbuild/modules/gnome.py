@@ -747,6 +747,7 @@ class GnomeModule(ExtensionModule):
             scankwargs['install'] = kwargs['install']
             scankwargs['install_dir'] = kwargs.get('install_dir_gir',
                                                    os.path.join(state.environment.get_datadir(), 'gir-1.0'))
+            scankwargs['install_tag'] = 'devel'
 
         if 'build_by_default' in kwargs:
             scankwargs['build_by_default'] = kwargs['build_by_default']
@@ -764,6 +765,7 @@ class GnomeModule(ExtensionModule):
             typelib_kwargs['install'] = kwargs['install']
             typelib_kwargs['install_dir'] = kwargs.get('install_dir_typelib',
                                                        os.path.join(state.environment.get_libdir(), 'girepository-1.0'))
+            typelib_kwargs['install_tag'] = 'typelib'
 
         if 'build_by_default' in kwargs:
             typelib_kwargs['build_by_default'] = kwargs['build_by_default']
@@ -815,7 +817,9 @@ class GnomeModule(ExtensionModule):
     def _get_scanner_cflags(cflags):
         'g-ir-scanner only accepts -I/-D/-U; must ignore all other flags'
         for f in cflags:
-            if f.startswith(('-D', '-U', '-I')):
+            # _FORTIFY_SOURCE depends on / works together with -O, on the other hand this
+            # just invokes the preprocessor anyway
+            if f.startswith(('-D', '-U', '-I')) and not f.startswith('-D_FORTIFY_SOURCE'):
                 yield f
 
     @staticmethod
@@ -867,10 +871,16 @@ class GnomeModule(ExtensionModule):
         # are not used here.
         dep_cflags, dep_internal_ldflags, dep_external_ldflags, gi_includes = \
             self._get_dependencies_flags(deps, state, depends, use_gir_args=True)
-        cflags += list(self._get_scanner_cflags(dep_cflags))
-        cflags += list(self._get_scanner_cflags(self._get_external_args_for_langs(state, [lc[0] for lc in langs_compilers])))
-        internal_ldflags += list(self._get_scanner_ldflags(dep_internal_ldflags))
-        external_ldflags += list(self._get_scanner_ldflags(dep_external_ldflags))
+        scan_cflags = []
+        scan_cflags += list(self._get_scanner_cflags(cflags))
+        scan_cflags += list(self._get_scanner_cflags(dep_cflags))
+        scan_cflags += list(self._get_scanner_cflags(self._get_external_args_for_langs(state, [lc[0] for lc in langs_compilers])))
+        scan_internal_ldflags = []
+        scan_internal_ldflags += list(self._get_scanner_ldflags(internal_ldflags))
+        scan_internal_ldflags += list(self._get_scanner_ldflags(dep_internal_ldflags))
+        scan_external_ldflags = []
+        scan_external_ldflags += list(self._get_scanner_ldflags(external_ldflags))
+        scan_external_ldflags += list(self._get_scanner_ldflags(dep_external_ldflags))
         girtargets_inc_dirs = self._get_gir_targets_inc_dirs(girtargets)
         inc_dirs = self._scan_inc_dirs(kwargs)
 
@@ -890,14 +900,14 @@ class GnomeModule(ExtensionModule):
         scan_command += self._scan_identifier_prefix(kwargs)
         scan_command += self._scan_export_packages(kwargs)
         scan_command += ['--cflags-begin']
-        scan_command += cflags
+        scan_command += scan_cflags
         scan_command += ['--cflags-end']
         scan_command += state.get_include_args(inc_dirs)
         scan_command += state.get_include_args(list(gi_includes) + gir_inc_dirs + inc_dirs, prefix='--add-include-path=')
-        scan_command += list(internal_ldflags)
+        scan_command += list(scan_internal_ldflags)
         scan_command += self._scan_gir_targets(state, girtargets)
         scan_command += self._scan_langs(state, [lc[0] for lc in langs_compilers])
-        scan_command += list(external_ldflags)
+        scan_command += list(scan_external_ldflags)
 
         if self._gir_has_option('--sources-top-dirs'):
             scan_command += ['--sources-top-dirs', os.path.join(state.environment.get_source_dir(), self.interpreter.subproject_dir, state.subproject)]
@@ -1136,13 +1146,11 @@ class GnomeModule(ExtensionModule):
             check_env = ['DOC_MODULE=' + modulename,
                          'DOC_MAIN_SGML_FILE=' + main_file]
             check_args = [targetname + '-check', check_cmd]
-            check_kwargs = {'env': check_env,
-                            'workdir': os.path.join(state.environment.get_build_dir(), state.subdir),
-                            'depends': custom_target}
-            self.interpreter.add_test(state.current_node, check_args, check_kwargs, True)
+            check_workdir = os.path.join(state.environment.get_build_dir(), state.subdir)
+            state.test(check_args, env=check_env, workdir=check_workdir, depends=custom_target)
         res = [custom_target, alias_target]
         if kwargs.get('install', True):
-            res.append(state.backend.get_executable_serialisation(command + args))
+            res.append(state.backend.get_executable_serialisation(command + args, tag='doc'))
         return ModuleReturnValue(custom_target, res)
 
     def _get_build_args(self, kwargs, state, depends):

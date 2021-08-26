@@ -50,6 +50,12 @@ from .interpreterobjects import (
     extract_search_dirs,
     NullSubprojectInterpreter,
 )
+from .type_checking import (
+    INSTALL_MODE_KW,
+    LANGUAGE_KW,
+    NATIVE_KW,
+    REQUIRED_KW,
+)
 
 from pathlib import Path
 import os
@@ -72,101 +78,6 @@ if T.TYPE_CHECKING:
     SourceOutputs = T.Union[mesonlib.File, build.GeneratedList,
                             build.BuildTarget, build.CustomTargetIndex, build.CustomTarget,
                             build.GeneratedList]
-
-
-def _language_validator(l: T.List[str]) -> T.Optional[str]:
-    """Validate language keyword argument.
-
-    Particularly for functions like `add_compiler()`, and `add_*_args()`
-    """
-    diff = {a.lower() for a in l}.difference(compilers.all_languages)
-    if diff:
-        return f'unknown languages: {", ".join(diff)}'
-    return None
-
-
-def _install_mode_validator(mode: T.List[T.Union[str, bool, int]]) -> T.Optional[str]:
-    """Validate the `install_mode` keyword argument.
-
-    This is a rather odd thing, it's a scalar, or an array of 3 values in the form:
-    [(str | False), (str | int | False) = False, (str | int | False) = False]
-    Where the second and third arguments are not required, and are considered to
-    default to False.
-    """
-    if not mode:
-        return None
-    if True in mode:
-        return 'can only be a string or false, not true'
-    if len(mode) > 3:
-        return 'may have at most 3 elements'
-
-    perms = mode[0]
-    if not isinstance(perms, (str, bool)):
-        return 'permissions part must be a string or false'
-
-    if isinstance(perms, str):
-        if not len(perms) == 9:
-            return (f'permissions string must be exactly 9 characters, got "{len(perms)}" '
-                   'in the form rwxr-xr-x')
-        for i in [0, 3, 6]:
-            if perms[i] not in {'-', 'r'}:
-                return f'bit {i} must be "-" or "r", not {perms[i]}'
-        for i in [1, 4, 7]:
-            if perms[i] not in {'-', 'w'}:
-                return f'bit {i} must be "-" or "w", not {perms[i]}'
-        for i in [2, 5]:
-            if perms[i] not in {'-', 'x', 's', 'S'}:
-                return f'bit {i} must be "-", "s", "S", or "x", not {perms[i]}'
-        if perms[8] not in {'-', 'x', 't', 'T'}:
-            return f'bit 8 must be "-", "t", "T", or "x", not {perms[8]}'
-
-        if len(mode) >= 2 and not isinstance(mode[1], (int, str, bool)):
-            return 'second componenent must be a string, number, or False if provided'
-        if len(mode) >= 3 and not isinstance(mode[2], (int, str, bool)):
-            return 'third componenent must be a string, number, or False if provided'
-
-    return None
-
-
-def _install_mode_convertor(mode: T.Optional[T.List[T.Union[str, bool, int]]]) -> FileMode:
-    """Convert the DSL form of the `install_mode` keyword arugment to `FileMode`
-
-    This is not required, and if not required returns None
-
-    TODO: It's not clear to me why this needs to be None and not just return an
-    emtpy FileMode.
-    """
-    # this has already been validated by the validator
-    return FileMode(*[m if isinstance(m, str) else None for m in mode])
-
-
-_NATIVE_KW = KwargInfo(
-    'native', bool,
-    default=False,
-    convertor=lambda n: MachineChoice.BUILD if n else MachineChoice.HOST)
-
-_LANGUAGE_KW = KwargInfo(
-    'language', ContainerTypeInfo(list, str, allow_empty=False),
-    listify=True,
-    required=True,
-    validator=_language_validator,
-    convertor=lambda x: [i.lower() for i in x])
-
-_INSTALL_MODE_KW = KwargInfo(
-    'install_mode',
-    ContainerTypeInfo(list, (str, bool, int)),
-    listify=True,
-    default=[],
-    validator=_install_mode_validator,
-    convertor=_install_mode_convertor,
-)
-
-_REQUIRED_KW = KwargInfo(
-    'required',
-    (bool, coredata.UserFeatureOption),
-    default=True,
-    # TODO: extract_required_kwarg could be converted to a convertor
-)
 
 
 def stringifyUserArguments(args, quote=False):
@@ -311,7 +222,6 @@ class Interpreter(InterpreterBase, HoldableObject):
                 subproject: str = '',
                 subdir: str = '',
                 subproject_dir: str = 'subprojects',
-                modules: T.Optional[T.Dict[str, T.Union[ExtensionModule, NewExtensionModule, NotFoundExtensionModule]]] = None,
                 default_project_options: T.Optional[T.Dict[str, str]] = None,
                 mock: bool = False,
                 ast: T.Optional[mparser.CodeBlockNode] = None,
@@ -324,10 +234,7 @@ class Interpreter(InterpreterBase, HoldableObject):
         self.coredata = self.environment.get_coredata()
         self.backend = backend
         self.summary = {}
-        if modules is None:
-            self.modules = {}
-        else:
-            self.modules = modules
+        self.modules = {}
         # Subproject directory is usually the name of the subproject, but can
         # be different for dependencies provided by wrap files.
         self.subproject_directory_name = subdir.split(os.path.sep)[-1]
@@ -453,6 +360,7 @@ class Interpreter(InterpreterBase, HoldableObject):
                            'static_library': self.func_static_lib,
                            'both_libraries': self.func_both_lib,
                            'test': self.func_test,
+                           'unset_variable': self.func_unset_variable,
                            'vcs_tag': self.func_vcs_tag,
                            'range': self.func_range,
                            })
@@ -626,7 +534,7 @@ class Interpreter(InterpreterBase, HoldableObject):
     @typed_pos_args('import', str)
     @typed_kwargs(
         'import',
-        _REQUIRED_KW.evolve(since='0.59.0'),
+        REQUIRED_KW.evolve(since='0.59.0'),
         KwargInfo('disabler', bool, default=False, since='0.59.0'),
     )
     @disablerIfNotFound
@@ -910,10 +818,15 @@ external dependencies (including libraries) must go to "dependencies".''')
         with mlog.nested(subp_name):
             new_build = self.build.copy()
             subi = Interpreter(new_build, self.backend, subp_name, subdir, self.subproject_dir,
-                               self.modules, default_options, ast=ast, is_translated=is_translated)
+                               default_options, ast=ast, is_translated=is_translated)
+            # Those lists are shared by all interpreters. That means that
+            # even if the subproject fails, any modification that the subproject
+            # made to those lists will affect the parent project.
             subi.subprojects = self.subprojects
-            subi.holder_map.update(self.holder_map)
-            subi.bound_holder_map.update(self.bound_holder_map)
+            subi.modules = self.modules
+            subi.holder_map = self.holder_map
+            subi.bound_holder_map = self.bound_holder_map
+            subi.summary = self.summary
 
             subi.subproject_stack = self.subproject_stack + [subp_name]
             current_active = self.active_projectname
@@ -943,11 +856,6 @@ external dependencies (including libraries) must go to "dependencies".''')
         self.build.merge(subi.build)
         self.build.subprojects[subp_name] = subi.project_version
         self.coredata.initialized_subprojects.add(subp_name)
-        self.summary.update(subi.summary)
-        # Update the holder maps from the subproject. Additional entries to the
-        # holder maps can be added through imported Meson modules
-        self.holder_map.update(subi.holder_map)
-        self.bound_holder_map.update(subi.bound_holder_map)
         return self.subprojects[subp_name]
 
     def _do_subproject_cmake(self, subp_name, subdir, subdir_abs, default_options, kwargs):
@@ -1048,9 +956,9 @@ external dependencies (including libraries) must go to "dependencies".''')
     @typed_pos_args('configuration_data', optargs=[dict])
     @noKwargs
     def func_configuration_data(self, node: mparser.BaseNode, args: T.Optional[dict], kwargs: 'TYPE_kwargs') -> ConfigurationDataObject:
-        if args is not None:
+        initial_values = args[0]
+        if initial_values is not None:
             FeatureNew.single_use('configuration_data dictionary', '0.49.0', self.subproject)
-            initial_values = args[0]
         else:
             initial_values = {}
         return ConfigurationDataObject(self.subproject, initial_values)
@@ -1270,8 +1178,9 @@ external dependencies (including libraries) must go to "dependencies".''')
         # Print all summaries, main project last.
         mlog.log('')  # newline
         main_summary = self.summary.pop('', None)
-        for _, summary in sorted(self.summary.items()):
-            summary.dump()
+        for subp_name, summary in sorted(self.summary.items()):
+            if self.subprojects[subp_name].found():
+                summary.dump()
         if main_summary:
             main_summary.dump()
 
@@ -1689,6 +1598,7 @@ external dependencies (including libraries) must go to "dependencies".''')
     def func_subdir_done(self, node, args, kwargs):
         raise SubdirDoneRequest()
 
+    @FeatureNewKwargs('custom_target', '0.60.0', ['install_tag'])
     @FeatureNewKwargs('custom_target', '0.57.0', ['env'])
     @FeatureNewKwargs('custom_target', '0.48.0', ['console'])
     @FeatureNewKwargs('custom_target', '0.47.0', ['install_mode', 'build_always_stale'])
@@ -1697,7 +1607,7 @@ external dependencies (including libraries) must go to "dependencies".''')
     @permittedKwargs({'input', 'output', 'command', 'install', 'install_dir', 'install_mode',
                       'build_always', 'capture', 'depends', 'depend_files', 'depfile',
                       'build_by_default', 'build_always_stale', 'console', 'env',
-                      'feed'})
+                      'feed', 'install_tag'})
     @typed_pos_args('custom_target', str)
     def func_custom_target(self, node: mparser.FunctionNode, args: T.Tuple[str], kwargs: 'TYPE_kwargs') -> build.CustomTarget:
         if 'depfile' in kwargs and ('@BASENAME@' in kwargs['depfile'] or '@PLAINNAME@' in kwargs['depfile']):
@@ -1876,7 +1786,7 @@ This will become a hard error in the future.''' % kwargs['input'], location=self
         'install_headers',
         KwargInfo('install_dir', (str, None)),
         KwargInfo('subdir', (str, None)),
-        _INSTALL_MODE_KW.evolve(since='0.47.0'),
+        INSTALL_MODE_KW.evolve(since='0.47.0'),
     )
     def func_install_headers(self, node: mparser.BaseNode,
                              args: T.Tuple[T.List['mesonlib.FileOrString']],
@@ -1897,7 +1807,7 @@ This will become a hard error in the future.''' % kwargs['input'], location=self
         'install_man',
         KwargInfo('install_dir', (str, None)),
         KwargInfo('locale', (str, None), since='0.58.0'),
-        _INSTALL_MODE_KW.evolve(since='0.47.0')
+        INSTALL_MODE_KW.evolve(since='0.47.0')
     )
     def func_install_man(self, node: mparser.BaseNode,
                          args: T.Tuple[T.List['mesonlib.FileOrString']],
@@ -1993,7 +1903,8 @@ This will become a hard error in the future.''' % kwargs['input'], location=self
         KwargInfo('install_dir', str),
         KwargInfo('sources', ContainerTypeInfo(list, (str, mesonlib.File)), listify=True, default=[]),
         KwargInfo('rename', ContainerTypeInfo(list, str), default=[], listify=True, since='0.46.0'),
-        _INSTALL_MODE_KW.evolve(since='0.38.0'),
+        INSTALL_MODE_KW.evolve(since='0.38.0'),
+        KwargInfo('install_tag', str, since='0.60.0'),
     )
     def func_install_data(self, node: mparser.BaseNode,
                           args: T.Tuple[T.List['mesonlib.FileOrString']],
@@ -2006,9 +1917,14 @@ This will become a hard error in the future.''' % kwargs['input'], location=self
                     '"rename" and "sources" argument lists must be the same length if "rename" is given. '
                     f'Rename has {len(rename)} elements and sources has {len(sources)}.')
 
-        data = build.Data(
-            sources, kwargs['install_dir'], kwargs['install_mode'],
-            self.subproject, rename)
+        return self.install_data_impl(sources, kwargs['install_dir'], kwargs['install_mode'], rename,
+                                      kwargs['install_tag'])
+
+    def install_data_impl(self, sources: T.List[mesonlib.File], install_dir: str,
+                          install_mode: FileMode, rename: T.Optional[str],
+                          tag: T.Optional[str]) -> build.Data:
+        """Just the implementation with no validation."""
+        data = build.Data(sources, install_dir, install_mode, self.subproject, rename, tag)
         self.build.data.append(data)
         return data
 
@@ -2016,6 +1932,7 @@ This will become a hard error in the future.''' % kwargs['input'], location=self
     @typed_kwargs(
         'install_subdir',
         KwargInfo('install_dir', str, required=True),
+        KwargInfo('install_tag', str, since='0.60.0'),
         KwargInfo('strip_directory', bool, default=False),
         KwargInfo('exclude_files', ContainerTypeInfo(list, str),
                   default=[], listify=True, since='0.42.0',
@@ -2023,7 +1940,7 @@ This will become a hard error in the future.''' % kwargs['input'], location=self
         KwargInfo('exclude_directories', ContainerTypeInfo(list, str),
                   default=[], listify=True, since='0.42.0',
                   validator=lambda x: 'cannot be absolute' if any(os.path.isabs(d) for d in x) else None),
-        _INSTALL_MODE_KW.evolve(since='0.38.0'),
+        INSTALL_MODE_KW.evolve(since='0.38.0'),
     )
     def func_install_subdir(self, node: mparser.BaseNode, args: T.Tuple[str],
                             kwargs: 'kwargs.FuncInstallSubdir') -> build.InstallDir:
@@ -2035,7 +1952,8 @@ This will become a hard error in the future.''' % kwargs['input'], location=self
             kwargs['install_mode'],
             exclude,
             kwargs['strip_directory'],
-            self.subproject)
+            self.subproject,
+            install_tag=kwargs['install_tag'])
         self.build.install_dirs.append(idir)
         return idir
 
@@ -2044,9 +1962,10 @@ This will become a hard error in the future.''' % kwargs['input'], location=self
     @FeatureNewKwargs('configure_file', '0.41.0', ['capture'])
     @FeatureNewKwargs('configure_file', '0.50.0', ['install'])
     @FeatureNewKwargs('configure_file', '0.52.0', ['depfile'])
+    @FeatureNewKwargs('configure_file', '0.60.0', ['install_tag'])
     @permittedKwargs({'input', 'output', 'configuration', 'command', 'copy', 'depfile',
                       'install_dir', 'install_mode', 'capture', 'install', 'format',
-                      'output_format', 'encoding'})
+                      'output_format', 'encoding', 'install_tag'})
     @noPosargs
     def func_configure_file(self, node, args, kwargs):
         if 'output' not in kwargs:
@@ -2227,7 +2146,10 @@ This will become a hard error in the future.''' % kwargs['input'], location=self
                                            'is true')
             cfile = mesonlib.File.from_built_file(ofile_path, ofile_fname)
             install_mode = self._get_kwarg_install_mode(kwargs)
-            self.build.data.append(build.Data([cfile], idir, install_mode, self.subproject))
+            install_tag = kwargs.get('install_tag')
+            if install_tag is not None and not isinstance(install_tag, str):
+                raise InvalidArguments('install_tag keyword argument must be string')
+            self.build.data.append(build.Data([cfile], idir, install_mode, self.subproject, install_tag=install_tag))
         return mesonlib.File.from_built_file(self.subdir, output)
 
     def extract_incdirs(self, kwargs):
@@ -2291,10 +2213,14 @@ This will become a hard error in the future.''' % kwargs['input'], location=self
                         it should set a variable that the caller can then use. Something like:
 
                         # In subproject
-                        some_dep = declare_depencency(include_directories: include_directories('include'))
+                        some_dep = declare_dependency(include_directories: include_directories('include'))
+
+                        # In subproject wrap file
+                        [provide]
+                        some = some_dep
 
                         # In parent project
-                        some_dep = depencency('some')
+                        some_dep = dependency('some')
                         executable(..., dependencies: [some_dep])
 
                         This warning will become a hard error in a future Meson release.
@@ -2351,22 +2277,22 @@ This will become a hard error in the future.''' % kwargs['input'], location=self
                                                              exclude_suites)
 
     @typed_pos_args('add_global_arguments', varargs=str)
-    @typed_kwargs('add_global_arguments', _NATIVE_KW, _LANGUAGE_KW)
+    @typed_kwargs('add_global_arguments', NATIVE_KW, LANGUAGE_KW)
     def func_add_global_arguments(self, node: mparser.FunctionNode, args: T.Tuple[T.List[str]], kwargs: 'kwargs.FuncAddProjectArgs') -> None:
         self._add_global_arguments(node, self.build.global_args[kwargs['native']], args[0], kwargs)
 
     @typed_pos_args('add_global_link_arguments', varargs=str)
-    @typed_kwargs('add_global_arguments', _NATIVE_KW, _LANGUAGE_KW)
+    @typed_kwargs('add_global_arguments', NATIVE_KW, LANGUAGE_KW)
     def func_add_global_link_arguments(self, node: mparser.FunctionNode, args: T.Tuple[T.List[str]], kwargs: 'kwargs.FuncAddProjectArgs') -> None:
         self._add_global_arguments(node, self.build.global_link_args[kwargs['native']], args[0], kwargs)
 
     @typed_pos_args('add_project_arguments', varargs=str)
-    @typed_kwargs('add_project_arguments', _NATIVE_KW, _LANGUAGE_KW)
+    @typed_kwargs('add_project_arguments', NATIVE_KW, LANGUAGE_KW)
     def func_add_project_arguments(self, node: mparser.FunctionNode, args: T.Tuple[T.List[str]], kwargs: 'kwargs.FuncAddProjectArgs') -> None:
         self._add_project_arguments(node, self.build.projects_args[kwargs['native']], args[0], kwargs)
 
     @typed_pos_args('add_project_link_arguments', varargs=str)
-    @typed_kwargs('add_global_arguments', _NATIVE_KW, _LANGUAGE_KW)
+    @typed_kwargs('add_global_arguments', NATIVE_KW, LANGUAGE_KW)
     def func_add_project_link_arguments(self, node: mparser.FunctionNode, args: T.Tuple[T.List[str]], kwargs: 'kwargs.FuncAddProjectArgs') -> None:
         self._add_project_arguments(node, self.build.projects_link_args[kwargs['native']], args[0], kwargs)
 
@@ -2511,6 +2437,9 @@ Try setting b_lundef to false instead.'''.format(self.coredata.options[OptionKey
 
     @T.overload
     def source_strings_to_files(self, sources: T.List['mesonlib.FileOrString']) -> T.List['mesonlib.File']: ...
+
+    @T.overload
+    def source_strings_to_files(self, sources: T.List['SourceInputs']) -> T.List['SourceOutputs']: ...
 
     def source_strings_to_files(self, sources: T.List['SourceInputs']) -> T.List['SourceOutputs']:
         """Lower inputs to a list of Targets and Files, replacing any strings.
@@ -2727,6 +2656,16 @@ This will become a hard error in the future.''', location=self.current_node)
     def func_is_variable(self, node: mparser.BaseNode, args: T.Tuple[str], kwargs: 'TYPE_kwargs') -> bool:
         return args[0] in self.variables
 
+    @FeatureNew('unset_variable', '0.60.0')
+    @typed_pos_args('unset_variable', str)
+    @noKwargs
+    def func_unset_variable(self, node: mparser.BaseNode, args: T.Tuple[str], kwargs: 'TYPE_kwargs') -> None:
+        varname = args[0]
+        try:
+            del self.variables[varname]
+        except KeyError:
+            raise InterpreterException(f'Tried to unset unknown variable "{varname}".')
+
     @staticmethod
     def machine_from_native_kwarg(kwargs: T.Dict[str, T.Any]) -> MachineChoice:
         native = kwargs.get('native', False)
@@ -2759,4 +2698,4 @@ This will become a hard error in the future.''', location=self.current_node)
             raise InterpreterException('stop cannot be less than start')
         if step < 1:
             raise InterpreterException('step must be >=1')
-        return RangeHolder(start, stop, step)
+        return RangeHolder(start, stop, step, subproject=self.subproject)

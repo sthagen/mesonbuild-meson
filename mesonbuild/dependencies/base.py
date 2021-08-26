@@ -22,7 +22,7 @@ from enum import Enum
 
 from .. import mlog
 from ..compilers import clib_langs
-from ..mesonlib import MachineChoice, MesonException, HoldableObject
+from ..mesonlib import LibType, MachineChoice, MesonException, HoldableObject
 from ..mesonlib import version_compare_many
 from ..interpreterbase import FeatureDeprecated
 
@@ -89,7 +89,6 @@ class Dependency(HoldableObject):
         # If None, self.link_args will be used
         self.raw_link_args: T.Optional[T.List[str]] = None
         self.sources: T.List['FileOrString'] = []
-        self.methods = process_method_kw(self.get_methods(), kwargs)
         self.include_type = self._process_include_type_kw(kwargs)
         self.ext_deps: T.List[Dependency] = []
 
@@ -147,10 +146,6 @@ class Dependency(HoldableObject):
         """Source files that need to be added to the target.
         As an example, gtest-all.cc when using GTest."""
         return self.sources
-
-    @staticmethod
-    def get_methods() -> T.List[DependencyMethods]:
-        return [DependencyMethods.AUTO]
 
     def get_name(self) -> str:
         return self.name
@@ -324,6 +319,7 @@ class ExternalDependency(Dependency, HasNativeKwarg):
         self.required = kwargs.get('required', True)
         self.silent = kwargs.get('silent', False)
         self.static = kwargs.get('static', False)
+        self.libtype = LibType.STATIC if self.static else LibType.PREFER_SHARED
         if not isinstance(self.static, bool):
             raise DependencyException('Static keyword must be boolean')
         # Is this dependency to be run on the build platform?
@@ -367,6 +363,7 @@ class ExternalDependency(Dependency, HasNativeKwarg):
         if self.version_reqs:
             # an unknown version can never satisfy any requirement
             if not self.version:
+                self.is_found = False
                 found_msg: mlog.TV_LoggableList = []
                 found_msg += ['Dependency', mlog.bold(self.name), 'found:']
                 found_msg += [mlog.red('NO'), 'unknown version, but need:', self.version_reqs]
@@ -547,10 +544,6 @@ class SystemDependency(ExternalDependency):
         super().__init__(DependencyTypeName('system'), env, kwargs, language=language)
         self.name = name
 
-    @staticmethod
-    def get_methods() -> T.List[DependencyMethods]:
-        return [DependencyMethods.SYSTEM]
-
     def log_tried(self) -> str:
         return 'system'
 
@@ -563,10 +556,6 @@ class BuiltinDependency(ExternalDependency):
                  language: T.Optional[str] = None) -> None:
         super().__init__(DependencyTypeName('builtin'), env, kwargs, language=language)
         self.name = name
-
-    @staticmethod
-    def get_methods() -> T.List[DependencyMethods]:
-        return [DependencyMethods.BUILTIN]
 
     def log_tried(self) -> str:
         return 'builtin'

@@ -45,7 +45,7 @@ from .disabler import Disabler, is_disabled
 from .helpers import check_stringlist, default_resolve_key, flatten, resolve_second_level_holders
 from ._unholder import _unholder
 
-import os, copy, re
+import os, copy, re, pathlib
 import typing as T
 
 if T.TYPE_CHECKING:
@@ -123,7 +123,22 @@ class InterpreterBase:
             raise InvalidCode('No statements in code.')
         first = self.ast.lines[0]
         if not isinstance(first, mparser.FunctionNode) or first.func_name != 'project':
-            raise InvalidCode('First statement must be a call to project')
+            p = pathlib.Path(self.source_root).resolve()
+            found = p
+            for parent in p.parents:
+                if (parent / 'meson.build').is_file():
+                    with open(parent / 'meson.build', encoding='utf-8') as f:
+                        if f.readline().startswith('project('):
+                            found = parent
+                            break
+                else:
+                    break
+
+            error = 'first statement must be a call to project()'
+            if found != p:
+                raise InvalidCode(f'Not the project root: {error}\n\nDid you mean to run meson from the directory: "{found}"?')
+            else:
+                raise InvalidCode(f'Invalid source tree: {error}')
 
     def run(self) -> None:
         # Evaluate everything after the first line, which is project() because
@@ -542,7 +557,7 @@ The result of this is undefined and will become a hard error in a future Meson r
         func_name = node.func_name
         (h_posargs, h_kwargs) = self.reduce_arguments(node.args)
         (posargs, kwargs) = self._unholder_args(h_posargs, h_kwargs)
-        if is_disabled(posargs, kwargs) and func_name not in {'get_variable', 'set_variable', 'is_disabler'}:
+        if is_disabled(posargs, kwargs) and func_name not in {'get_variable', 'set_variable', 'unset_variable', 'is_disabler'}:
             return Disabler()
         if func_name in self.funcs:
             func = self.funcs[func_name]
@@ -783,7 +798,7 @@ The result of this is undefined and will become a hard error in a future Meson r
                           posargs: T.List[TYPE_var],
                           kwargs: TYPE_kwargs) -> T.Union[TYPE_var, InterpreterObject]:
         if method_name == 'contains':
-            def check_contains(el: list) -> bool:
+            def check_contains(el: T.List[TYPE_var]) -> bool:
                 if len(posargs) != 1:
                     raise InterpreterException('Contains method takes exactly one argument.')
                 item = posargs[0]
@@ -795,7 +810,7 @@ The result of this is undefined and will become a hard error in a future Meson r
                     if element == item:
                         return True
                 return False
-            return check_contains(obj)
+            return check_contains([_unholder(x) for x in obj])
         elif method_name == 'length':
             return len(obj)
         elif method_name == 'get':

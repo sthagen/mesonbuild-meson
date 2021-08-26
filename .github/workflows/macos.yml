@@ -5,12 +5,14 @@ on:
     paths:
       - "mesonbuild/**"
       - "test cases/**"
+      - "unittests/**"
       - ".github/workflows/macos.yml"
       - "run_unittests.py"
   pull_request:
     paths:
       - "mesonbuild/**"
       - "test cases/**"
+      - "unittests/**"
       - ".github/workflows/macos.yml"
       - "run_unittests.py"
 
@@ -43,13 +45,23 @@ jobs:
   project-tests-appleclang:
     runs-on: macos-latest
     strategy:
+      fail-fast: false
       matrix:
-        unity: ["on", "off"]
+        include:
+        - NAME: macos-clang
+          unity: off
+        - NAME: macos-clang-unity
+          unity: on
+
+    name: ${{ matrix.NAME }}
+    env:
+      MESON_CI_JOBNAME: ${{ matrix.NAME }}
+
     steps:
     - uses: actions/checkout@v2
     # use python3 from homebrew because it is a valid framework, unlike the actions one:
     # https://github.com/actions/setup-python/issues/58
-    - run: brew install pkg-config ninja llvm qt@5 boost ldc hdf5 openmpi lapack scalapack sdl2 python3
+    - run: brew install pkg-config ninja llvm qt@5 boost ldc hdf5 openmpi lapack scalapack sdl2 python3 boost-python3
     - run: |
         python3 -m pip install --upgrade setuptools
         python3 -m pip install --upgrade pip

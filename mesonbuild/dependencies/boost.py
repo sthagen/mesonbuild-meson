@@ -382,7 +382,7 @@ class BoostDependency(SystemDependency):
         # Finally, look for paths from .pc files and from searching the filesystem
         self.detect_roots()
 
-    def check_and_set_roots(self, roots: T.List[Path]) -> None:
+    def check_and_set_roots(self, roots: T.List[Path], use_system: bool) -> None:
         roots = list(mesonlib.OrderedSet(roots))
         for j in roots:
             #   1. Look for the boost headers (boost/version.hpp)
@@ -394,7 +394,7 @@ class BoostDependency(SystemDependency):
             if not inc_dirs:
                 continue
 
-            lib_dirs = self.detect_lib_dirs(j)
+            lib_dirs = self.detect_lib_dirs(j, use_system)
             self.is_found = self.run_check(inc_dirs, lib_dirs)
             if self.is_found:
                 self.boost_root = j
@@ -436,7 +436,7 @@ class BoostDependency(SystemDependency):
         if paths and any([not x.is_absolute() for x in paths]):
             raise DependencyException('boost_root path given in machine file must be absolute')
 
-        self.check_and_set_roots(paths)
+        self.check_and_set_roots(paths, use_system=False)
 
     def run_check(self, inc_dirs: T.List[BoostIncludeDir], lib_dirs: T.List[Path]) -> bool:
         mlog.debug('  - potential library dirs: {}'.format([x.as_posix() for x in lib_dirs]))
@@ -532,17 +532,19 @@ class BoostDependency(SystemDependency):
         candidates = [x for x in candidates if x.exists()]
         return [self._include_dir_from_version_header(x) for x in candidates]
 
-    def detect_lib_dirs(self, root: Path) -> T.List[Path]:
+    def detect_lib_dirs(self, root: Path, use_system: bool) -> T.List[Path]:
         # First check the system include paths. Only consider those within the
         # given root path
-        system_dirs_t = self.clib_compiler.get_library_dirs(self.env)
-        system_dirs = [Path(x) for x in system_dirs_t]
-        system_dirs = [x.resolve() for x in system_dirs if x.exists()]
-        system_dirs = [x for x in system_dirs if mesonlib.path_is_in_root(x, root)]
-        system_dirs = list(mesonlib.OrderedSet(system_dirs))
 
-        if system_dirs:
-            return system_dirs
+        if use_system:
+            system_dirs_t = self.clib_compiler.get_library_dirs(self.env)
+            system_dirs = [Path(x) for x in system_dirs_t]
+            system_dirs = [x.resolve() for x in system_dirs if x.exists()]
+            system_dirs = [x for x in system_dirs if mesonlib.path_is_in_root(x, root)]
+            system_dirs = list(mesonlib.OrderedSet(system_dirs))
+
+            if system_dirs:
+                return system_dirs
 
         # No system include paths were found --> fall back to manually looking
         # for library dirs in root
@@ -615,14 +617,15 @@ class BoostDependency(SystemDependency):
         return libs
 
     def detect_libraries(self, libdir: Path) -> T.List[BoostLibraryFile]:
-        libs = []  # type: T.List[BoostLibraryFile]
+        libs = set()  # type: T.Set[BoostLibraryFile]
         for i in libdir.iterdir():
-            if not i.is_file() or i.is_symlink():
+            if not i.is_file():
                 continue
             if not any([i.name.startswith(x) for x in ['libboost_', 'boost_']]):
                 continue
 
-            libs += [BoostLibraryFile(i)]
+            libs.add(BoostLibraryFile(i.resolve()))
+
         return [x for x in libs if x.is_boost()]  # Filter out no boost libraries
 
     def detect_split_root(self, inc_dir: Path, lib_dir: Path) -> None:
@@ -679,11 +682,6 @@ class BoostDependency(SystemDependency):
         else:
             tmp = []  # type: T.List[Path]
 
-            # Homebrew
-            brew_boost = Path('/usr/local/Cellar/boost')
-            if brew_boost.is_dir():
-                tmp += [x for x in brew_boost.iterdir()]
-
             # Add some default system paths
             tmp += [Path('/opt/local')]
             tmp += [Path('/usr/local/opt/boost')]
@@ -695,7 +693,7 @@ class BoostDependency(SystemDependency):
             tmp = [x.resolve() for x in tmp]
             roots += tmp
 
-        self.check_and_set_roots(roots)
+        self.check_and_set_roots(roots, use_system=True)
 
     def log_details(self) -> str:
         res = ''

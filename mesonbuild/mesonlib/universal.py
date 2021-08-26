@@ -35,8 +35,7 @@ if T.TYPE_CHECKING:
     from .._typing import ImmutableListProtocol
     from ..build import ConfigurationData
     from ..coredata import KeyedOptionDictType, UserOption
-    from ..compilers.compilers import CompilerType
-    from ..interpreterbase import ObjectHolder
+    from ..compilers.compilers import Compiler
 
 FileOrString = T.Union['File', str]
 
@@ -453,7 +452,7 @@ class File(HoldableObject):
         return os.path.join(self.subdir, self.fname)
 
 
-def get_compiler_for_source(compilers: T.Iterable['CompilerType'], src: str) -> 'CompilerType':
+def get_compiler_for_source(compilers: T.Iterable['Compiler'], src: 'FileOrString') -> 'Compiler':
     """Given a set of compilers and a source, find the compiler for that source type."""
     for comp in compilers:
         if comp.can_compile(src):
@@ -461,8 +460,8 @@ def get_compiler_for_source(compilers: T.Iterable['CompilerType'], src: str) -> 
     raise MesonException(f'No specified compiler can handle file {src!s}')
 
 
-def classify_unity_sources(compilers: T.Iterable['CompilerType'], sources: T.Iterable[str]) -> T.Dict['CompilerType', T.List[str]]:
-    compsrclist = {}  # type: T.Dict[CompilerType, T.List[str]]
+def classify_unity_sources(compilers: T.Iterable['Compiler'], sources: T.Sequence['FileOrString']) -> T.Dict['Compiler', T.List['FileOrString']]:
+    compsrclist: T.Dict['Compiler', T.List['FileOrString']] = {}
     for src in sources:
         comp = get_compiler_for_source(compilers, src)
         if comp not in compsrclist:
@@ -1261,6 +1260,8 @@ def dump_conf_header(ofilename: str, cdata: 'ConfigurationData', output_format: 
     elif output_format == 'nasm':
         prelude = CONF_NASM_PRELUDE
         prefix = '%'
+    else:
+        raise MesonBugException(f'Undefined output_format: "{output_format}"')
 
     ofilename_tmp = ofilename + '~'
     with open(ofilename_tmp, 'w', encoding='utf-8') as ofile:
@@ -1384,7 +1385,7 @@ def partition(pred: T.Callable[[_T], object], iterable: T.Iterable[_T]) -> T.Tup
 def Popen_safe(args: T.List[str], write: T.Optional[str] = None,
                stdout: T.Union[T.TextIO, T.BinaryIO, int] = subprocess.PIPE,
                stderr: T.Union[T.TextIO, T.BinaryIO, int] = subprocess.PIPE,
-               **kwargs: T.Any) -> T.Tuple[subprocess.Popen, str, str]:
+               **kwargs: T.Any) -> T.Tuple['subprocess.Popen[str]', str, str]:
     import locale
     encoding = locale.getpreferredencoding()
     # Redirect stdin to DEVNULL otherwise the command run by us here might mess
@@ -1407,7 +1408,7 @@ def Popen_safe(args: T.List[str], write: T.Optional[str] = None,
 def Popen_safe_legacy(args: T.List[str], write: T.Optional[str] = None,
                       stdout: T.Union[T.TextIO, T.BinaryIO, int] = subprocess.PIPE,
                       stderr: T.Union[T.TextIO, T.BinaryIO, int] = subprocess.PIPE,
-                      **kwargs: T.Any) -> T.Tuple[subprocess.Popen, str, str]:
+                      **kwargs: T.Any) -> T.Tuple['subprocess.Popen[str]', str, str]:
     p = subprocess.Popen(args, universal_newlines=False, close_fds=False,
                          stdout=stdout, stderr=stderr, **kwargs)
     input_ = None  # type: T.Optional[bytes]
@@ -1443,7 +1444,7 @@ def iter_regexin_iter(regexiter: T.Iterable[str], initer: T.Iterable[str]) -> T.
     return None
 
 
-def _substitute_values_check_errors(command: T.List[str], values: T.Dict[str, str]) -> None:
+def _substitute_values_check_errors(command: T.List[str], values: T.Dict[str, T.Union[str, T.List[str]]]) -> None:
     # Error checking
     inregex = ['@INPUT([0-9]+)?@', '@PLAINNAME@', '@BASENAME@']  # type: T.List[str]
     outregex = ['@OUTPUT([0-9]+)?@', '@OUTDIR@']                 # type: T.List[str]
@@ -1484,7 +1485,7 @@ def _substitute_values_check_errors(command: T.List[str], values: T.Dict[str, st
                 raise MesonException(m.format(match2.group(), len(values['@OUTPUT@'])))
 
 
-def substitute_values(command: T.List[str], values: T.Dict[str, str]) -> T.List[str]:
+def substitute_values(command: T.List[str], values: T.Dict[str, T.Union[str, T.List[str]]]) -> T.List[str]:
     '''
     Substitute the template strings in the @values dict into the list of
     strings @command and return a new list. For a full list of the templates,
@@ -1493,14 +1494,29 @@ def substitute_values(command: T.List[str], values: T.Dict[str, str]) -> T.List[
     If multiple inputs/outputs are given in the @values dictionary, we
     substitute @INPUT@ and @OUTPUT@ only if they are the entire string, not
     just a part of it, and in that case we substitute *all* of them.
+
+    The typing of this function is difficult, as only @OUTPUT@ and @INPUT@ can
+    be lists, everything else is a string. However, TypeDict cannot represent
+    this, as you can have optional keys, but not extra keys. We end up just
+    having to us asserts to convince type checkers that this is okay.
+
+    https://github.com/python/mypy/issues/4617
     '''
+
+    def replace(m: T.Match[str]) -> str:
+        v = values[m.group(0)]
+        assert isinstance(v, str), 'for mypy'
+        return v
+
     # Error checking
     _substitute_values_check_errors(command, values)
+
     # Substitution
     outcmd = []  # type: T.List[str]
     rx_keys = [re.escape(key) for key in values if key not in ('@INPUT@', '@OUTPUT@')]
     value_rx = re.compile('|'.join(rx_keys)) if rx_keys else None
     for vv in command:
+        more: T.Optional[str] = None
         if not isinstance(vv, str):
             outcmd.append(vv)
         elif '@INPUT@' in vv:
@@ -1521,15 +1537,22 @@ def substitute_values(command: T.List[str], values: T.Dict[str, str]) -> T.List[
             else:
                 raise MesonException("Command has '@OUTPUT@' as part of a "
                                      "string and more than one output file")
+
         # Append values that are exactly a template string.
         # This is faster than a string replace.
         elif vv in values:
-            outcmd.append(values[vv])
+            o = values[vv]
+            assert isinstance(o, str), 'for mypy'
+            more = o
         # Substitute everything else with replacement
         elif value_rx:
-            outcmd.append(value_rx.sub(lambda m: values[m.group(0)], vv))
+            more = value_rx.sub(replace, vv)
         else:
-            outcmd.append(vv)
+            more = vv
+
+        if more is not None:
+            outcmd.append(more)
+
     return outcmd
 
 

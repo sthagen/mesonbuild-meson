@@ -304,6 +304,9 @@ false otherwise.
   string, the file is not installed.
 - `install_mode` *(since 0.47.0)*: specify the file mode in symbolic format
   and optionally the owner/uid and group/gid for the installed files.
+- `install_tag` *(since 0.60.0)*: A string used by `meson install --tags` command
+  to install only a subset of the files. By default the file has no install
+  tag which means it is not being installed when `--tags` argument is specified.
 - `output`: the output file name. *(since 0.41.0)* may contain
   `@PLAINNAME@` or `@BASENAME@` substitutions. In configuration mode,
   the permissions of the input file (if it is specified) are copied to
@@ -375,9 +378,34 @@ following.
   in any one of these files triggers a recompilation
 - `input`: list of source files. *(since 0.41.0)* the list is flattened.
 - `install`: when true, this target is installed during the install step
-- `install_dir`: directory to install to
+- `install_dir`: If only one install_dir is provided, all outputs are installed there.
+   *Since 0.40.0* Allows you to specify the installation directory for each
+    corresponding output. For example:
+    ```meson
+    custom_target('different-install-dirs',
+      output : ['first.file', 'second.file'],
+      install : true,
+      install_dir : ['somedir', 'otherdir])
+    ```
+    This would install `first.file` to `somedir` and `second.file` to `otherdir`.
+
+    To only install some outputs, pass `false` for the outputs that you
+    don't want installed. For example:
+    ```meson
+    custom_target('only-install-second',
+      output : ['first.file', 'second.file'],
+      install : true,
+      install_dir : [false, 'otherdir])
+    ```
+    This would install `second.file` to `otherdir` and not install `first.file`.
 - `install_mode` *(since 0.47.0)*: the file mode and optionally the
   owner/uid and group/gid
+- `install_tag` *(since 0.60.0)*: A list of strings, one per output, used by
+  `meson install --tags` command to install only a subset of the files.
+  By default all outputs have no install tag which means they are not being
+  installed when `--tags` argument is specified. If only one tag is specified,
+  it is assumed that all outputs have the same tag. `false` can be used for
+  outputs that have no tag or are not installed.
 - `output`: list of output files
 - `env` *(since 0.57.0)*: environment variables to set, such as
   `{'NAME1': 'value1', 'NAME2': 'value2'}` or `['NAME1=value1', 'NAME2=value2']`,
@@ -540,6 +568,8 @@ This function supports the following keyword arguments:
 - `static`: tells the dependency provider to try to get static
   libraries instead of dynamic ones (note that this is not supported
   by all dependency backends)
+  *Since 0.60.0* it also sets `default_library` option accordingly on the fallback
+  subproject if it was not set explicitly in `default_options` keyword argument.
 - `version` *(since 0.37.0)*: specifies the required version, a string containing a
   comparison operator followed by the version string, examples include
   `>1.0.0`, `<=2.3.5` or `3.1.4` for exact matching.
@@ -710,6 +740,9 @@ be passed to [shared and static libraries](#library).
   and optionally the owner/uid and group/gid for the installed files.
 - `install_rpath`: a string to set the target's rpath to after install
   (but *not* before that). On Windows, this argument has no effect.
+- `install_tag` *(since 0.60.0)*: A string used by `meson install --tags` command
+  to install only a subset of the files. By default all build targets have the
+  tag `runtime` except for static libraries that have the `devel` tag.
 - `objects`: list of prebuilt object files (usually for third party
   products you don't have source to) that should be linked in this
   target, **never** use this for object files that you build yourself.
@@ -748,12 +781,6 @@ creating the final list.
 
 The returned object also has methods that are documented in the
 [object methods section](#build-target-object) below.
-
-### find_library()
-
-*(since 0.31.0)* **(deprecated)** Use `find_library()` method of
-[the compiler object](#compiler-object) as obtained from
-`meson.get_compiler(lang)`.
 
 ### find_program()
 
@@ -1084,6 +1111,9 @@ arguments. The following keyword arguments are supported:
   file from `rename` list. Nested paths are allowed and they are
   joined with `install_dir`. Length of `rename` list must be equal to
   the number of sources.
+- `install_tag` *(since 0.60.0)*: A string used by `meson install --tags` command
+  to install only a subset of the files. By default these files have no install
+  tag which means they are not being installed when `--tags` argument is specified.
 
 See [Installing](Installing.md) for more examples.
 
@@ -1182,6 +1212,9 @@ The following keyword arguments are supported:
   the owner/uid and group/gid for the installed files.
 - `strip_directory` *(since 0.45.0)*: install directory contents. `strip_directory=false` by default.
   If `strip_directory=true` only the last component of the source path is used.
+- `install_tag` *(since 0.60.0)*: A string used by `meson install --tags` command
+  to install only a subset of the files. By default these files have no install
+  tag which means they are not being installed when `--tags` argument is specified.
 
 For a given directory `foo`:
 ```text
@@ -1833,6 +1866,17 @@ Defined tests can be run in a backend-agnostic way by calling
 `meson test` inside the build dir, or by using backend-specific
 commands, such as `ninja test` or `msbuild RUN_TESTS.vcxproj`.
 
+### unset_variable()
+
+*(since 0.60.0)*
+
+```meson
+    void unset_variable(varname)
+```
+
+Unsets a variable. Referencing a variable which has been unset is an error until
+it has been set again.
+
 ### vcs_tag()
 
 ``` meson
@@ -1945,6 +1989,9 @@ the following methods.
   can be specified. If `true` the script will not be run if DESTDIR is set during
   installation. This is useful in the case the script updates system wide
   cache that is only needed when copying files into final destination.
+  *(since 0.60.0)* `install_tag` string keyword argument can be specified.
+  By default the script has no install tag which means it is not being run when
+  `meson install --tags` argument is specified.
 
   *(since 0.54.0)* If `meson install` is called with the `--quiet` option, the
   environment variable `MESON_INSTALL_QUIET` will be set.
@@ -2106,6 +2153,9 @@ the following methods.
   `native` keyword arguments. Doing this in a subproject allows the parent
   project to retrieve the dependency without having to know the dependency
   variable name: `dependency(name, fallback : subproject_name)`.
+  *Since 0.60.0* `static` boolean keyword argument can be specified to override
+  static and/or shared dependencies separately. If not specified it is assumed
+  `dep_object` follows `default_library` option value.
 
 - `project_version()`: returns the version string specified in
   `project` function call.
@@ -2814,7 +2864,7 @@ env.prepend('MY_PATH', '0')
 
 ### `external library` object
 
-This object is returned by [`find_library()`](#find_library) and
+This object is returned by [`find_library()`](#compiler-object) and
 contains an external (i.e. not built as part of this project)
 library. This object has the following methods:
 

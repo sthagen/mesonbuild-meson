@@ -34,14 +34,14 @@ import typing as T
 
 if T.TYPE_CHECKING:
     from . import dependencies
-    from .compilers.compilers import Compiler, CompileResult  # noqa: F401
+    from .compilers.compilers import Compiler
     from .environment import Environment
-    from .mesonlib import OptionOverrideProxy
+    from .mesonlib import OptionOverrideProxy, FileOrString
     from .cmake.traceparser import CMakeCacheEntry
 
     OptionDictType = T.Union[T.Dict[str, 'UserOption[T.Any]'], OptionOverrideProxy]
     KeyedOptionDictType = T.Union[T.Dict['OptionKey', 'UserOption[T.Any]'], OptionOverrideProxy]
-    CompilerCheckCacheKey = T.Tuple[T.Tuple[str, ...], str, str, T.Tuple[str, ...], str]
+    CompilerCheckCacheKey = T.Tuple[T.Tuple[str, ...], str, 'FileOrString', T.Tuple[str, ...], str]
 
 version = '0.59.99'
 backendlist = ['ninja', 'vs', 'vs2010', 'vs2012', 'vs2013', 'vs2015', 'vs2017', 'vs2019', 'xcode']
@@ -758,7 +758,7 @@ class CoreData:
                 except KeyError:
                     continue
 
-    def set_options(self, options: T.Dict[OptionKey, T.Any], subproject: str = '', warn_unknown: bool = True) -> None:
+    def set_options(self, options: T.Dict[OptionKey, T.Any], subproject: str = '') -> None:
         if not self.is_cross_build():
             options = {k: v for k, v in options.items() if k.machine is not MachineChoice.BUILD}
         # Set prefix first because it's needed to sanitize other options
@@ -774,16 +774,15 @@ class CoreData:
         for k, v in options.items():
             if k == pfk:
                 continue
-            elif k not in self.options:
-                unknown_options.append(k)
-            else:
+            elif k in self.options:
                 self.set_option(k, v)
-        if unknown_options and warn_unknown:
+            elif k.machine != MachineChoice.BUILD:
+                unknown_options.append(k)
+        if unknown_options:
             unknown_options_str = ', '.join(sorted(str(s) for s in unknown_options))
             sub = f'In subproject {subproject}: ' if subproject else ''
-            mlog.warning(f'{sub}Unknown options: "{unknown_options_str}"')
-            mlog.log('The value of new options can be set with:')
-            mlog.log(mlog.bold('meson setup <builddir> --reconfigure -Dnew_option=new_value ...'))
+            raise MesonException(f'{sub}Unknown options: "{unknown_options_str}"')
+
         if not self.is_cross_build():
             self.copy_build_options_from_regular_ones()
 
@@ -1225,4 +1224,3 @@ FORBIDDEN_TARGET_NAMES = {'clean': None,
                           'dist': None,
                           'distcheck': None,
                           }
-

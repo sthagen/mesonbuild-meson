@@ -83,6 +83,21 @@ In a simplified list form the split would look like the following:
   - changes breaking backwards compatibility
   - support for new languages
 
+## A green CI run is mandatory for merging
+
+No merge request may be merged until it has a fully green CI run. It
+does not matter why CI fails, it is a hard blocker. Even if the MR
+could possibly not have anything to do with the failure and clearly
+should be permitted, it may not be merged. Only MRs that fix the CI
+issue are allowed to land in trunk.
+
+There is one, and only one, exception to this. At the time of writing
+the Apple CI is unreliable and sometimes fails with clock skew errors.
+
+If a merge causes CI failure any developer can revert it out of
+master. It is then the responsibility of the original submitter to
+resubmit a fixed version.
+
 ## Strategy for merging pull requests to trunk
 
 Meson's merge strategy should fulfill the following guidelines:
@@ -249,15 +264,18 @@ current platform. The following values are currently supported:
 | type          | Description                                                                                             |
 | ------------- | ------------------------------------------------------------------------------------------------------- |
 | `file`        | No postprocessing, just use the provided path                                                           |
+| `python_file` | Use the provided path while replacing the python directory.                                             |
 | `dir`         | To include all files inside the directory (for generated docs, etc). The path must be a valid directory |
 | `exe`         | For executables. On Windows the `.exe` suffix is added to the path in `file`                            |
 | `shared_lib`  | For shared libraries, always written as `name`. The appropriate suffix and prefix are added by platform |
+| `python_lib`  | For python libraries, while replacing the python directory. The appropriate suffix is added by platform |
 | `pdb`         | For Windows PDB files. PDB entries are ignored on non Windows platforms                                 |
 | `implib`      | For Windows import libraries. These entries are ignored on non Windows platforms                        |
+| `py_implib`   | For Windows import libraries. These entries are ignored on non Windows platforms                        |
 | `implibempty` | Like `implib`, but no symbols are exported in the library                                               |
 | `expr`        | `file` is an expression. This type should be avoided and removed if possible                            |
 
-Except for the `file` and `expr` types, all paths should be provided *without* a suffix.
+Except for the `file`, `python_file` and `expr` types, all paths should be provided *without* a suffix.
 
 | Argument   | Applies to                 | Description                                                                   |
 | -----------|----------------------------|-------------------------------------------------------------------------------|
@@ -268,6 +286,11 @@ The `shared_lib` and `pdb` types takes an optional additional
 parameter, `version`, this is us a string in `X.Y.Z` format that will
 be applied to the library. Each version to be tested must have a
 single version. The harness will apply this correctly per platform:
+
+The `python_file`, `python_lib`, and `py_implib` types have basic support for configuring the string with the `@<VAR>@` syntax:
+
+- `@PYTHON_PLATLIB@`: python `get_install_dir` directory relative to prefix
+- `@PYTHON_PURELIB@`: python `get_install_dir(pure: true)` directory relative to prefix
 
 `pdb` takes an optional `language` argument. This determines which
 compiler/linker should generate the pdb file. Because it's possible to

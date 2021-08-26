@@ -127,6 +127,7 @@ class AstInterpreter(InterpreterBase):
                            'subdir': self.func_subdir,
                            'set_variable': self.func_do_nothing,
                            'get_variable': self.func_do_nothing,
+                           'unset_variable': self.func_do_nothing,
                            'is_disabler': self.func_do_nothing,
                            'is_variable': self.func_do_nothing,
                            'disabler': self.func_do_nothing,
@@ -196,6 +197,10 @@ class AstInterpreter(InterpreterBase):
 
     def method_call(self, node: BaseNode) -> bool:
         return True
+
+    def evaluate_fstring(self, node: mparser.FormatStringNode) -> str:
+        assert(isinstance(node, mparser.FormatStringNode))
+        return node.value
 
     def evaluate_arithmeticstatement(self, cur: ArithmeticNode) -> int:
         self.evaluate_statement(cur.left)

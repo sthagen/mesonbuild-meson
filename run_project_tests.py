@@ -52,6 +52,7 @@ from mesonbuild.mesonlib import MachineChoice, Popen_safe, TemporaryDirectoryWin
 from mesonbuild.mlog import blue, bold, cyan, green, red, yellow, normal_green
 from mesonbuild.coredata import backendlist, version as meson_version
 from mesonbuild.mesonmain import setup_vsenv
+from mesonbuild.modules.python import PythonExternalProgram
 from run_tests import get_fake_options, run_configure, get_meson_script
 from run_tests import get_backend_commands, get_backend_args_for_dir, Backend
 from run_tests import ensure_backend_detects_changes
@@ -62,6 +63,7 @@ if T.TYPE_CHECKING:
     from mesonbuild.environment import Environment
     from mesonbuild._typing import Protocol
     from concurrent.futures import Future
+    from mesonbuild.modules.python import PythonIntrospectionDict
 
     class CompilerArgumentType(Protocol):
         cross_file: str
@@ -122,6 +124,9 @@ class TestResult(BaseException):
     def fail(self, msg: str) -> None:
         self.msg = msg
 
+python = PythonExternalProgram(sys.executable)
+python.sanity()
+
 class InstalledFile:
     def __init__(self, raw: T.Dict[str, str]):
         self.path = raw['file']
@@ -143,6 +148,8 @@ class InstalledFile:
                 (env.machines.host.is_windows() and compiler in {'pgi', 'dmd', 'ldc'})):
             canonical_compiler = 'msvc'
 
+        python_suffix = python.info['suffix']
+
         has_pdb = False
         if self.language in {'c', 'cpp'}:
             has_pdb = canonical_compiler == 'msvc'
@@ -161,6 +168,15 @@ class InstalledFile:
             return None
 
         # Handle the different types
+        if self.typ in {'py_implib', 'python_lib', 'python_file'}:
+            val = p.as_posix()
+            val = val.replace('@PYTHON_PLATLIB@', python.platlib)
+            val = val.replace('@PYTHON_PURELIB@', python.purelib)
+            p = Path(val)
+            if self.typ == 'python_file':
+                return p
+            if self.typ == 'python_lib':
+                return p.with_suffix(python_suffix)
         if self.typ in ['file', 'dir']:
             return p
         elif self.typ == 'shared_lib':
@@ -195,13 +211,15 @@ class InstalledFile:
             if self.version:
                 p = p.with_name('{}-{}'.format(p.name, self.version[0]))
             return p.with_suffix('.pdb') if has_pdb else None
-        elif self.typ == 'implib' or self.typ == 'implibempty':
+        elif self.typ in {'implib', 'implibempty', 'py_implib'}:
             if env.machines.host.is_windows() and canonical_compiler == 'msvc':
                 # only MSVC doesn't generate empty implibs
                 if self.typ == 'implibempty' and compiler == 'msvc':
                     return None
                 return p.parent / (re.sub(r'^lib', '', p.name) + '.lib')
             elif env.machines.host.is_windows() or env.machines.host.is_cygwin():
+                if self.typ == 'py_implib':
+                    p = p.with_suffix(python_suffix)
                 return p.with_suffix('.dll.a')
             else:
                 return None
@@ -962,10 +980,7 @@ def skip_dont_care(t: TestDef) -> bool:
     if not t.category.endswith('frameworks'):
         return True
 
-    # For the moment, all skips in jobs which don't set MESON_CI_JOBNAME are
-    # treated as expected.  In the future, we should make it mandatory to set
-    # MESON_CI_JOBNAME for all CI jobs.
-    if ci_jobname is None:
+    if mesonlib.is_osx() and '6 gettext' in str(t.path):
         return True
 
     return False
@@ -1014,8 +1029,9 @@ def should_skip_rust(backend: Backend) -> bool:
         return True
     if backend is not Backend.ninja:
         return True
-    if mesonlib.is_windows() and has_broken_rustc():
-        return True
+    if mesonlib.is_windows():
+        if has_broken_rustc():
+            return True
     return False
 
 def detect_tests_to_run(only: T.Dict[str, T.List[str]], use_tmp: bool) -> T.List[T.Tuple[str, T.List[TestDef], bool]]:
@@ -1490,6 +1506,9 @@ def clear_transitive_files() -> None:
             mesonlib.windows_proof_rm(str(d))
 
 if __name__ == '__main__':
+    if under_ci and not ci_jobname:
+        raise SystemExit('Running under CI but MESON_CI_JOBNAME is not set')
+
     setup_vsenv()
 
     try:
@@ -1499,13 +1518,6 @@ if __name__ == '__main__':
         print('Could not determine number of CPUs due to the following reason:' + str(e))
         print('Defaulting to using only two processes')
         num_workers = 2
-    # Due to Ninja deficiency, almost 50% of build time
-    # is spent waiting. Do something useful instead.
-    #
-    # Remove this once the following issue has been resolved:
-    # https://github.com/mesonbuild/meson/pull/2082
-    if not mesonlib.is_windows():  # twice as fast on Windows by *not* multiplying by 2.
-        num_workers *= 2
 
     parser = argparse.ArgumentParser(description="Run the test suite of Meson.")
     parser.add_argument('extra_args', nargs='*',

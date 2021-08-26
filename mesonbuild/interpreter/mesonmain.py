@@ -7,22 +7,27 @@ from .. import mlog
 
 from ..mesonlib import MachineChoice, OptionKey
 from ..programs import OverrideProgram, ExternalProgram
-from ..interpreterbase import (MesonInterpreterObject, FeatureNewKwargs, FeatureNew, FeatureDeprecated,
+from ..interpreterbase import (MesonInterpreterObject, FeatureNew, FeatureDeprecated,
                                typed_pos_args, permittedKwargs, noArgsFlattening, noPosargs, noKwargs,
-                               MesonVersionString, InterpreterException)
+                               typed_kwargs, KwargInfo, MesonVersionString, InterpreterException)
 
 from .interpreterobjects import (ExecutableHolder, ExternalProgramHolder,
                                  CustomTargetHolder, CustomTargetIndexHolder,
                                  EnvironmentVariablesObject)
+from .type_checking import NATIVE_KW
 
 import typing as T
 
 if T.TYPE_CHECKING:
     from .interpreter import Interpreter
+    from typing_extensions import TypedDict
+    class FuncOverrideDependency(TypedDict):
+        native: mesonlib.MachineChoice
+        static: T.Optional[bool]
 
 class MesonMain(MesonInterpreterObject):
     def __init__(self, build: 'build.Build', interpreter: 'Interpreter'):
-        super().__init__()
+        super().__init__(subproject=interpreter.subproject)
         self.build = build
         self.interpreter = interpreter
         self.methods.update({'get_compiler': self.get_compiler_method,
@@ -107,20 +112,19 @@ class MesonMain(MesonInterpreterObject):
                 '0.55.0', self.interpreter.subproject)
         return script_args
 
-    @FeatureNewKwargs('add_install_script', '0.57.0', ['skip_if_destdir'])
-    @permittedKwargs({'skip_if_destdir'})
+    @typed_kwargs('add_install_script',
+                  KwargInfo('skip_if_destdir', bool, default=False, since='0.57.0'),
+                  KwargInfo('install_tag', str, since='0.60.0'))
     def add_install_script_method(self, args: 'T.Tuple[T.Union[str, mesonlib.File, ExecutableHolder], T.Union[str, mesonlib.File, CustomTargetHolder, CustomTargetIndexHolder], ...]', kwargs):
         if len(args) < 1:
             raise InterpreterException('add_install_script takes one or more arguments')
         if isinstance(args[0], mesonlib.File):
             FeatureNew.single_use('Passing file object to script parameter of add_install_script',
                                   '0.57.0', self.interpreter.subproject)
-        skip_if_destdir = kwargs.get('skip_if_destdir', False)
-        if not isinstance(skip_if_destdir, bool):
-            raise InterpreterException('skip_if_destdir keyword argument must be boolean')
         script_args = self._process_script_args('add_install_script', args[1:], allow_built=True)
         script = self._find_source_script(args[0], script_args)
-        script.skip_if_destdir = skip_if_destdir
+        script.skip_if_destdir = kwargs['skip_if_destdir']
+        script.tag = kwargs['install_tag']
         self.build.install_scripts.append(script)
 
     @permittedKwargs(set())
@@ -295,21 +299,54 @@ class MesonMain(MesonInterpreterObject):
             raise InterpreterException('Second argument must be an external program or executable.')
         self.interpreter.add_find_program_override(name, exe)
 
+    @typed_kwargs('meson.override_dependency', NATIVE_KW,
+                  KwargInfo('static', bool, since='0.60.0'))
+    @typed_pos_args('meson.override_dependency', str, dependencies.Dependency)
     @FeatureNew('meson.override_dependency', '0.54.0')
-    @permittedKwargs({'native'})
-    def override_dependency_method(self, args, kwargs):
-        if len(args) != 2:
-            raise InterpreterException('Override needs two arguments')
-        name = args[0]
-        dep = args[1]
-        if not isinstance(name, str) or not name:
+    def override_dependency_method(self, args: T.Tuple[str, dependencies.Dependency], kwargs: 'FuncOverrideDependency') -> None:
+        name, dep = args
+        if not name:
             raise InterpreterException('First argument must be a string and cannot be empty')
-        if not isinstance(dep, dependencies.Dependency):
-            raise InterpreterException('Second argument must be a dependency object')
+
+        optkey = OptionKey('default_library', subproject=self.interpreter.subproject)
+        default_library = self.interpreter.coredata.get_option(optkey)
+        assert isinstance(default_library, str), 'for mypy'
+        static = kwargs['static']
+        if static is None:
+            # We don't know if dep represents a static or shared library, could
+            # be a mix of both. We assume it is following default_library
+            # value.
+            self._override_dependency_impl(name, dep, kwargs, static=None)
+            if default_library == 'static':
+                self._override_dependency_impl(name, dep, kwargs, static=True)
+            elif default_library == 'shared':
+                self._override_dependency_impl(name, dep, kwargs, static=False)
+            else:
+                self._override_dependency_impl(name, dep, kwargs, static=True)
+                self._override_dependency_impl(name, dep, kwargs, static=False)
+        else:
+            # dependency('foo') without specifying static kwarg should find this
+            # override regardless of the static value here. But do not raise error
+            # if it has already been overridden, which would happend when overriding
+            # static and shared separately:
+            # meson.override_dependency('foo', shared_dep, static: false)
+            # meson.override_dependency('foo', static_dep, static: true)
+            # In that case dependency('foo') would return the first override.
+            self._override_dependency_impl(name, dep, kwargs, static=None, permissive=True)
+            self._override_dependency_impl(name, dep, kwargs, static=static)
+
+    def _override_dependency_impl(self, name: str, dep: dependencies.Dependency, kwargs: 'FuncOverrideDependency', static: T.Optional[bool], permissive: bool = False) -> None:
+        kwargs = kwargs.copy()
+        if static is None:
+            del kwargs['static']
+        else:
+            kwargs['static'] = static
         identifier = dependencies.get_dep_identifier(name, kwargs)
-        for_machine = self.interpreter.machine_from_native_kwarg(kwargs)
+        for_machine = kwargs['native']
         override = self.build.dependency_overrides[for_machine].get(identifier)
         if override:
+            if permissive:
+                return
             m = 'Tried to override dependency {!r} which has already been resolved or overridden at {}'
             location = mlog.get_error_location_string(override.node.filename, override.node.lineno)
             raise InterpreterException(m.format(name, location))

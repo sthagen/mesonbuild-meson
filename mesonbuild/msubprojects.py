@@ -70,7 +70,11 @@ class Runner:
 
     def run(self):
         self.logger.start(self.wrap.name)
-        result = self.run_method()
+        try:
+            result = self.run_method()
+        except MesonException as e:
+            self.log(mlog.red('Error:'), str(e))
+            result = False
         self.logger.done(self.wrap.name, self.log_queue)
         return result
 
@@ -426,7 +430,10 @@ class Runner:
             except FileNotFoundError:
                 pass
 
-        subproject_source_dir = Path(self.repo_dir).resolve()
+        # NOTE: Do not use .resolve() here; the subproject directory may be a symlink
+        subproject_source_dir = Path(self.repo_dir)
+        # Resolve just the parent, just to print out the full path
+        subproject_source_dir = subproject_source_dir.parent.resolve() / subproject_source_dir.name
 
         # Don't follow symlink. This is covered by the next if statement, but why
         # not be doubly sure.

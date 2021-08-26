@@ -323,7 +323,7 @@ class KwargInfo(T.Generic[_T]):
                  deprecated: T.Optional[str] = None,
                  deprecated_values: T.Optional[T.Dict[str, str]] = None,
                  validator: T.Optional[T.Callable[[_T], T.Optional[str]]] = None,
-                 convertor: T.Optional[T.Callable[[_T], TYPE_var]] = None,
+                 convertor: T.Optional[T.Callable[[_T], object]] = None,
                  not_set_warning: T.Optional[str] = None):
         self.name = name
         self.types = types
@@ -339,6 +339,7 @@ class KwargInfo(T.Generic[_T]):
         self.not_set_warning = not_set_warning
 
     def evolve(self, *,
+               name: T.Union[str, _NULL_T] = _NULL,
                required: T.Union[bool, _NULL_T] = _NULL,
                listify: T.Union[bool, _NULL_T] = _NULL,
                default: T.Union[_T, None, _NULL_T] = _NULL,
@@ -360,7 +361,7 @@ class KwargInfo(T.Generic[_T]):
         being replaced by either the copy in self, or the provided new version.
         """
         return type(self)(
-            self.name,
+            name if not isinstance(name, _NULL_T) else self.name,
             self.types,
             listify=listify if not isinstance(listify, _NULL_T) else self.listify,
             required=required if not isinstance(required, _NULL_T) else self.required,
@@ -394,7 +395,9 @@ def typed_kwargs(name: str, *types: KwargInfo) -> T.Callable[..., T.Any]:
 
         @wraps(f)
         def wrapper(*wrapped_args: T.Any, **wrapped_kwargs: T.Any) -> T.Any:
-            kwargs, subproject = get_callee_args(wrapped_args, want_subproject=True)[3:5]
+            _kwargs, subproject = get_callee_args(wrapped_args, want_subproject=True)[3:5]
+            # Cast here, as the convertor function may place something other than a TYPE_var in the kwargs
+            kwargs = T.cast(T.Dict[str, object], _kwargs)
 
             all_names = {t.name for t in types}
             unknowns = set(kwargs).difference(all_names)

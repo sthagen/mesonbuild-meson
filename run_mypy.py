@@ -22,9 +22,12 @@ modules = [
 
     # specific files
     'mesonbuild/arglist.py',
+    'mesonbuild/backend/backends.py',
     # 'mesonbuild/coredata.py',
     'mesonbuild/envconfig.py',
+    'mesonbuild/interpreter/compiler.py',
     'mesonbuild/interpreter/interpreterobjects.py',
+    'mesonbuild/interpreter/type_checking.py',
     'mesonbuild/mcompile.py',
     'mesonbuild/mdevenv.py',
     'mesonbuild/mesonlib/platform.py',
@@ -34,6 +37,7 @@ modules = [
     'mesonbuild/mintro.py',
     'mesonbuild/mlog.py',
     'mesonbuild/modules/fs.py',
+    'mesonbuild/modules/java.py',
     'mesonbuild/modules/unstable_rust.py',
     'mesonbuild/modules/qt.py',
     'mesonbuild/mparser.py',

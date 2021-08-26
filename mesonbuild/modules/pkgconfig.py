@@ -81,11 +81,6 @@ class DependenciesHelper:
             if hasattr(obj, 'generated_pc'):
                 self._check_generated_pc_deprecation(obj)
                 processed_reqs.append(obj.generated_pc)
-            elif hasattr(obj, 'pcdep'):
-                pcdeps = mesonlib.listify(obj.pcdep)
-                for d in pcdeps:
-                    processed_reqs.append(d.name)
-                    self.add_version_reqs(d.name, obj.version_reqs)
             elif isinstance(obj, dependencies.PkgConfigDependency):
                 if obj.found():
                     processed_reqs.append(obj.name)
@@ -114,12 +109,7 @@ class DependenciesHelper:
         processed_reqs = []
         processed_cflags = []
         for obj in libs:
-            if hasattr(obj, 'pcdep'):
-                pcdeps = mesonlib.listify(obj.pcdep)
-                for d in pcdeps:
-                    processed_reqs.append(d.name)
-                    self.add_version_reqs(d.name, obj.version_reqs)
-            elif hasattr(obj, 'generated_pc'):
+            if hasattr(obj, 'generated_pc'):
                 self._check_generated_pc_deprecation(obj)
                 processed_reqs.append(obj.generated_pc)
             elif isinstance(obj, dependencies.PkgConfigDependency):
@@ -558,7 +548,7 @@ class PkgConfigModule(ExtensionModule):
         self._generate_pkgconfig_file(state, deps, subdirs, name, description, url,
                                      version, pcfile, conflicts, variables,
                                      unescaped_variables, False, dataonly)
-        res = build.Data([mesonlib.File(True, state.environment.get_scratch_dir(), pcfile)], pkgroot, None, state.subproject)
+        res = build.Data([mesonlib.File(True, state.environment.get_scratch_dir(), pcfile)], pkgroot, None, state.subproject, install_tag='devel')
         variables = self.interpreter.extract_variables(kwargs, argname='uninstalled_variables', dict_new=True)
         variables = parse_variable_list(variables)
         unescaped_variables = self.interpreter.extract_variables(kwargs, argname='unescaped_uninstalled_variables')

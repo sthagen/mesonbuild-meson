@@ -25,7 +25,7 @@ import sys
 import typing as T
 
 from . import environment
-from .backend.backends import InstallData
+from .backend.backends import InstallData, InstallDataBase, TargetInstallData, ExecutableSerialisation
 from .coredata import major_versions_differ, MesonVersionMismatchException
 from .coredata import version as coredata_version
 from .mesonlib import Popen_safe, RealPathAction, is_windows
@@ -56,6 +56,7 @@ if T.TYPE_CHECKING:
         destdir: str
         dry_run: bool
         skip_subprojects: str
+        tags: str
 
 
 symlink_warning = '''Warning: trying to copy a symlink that points to a file. This will copy the file,
@@ -81,6 +82,8 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
                         help='Doesn\'t actually install, but print logs. (Since 0.57.0)')
     parser.add_argument('--skip-subprojects', nargs='?', const='*', default='',
                         help='Do not install files from given subprojects. (Since 0.58.0)')
+    parser.add_argument('--tags', default=None,
+                        help='Install only targets having one of the given tags. (Since 0.60.0)')
 
 class DirMaker:
     def __init__(self, lf: T.TextIO, makedirs: T.Callable[..., None]):
@@ -237,14 +240,25 @@ def restore_selinux_contexts() -> None:
         # If the list of files is empty, do not try to call restorecon.
         return
 
-    with subprocess.Popen(['restorecon', '-F', '-f-', '-0'],
-                          stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE) as proc:
-        out, err = proc.communicate(input=b'\0'.join(os.fsencode(f) for f in selinux_updates) + b'\0')
-        if proc.returncode != 0 and not os.environ.get('DESTDIR'):
-            print('Failed to restore SELinux context of installed files...',
-                  'Standard output:', out.decode(),
-                  'Standard error:', err.decode(), sep='\n')
+    proc, out, err = Popen_safe(['restorecon', '-F', '-f-', '-0'], ('\0'.join(f for f in selinux_updates) + '\0'))
+    if proc.returncode != 0 :
+        print('Failed to restore SELinux context of installed files...',
+              'Standard output:', out,
+              'Standard error:', err, sep='\n')
 
+def apply_ldconfig() -> None:
+    '''
+    Apply ldconfig to update the ld.so.cache.
+    '''
+    if not shutil.which('ldconfig'):
+        # If we don't have ldconfig, failure is ignored quietly.
+        return
+
+    proc, out, err = Popen_safe(['ldconfig'])
+    if proc.returncode != 0:
+        print('Failed to apply ldconfig ...',
+              'Standard output:', out,
+              'Standard error:', err, sep='\n')
 
 def get_destdir_path(destdir: str, fullprefix: str, path: str) -> str:
     if os.path.isabs(path):
@@ -292,6 +306,7 @@ class Installer:
         # ['*'] means skip all,
         # ['sub1', ...] means skip only those.
         self.skip_subprojects = [i.strip() for i in options.skip_subprojects.split(',')]
+        self.tags = [i.strip() for i in options.tags.split(',')] if options.tags else None
 
     def remove(self, *args: T.Any, **kwargs: T.Any) -> None:
         if not self.dry_run:
@@ -341,9 +356,13 @@ class Installer:
         if not self.dry_run:
             set_mode(*args, **kwargs)
 
-    def restore_selinux_contexts(self) -> None:
-        if not self.dry_run:
+    def restore_selinux_contexts(self, destdir: str) -> None:
+        if not self.dry_run and not destdir:
             restore_selinux_contexts()
+
+    def apply_ldconfig(self, destdir: str) -> None:
+        if not self.dry_run and not destdir:
+            apply_ldconfig()
 
     def Popen_safe(self, *args: T.Any, **kwargs: T.Any) -> T.Tuple[int, str, str]:
         if not self.dry_run:
@@ -356,8 +375,10 @@ class Installer:
             return run_exe(*args, **kwargs)
         return 0
 
-    def install_subproject(self, subproject: str) -> bool:
-        if subproject and (subproject in self.skip_subprojects or '*' in self.skip_subprojects):
+    def should_install(self, d: T.Union[TargetInstallData, InstallDataBase, ExecutableSerialisation]) -> bool:
+        if d.subproject and (d.subproject in self.skip_subprojects or '*' in self.skip_subprojects):
+            return False
+        if self.tags and d.tag not in self.tags:
             return False
         return True
 
@@ -494,11 +515,16 @@ class Installer:
         with open(datafilename, 'rb') as ifile:
             d = self.check_installdata(pickle.load(ifile))
 
-        # Override in the env because some scripts could be relying on it.
-        if self.options.destdir is not None:
-            os.environ['DESTDIR'] = self.options.destdir
-
-        destdir = os.environ.get('DESTDIR', '')
+        destdir = self.options.destdir
+        if destdir is None:
+            destdir = os.environ.get('DESTDIR')
+        if destdir and not os.path.isabs(destdir):
+            destdir = os.path.join(d.build_dir, destdir)
+        # Override in the env because some scripts could use it and require an
+        # absolute path.
+        if destdir is not None:
+            os.environ['DESTDIR'] = destdir
+        destdir = destdir or ''
         fullprefix = destdir_join(destdir, d.prefix)
 
         if d.install_umask != 'preserve':
@@ -513,7 +539,8 @@ class Installer:
                 self.install_headers(d, dm, destdir, fullprefix)
                 self.install_man(d, dm, destdir, fullprefix)
                 self.install_data(d, dm, destdir, fullprefix)
-                self.restore_selinux_contexts()
+                self.restore_selinux_contexts(destdir)
+                self.apply_ldconfig(destdir)
                 self.run_install_script(d, destdir, fullprefix)
                 if not self.did_install_something:
                     self.log('Nothing to install.')
@@ -531,7 +558,7 @@ class Installer:
 
     def install_subdirs(self, d: InstallData, dm: DirMaker, destdir: str, fullprefix: str) -> None:
         for i in d.install_subdirs:
-            if not self.install_subproject(i.subproject):
+            if not self.should_install(i):
                 continue
             self.did_install_something = True
             full_dst_dir = get_destdir_path(destdir, fullprefix, i.install_path)
@@ -541,7 +568,7 @@ class Installer:
 
     def install_data(self, d: InstallData, dm: DirMaker, destdir: str, fullprefix: str) -> None:
         for i in d.data:
-            if not self.install_subproject(i.subproject):
+            if not self.should_install(i):
                 continue
             fullfilename = i.path
             outfilename = get_destdir_path(destdir, fullprefix, i.install_path)
@@ -552,7 +579,7 @@ class Installer:
 
     def install_man(self, d: InstallData, dm: DirMaker, destdir: str, fullprefix: str) -> None:
         for m in d.man:
-            if not self.install_subproject(m.subproject):
+            if not self.should_install(m):
                 continue
             full_source_filename = m.path
             outfilename = get_destdir_path(destdir, fullprefix, m.install_path)
@@ -563,7 +590,7 @@ class Installer:
 
     def install_headers(self, d: InstallData, dm: DirMaker, destdir: str, fullprefix: str) -> None:
         for t in d.headers:
-            if not self.install_subproject(t.subproject):
+            if not self.should_install(t):
                 continue
             fullfilename = t.path
             fname = os.path.basename(fullfilename)
@@ -584,7 +611,7 @@ class Installer:
             env['MESON_INSTALL_QUIET'] = '1'
 
         for i in d.install_scripts:
-            if not self.install_subproject(i.subproject):
+            if not self.should_install(i):
                 continue
             name = ' '.join(i.cmd_args)
             if i.skip_if_destdir and destdir:
@@ -604,7 +631,7 @@ class Installer:
 
     def install_targets(self, d: InstallData, dm: DirMaker, destdir: str, fullprefix: str) -> None:
         for t in d.targets:
-            if not self.install_subproject(t.subproject):
+            if not self.should_install(t):
                 continue
             if not os.path.exists(t.fname):
                 # For example, import libraries of shared modules are optional
