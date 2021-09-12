@@ -507,11 +507,11 @@ class GnomeModule(ExtensionModule):
 
         return girtarget
 
-    def _devenv_append(self, varname: str, value: str) -> None:
+    def _devenv_prepend(self, varname: str, value: str) -> None:
         if self.devenv is None:
             self.devenv = build.EnvironmentVariables()
             self.interpreter.build.devenv.append(self.devenv)
-        self.devenv.append(varname, [value])
+        self.devenv.prepend(varname, [value])
 
     def _get_gir_dep(self, state):
         if not self.gir_dep:
@@ -934,7 +934,7 @@ class GnomeModule(ExtensionModule):
 
         typelib_target = self._make_typelib_target(state, typelib_output, typelib_cmd, generated_files, kwargs)
 
-        self._devenv_append('GI_TYPELIB_PATH', os.path.join(state.environment.get_build_dir(), state.subdir))
+        self._devenv_prepend('GI_TYPELIB_PATH', os.path.join(state.environment.get_build_dir(), state.subdir))
 
         rv = [scan_target, typelib_target]
 
@@ -958,7 +958,7 @@ class GnomeModule(ExtensionModule):
         else:
             targetname = 'gsettings-compile-' + state.subdir.replace('/', '_')
         target_g = build.CustomTarget(targetname, state.subdir, state.subproject, kwargs)
-        self._devenv_append('GSETTINGS_SCHEMA_DIR', os.path.join(state.environment.get_build_dir(), state.subdir))
+        self._devenv_prepend('GSETTINGS_SCHEMA_DIR', os.path.join(state.environment.get_build_dir(), state.subdir))
         return ModuleReturnValue(target_g, [target_g])
 
     @permittedKwargs({'sources', 'media', 'symlink_media', 'languages'})
@@ -1728,7 +1728,7 @@ G_END_DECLS'''
         with open(fname, 'w', encoding='utf-8') as ofile:
             for package in packages:
                 ofile.write(package + '\n')
-        return build.Data([mesonlib.File(True, outdir, fname)], install_dir, None, state.subproject)
+        return build.Data([mesonlib.File(True, outdir, fname)], install_dir, install_dir, None, state.subproject)
 
     def _get_vapi_link_with(self, target):
         link_with = []

@@ -44,10 +44,11 @@ from .interpreterbase import FeatureNew
 
 if T.TYPE_CHECKING:
     from ._typing import ImmutableListProtocol, ImmutableSetProtocol
+    from .backend.backends import Backend, ExecutableSerialisation
     from .interpreter.interpreter import Test, SourceOutputs, Interpreter
     from .mesonlib import FileMode, FileOrString
     from .modules import ModuleState
-    from .backend.backends import Backend, ExecutableSerialisation
+    from .mparser import BaseNode
 
     GeneratedTypes = T.Union['CustomTarget', 'CustomTargetIndex', 'GeneratedList']
 
@@ -130,7 +131,7 @@ class InvalidArguments(MesonException):
     pass
 
 class DependencyOverride(HoldableObject):
-    def __init__(self, dep, node, explicit=True):
+    def __init__(self, dep: dependencies.Dependency, node: 'BaseNode', explicit: bool = True):
         self.dep = dep
         self.node = node
         self.explicit = explicit
@@ -425,12 +426,16 @@ class ExtractedObjects(HoldableObject):
         ]
 
 class EnvironmentVariables(HoldableObject):
-    def __init__(self) -> None:
-        self.envvars = []
+    def __init__(self, values: T.Optional[T.Dict[str, str]] = None) -> None:
+        self.envvars: T.List[T.Tuple[T.Callable[[T.Dict[str, str], str, T.List[str], str], str], str, T.List[str], str]] = []
         # The set of all env vars we have operations for. Only used for self.has_name()
-        self.varnames = set()
+        self.varnames: T.Set[str] = set()
 
-    def __repr__(self):
+        if values:
+            for name, value in values.items():
+                self.set(name, [value])
+
+    def __repr__(self) -> str:
         repr_str = "<{0}: {1}>"
         return repr_str.format(self.__class__.__name__, self.envvars)
 
@@ -449,14 +454,17 @@ class EnvironmentVariables(HoldableObject):
         self.varnames.add(name)
         self.envvars.append((self._prepend, name, values, separator))
 
-    def _set(self, env: T.Dict[str, str], name: str, values: T.List[str], separator: str) -> str:
+    @staticmethod
+    def _set(env: T.Dict[str, str], name: str, values: T.List[str], separator: str) -> str:
         return separator.join(values)
 
-    def _append(self, env: T.Dict[str, str], name: str, values: T.List[str], separator: str) -> str:
+    @staticmethod
+    def _append(env: T.Dict[str, str], name: str, values: T.List[str], separator: str) -> str:
         curr = env.get(name)
         return separator.join(values if curr is None else [curr] + values)
 
-    def _prepend(self, env: T.Dict[str, str], name: str, values: T.List[str], separator: str) -> str:
+    @staticmethod
+    def _prepend(env: T.Dict[str, str], name: str, values: T.List[str], separator: str) -> str:
         curr = env.get(name)
         return separator.join(values if curr is None else values + [curr])
 
@@ -511,12 +519,12 @@ class Target(HoldableObject):
             return NotImplemented
         return self.get_id() >= other.get_id()
 
-    def get_default_install_dir(self, env: environment.Environment) -> str:
+    def get_default_install_dir(self, env: environment.Environment) -> T.Tuple[str, str]:
         raise NotImplementedError
 
-    def get_install_dir(self, environment: environment.Environment) -> T.Tuple[T.Any, bool]:
+    def get_install_dir(self, environment: environment.Environment) -> T.Tuple[T.Any, str, bool]:
         # Find the installation directory.
-        default_install_dir = self.get_default_install_dir(environment)
+        default_install_dir, install_dir_name = self.get_default_install_dir(environment)
         outdirs = self.get_custom_install_dir()
         if outdirs[0] is not None and outdirs[0] != default_install_dir and outdirs[0] is not True:
             # Either the value is set to a non-default value, or is set to
@@ -526,7 +534,7 @@ class Target(HoldableObject):
         else:
             custom_install_dir = False
             outdirs[0] = default_install_dir
-        return outdirs, custom_install_dir
+        return outdirs, install_dir_name, custom_install_dir
 
     def get_basename(self) -> str:
         return self.name
@@ -687,7 +695,7 @@ class BuildTarget(Target):
             mlog.warning('Unknown keyword argument(s) in target {}: {}.'.format(self.name, ', '.join(unknowns)))
 
     def process_objectlist(self, objects):
-        assert(isinstance(objects, list))
+        assert isinstance(objects, list)
         for s in objects:
             if isinstance(s, (str, File, ExtractedObjects)):
                 self.objects.append(s)
@@ -842,7 +850,7 @@ class BuildTarget(Target):
                     m += '\n'.join([repr(c) for c in check_sources])
                     raise InvalidArguments(m)
                 # CSharp and Java targets can't contain any other file types
-                assert(len(self.compilers) == 1)
+                assert len(self.compilers) == 1
                 return
 
     def process_link_depends(self, sources, environment):
@@ -934,8 +942,8 @@ class BuildTarget(Target):
             result.update(i.get_link_dep_subdirs())
         return result
 
-    def get_default_install_dir(self, environment: environment.Environment) -> str:
-        return environment.get_libdir()
+    def get_default_install_dir(self, environment: environment.Environment) -> T.Tuple[str, str]:
+        return environment.get_libdir(), '{libdir}'
 
     def get_custom_install_dir(self):
         return self.install_dir
@@ -1046,9 +1054,9 @@ class BuildTarget(Target):
             raise InvalidArguments('Argument win_subsystem can only be used on executables.')
         extra_files = extract_as_list(kwargs, 'extra_files')
         for i in extra_files:
-            assert(isinstance(i, File))
+            assert isinstance(i, File)
             trial = os.path.join(environment.get_source_dir(), i.subdir, i.fname)
-            if not(os.path.isfile(trial)):
+            if not os.path.isfile(trial):
                 raise InvalidArguments(f'Tried to add non-existing extra file {i}.')
         self.extra_files = extra_files
         self.install_rpath: str = kwargs.get('install_rpath', '')
@@ -1316,7 +1324,7 @@ You probably should put it in link_with instead.''')
             else:
                 raise InvalidArguments(f'PCH argument {pchlist[0]} is of unknown type.')
 
-            if (os.path.dirname(pchlist[0]) != os.path.dirname(pchlist[1])):
+            if os.path.dirname(pchlist[0]) != os.path.dirname(pchlist[1]):
                 raise InvalidArguments('PCH files must be stored in the same folder.')
 
             mlog.warning('PCH source files are deprecated, only a single header file should be used.')
@@ -1721,8 +1729,8 @@ class Executable(BuildTarget):
         # Remember that this exe was returned by `find_program()` through an override
         self.was_returned_by_find_program = False
 
-    def get_default_install_dir(self, environment: environment.Environment) -> str:
-        return environment.get_bindir()
+    def get_default_install_dir(self, environment: environment.Environment) -> T.Tuple[str, str]:
+        return environment.get_bindir(), '{bindir}'
 
     def description(self):
         '''Human friendly description of the executable'''
@@ -1798,8 +1806,8 @@ class StaticLibrary(BuildTarget):
     def get_link_deps_mapping(self, prefix: str, environment: environment.Environment) -> T.Mapping[str, str]:
         return {}
 
-    def get_default_install_dir(self, environment):
-        return environment.get_static_lib_dir()
+    def get_default_install_dir(self, environment) -> T.Tuple[str, str]:
+        return environment.get_static_lib_dir(), '{libdir_static}'
 
     def type_suffix(self):
         return "@sta"
@@ -1858,14 +1866,14 @@ class SharedLibrary(BuildTarget):
         old = get_target_macos_dylib_install_name(self)
         if old not in mappings:
             fname = self.get_filename()
-            outdirs, _ = self.get_install_dir(self.environment)
+            outdirs, _, _ = self.get_install_dir(self.environment)
             new = os.path.join(prefix, outdirs[0], fname)
             result.update({old: new})
         mappings.update(result)
         return mappings
 
-    def get_default_install_dir(self, environment):
-        return environment.get_shared_lib_dir()
+    def get_default_install_dir(self, environment) -> T.Tuple[str, str]:
+        return environment.get_shared_lib_dir(), '{libdir_shared}'
 
     def determine_filenames(self, env):
         """
@@ -2152,8 +2160,8 @@ class SharedModule(SharedLibrary):
         super().__init__(name, subdir, subproject, for_machine, sources, objects, environment, kwargs)
         self.typename = 'shared module'
 
-    def get_default_install_dir(self, environment):
-        return environment.get_shared_module_dir()
+    def get_default_install_dir(self, environment) -> T.Tuple[str, str]:
+        return environment.get_shared_module_dir(), '{moduledir_shared}'
 
 class BothLibraries(SecondLevelHolder):
     def __init__(self, shared: SharedLibrary, static: StaticLibrary) -> None:
@@ -2245,8 +2253,8 @@ class CustomTarget(Target, CommandBase):
         if unknowns:
             mlog.warning('Unknown keyword arguments in target {}: {}'.format(self.name, ', '.join(unknowns)))
 
-    def get_default_install_dir(self, environment):
-        return None
+    def get_default_install_dir(self, environment) -> T.Tuple[str, str]:
+        return None, None
 
     def __repr__(self):
         repr_str = "<{0} {1}: {2}>"
@@ -2288,7 +2296,7 @@ class CustomTarget(Target, CommandBase):
         inputs = get_sources_string_names(self.sources, backend)
         values = get_filenames_templates_dict(inputs, [])
         for i in self.outputs:
-            if not(isinstance(i, str)):
+            if not isinstance(i, str):
                 raise InvalidArguments('Output argument not a string.')
             if i == '':
                 raise InvalidArguments('Output must not be empty.')
@@ -2520,6 +2528,10 @@ class AliasTarget(RunTarget):
     def __init__(self, name, dependencies, subdir, subproject):
         super().__init__(name, [], dependencies, subdir, subproject)
 
+    def __repr__(self):
+        repr_str = "<{0} {1}>"
+        return repr_str.format(self.__class__.__name__, self.get_id())
+
 class Jar(BuildTarget):
     known_kwargs = known_jar_kwargs
 
@@ -2644,12 +2656,14 @@ class ConfigurationData(HoldableObject):
 # A bit poorly named, but this represents plain data files to copy
 # during install.
 class Data(HoldableObject):
-    def __init__(self, sources: T.List[File], install_dir: str,
+    def __init__(self, sources: T.List[File], install_dir: str, install_dir_name: str,
                  install_mode: 'FileMode', subproject: str,
                  rename: T.List[str] = None,
-                 install_tag: T.Optional[str] = None):
+                 install_tag: T.Optional[str] = None,
+                 data_type: str = None):
         self.sources = sources
         self.install_dir = install_dir
+        self.install_dir_name = install_dir_name
         self.install_mode = install_mode
         self.install_tag = install_tag
         if rename is None:
@@ -2657,6 +2671,7 @@ class Data(HoldableObject):
         else:
             self.rename = rename
         self.subproject = subproject
+        self.data_type = data_type
 
 class TestSetup:
     def __init__(self, exe_wrapper: T.Optional[T.List[str]], gdb: bool,

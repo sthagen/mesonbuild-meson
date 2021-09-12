@@ -28,6 +28,7 @@ from ..dependencies import DependencyMethods, PkgConfigDependency, NotFoundDepen
 from ..dependencies.base import process_method_kw
 from ..environment import detect_cpu_family
 from ..interpreter import ExternalProgramHolder, extract_required_kwarg, permitted_dependency_kwargs
+from ..interpreter.type_checking import NoneType
 from ..interpreterbase import (
     noPosargs, noKwargs, permittedKwargs, ContainerTypeInfo,
     InvalidArguments, typed_pos_args, typed_kwargs, KwargInfo,
@@ -279,7 +280,7 @@ import sysconfig
 import json
 import sys
 
-install_paths = sysconfig.get_paths(scheme='posix_prefix', vars={'base': '', 'platbase': '', 'installed_base': ''})
+install_paths = sysconfig.get_paths(vars={'base': '', 'platbase': '', 'installed_base': ''})
 
 def links_against_libpython():
     from distutils.core import Distribution, Extension
@@ -457,6 +458,7 @@ class PythonInstallation(ExternalProgramHolder):
 
         return self.interpreter.func_shared_module(None, args, kwargs)
 
+    @disablerIfNotFound
     @permittedKwargs(permitted_dependency_kwargs | {'embed'})
     @FeatureNewKwargs('python_installation.dependency', '0.53.0', ['embed'])
     @noPosargs
@@ -484,14 +486,15 @@ class PythonInstallation(ExternalProgramHolder):
 
     @typed_pos_args('install_data', varargs=(str, mesonlib.File))
     @typed_kwargs('python_installation.install_sources', _PURE_KW, _SUBDIR_KW,
-                  KwargInfo('install_tag', str, since='0.60.0'))
+                  KwargInfo('install_tag', (str, NoneType), since='0.60.0'))
     def install_sources_method(self, args: T.Tuple[T.List[T.Union[str, mesonlib.File]]],
                                kwargs: 'PyInstallKw') -> 'Data':
         tag = kwargs['install_tag'] or 'runtime'
         return self.interpreter.install_data_impl(
             self.interpreter.source_strings_to_files(args[0]),
             self._get_install_dir_impl(kwargs['pure'], kwargs['subdir']),
-            mesonlib.FileMode(), rename=None, tag=tag)
+            mesonlib.FileMode(), rename=None, tag=tag, install_data_type='python',
+            install_dir_name=self._get_install_dir_name_impl(kwargs['pure'], kwargs['subdir']))
 
     @noPosargs
     @typed_kwargs('python_installation.install_dir', _PURE_KW, _SUBDIR_KW)
@@ -501,6 +504,9 @@ class PythonInstallation(ExternalProgramHolder):
     def _get_install_dir_impl(self, pure: bool, subdir: str) -> str:
         return os.path.join(
             self.purelib_install_path if pure else self.platlib_install_path, subdir)
+
+    def _get_install_dir_name_impl(self, pure: bool, subdir: str) -> str:
+        return os.path.join('{py_purelib}' if pure else '{py_platlib}', subdir)
 
     @noPosargs
     @noKwargs
@@ -672,7 +678,7 @@ class PythonModule(ExtensionModule):
                 return python
             else:
                 if required:
-                    raise mesonlib.MesonException(f'{python} is not a valid python or it is missing setuptools')
+                    raise mesonlib.MesonException(f'{python} is not a valid python or it is missing distutils')
                 return NonExistingExternalProgram()
 
         raise mesonlib.MesonBugException('Unreachable code was reached (PythonModule.find_installation).')

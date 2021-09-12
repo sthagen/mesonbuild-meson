@@ -52,7 +52,7 @@ from mesonbuild.compilers import (
 )
 
 from mesonbuild.dependencies import PkgConfigDependency
-from mesonbuild.build import Target, ConfigurationData
+from mesonbuild.build import Target, ConfigurationData, Executable, SharedLibrary, StaticLibrary
 import mesonbuild.modules.pkgconfig
 from mesonbuild.scripts import destdir_join
 
@@ -101,7 +101,7 @@ def _git_init(project_dir):
 def _git_add_all(project_dir):
     subprocess.check_call('git add *', cwd=project_dir, shell=True,
                           stdout=subprocess.DEVNULL)
-    subprocess.check_call(['git', 'commit', '-a', '-m', 'I am a project'], cwd=project_dir,
+    subprocess.check_call(['git', 'commit', '--no-gpg-sign', '-a', '-m', 'I am a project'], cwd=project_dir,
                           stdout=subprocess.DEVNULL)
 
 class AllPlatformTests(BasePlatformTests):
@@ -1777,7 +1777,6 @@ class AllPlatformTests(BasePlatformTests):
             r'sub' + os.path.sep + r'meson.build:4: WARNING: subdir warning',
             r'meson.build:7: WARNING: Module unstable-simd has no backwards or forwards compatibility and might not exist in future releases.',
             r"meson.build:11: WARNING: The variable(s) 'MISSING' in the input file 'conf.in' are not present in the given configuration data.",
-            r'meson.build:1: WARNING: Passed invalid keyword argument "invalid".',
         ]:
             self.assertRegex(out, re.escape(expected))
 
@@ -1827,8 +1826,9 @@ class AllPlatformTests(BasePlatformTests):
 
     def test_permitted_method_kwargs(self):
         tdir = os.path.join(self.unit_test_dir, '25 non-permitted kwargs')
-        out = self.init(tdir, allow_fail=True)
-        self.assertIn('Function does not take keyword arguments.', out)
+        with self.assertRaises(subprocess.CalledProcessError) as cm:
+            self.init(tdir)
+        self.assertIn('ERROR: compiler.has_header_symbol got unknown keyword arguments "prefixxx"', cm.exception.output)
 
     def test_templates(self):
         ninja = mesonbuild.environment.detect_ninja()
@@ -2621,7 +2621,7 @@ class AllPlatformTests(BasePlatformTests):
 
         for i in targets:
             for out in i['filename']:
-                assert(os.path.relpath(out, self.builddir).startswith('meson-out'))
+                assert os.path.relpath(out, self.builddir).startswith('meson-out')
 
     def test_introspect_json_dump(self):
         testdir = os.path.join(self.unit_test_dir, '57 introspection')
@@ -2837,6 +2837,7 @@ class AllPlatformTests(BasePlatformTests):
             'buildsystem_files',
             'dependencies',
             'installed',
+            'install_plan',
             'projectinfo',
             'targets',
             'tests',
@@ -3076,6 +3077,8 @@ class AllPlatformTests(BasePlatformTests):
         self.run_target('build-all')
         self.assertPathExists(os.path.join(self.builddir, 'prog' + exe_suffix))
         self.assertPathExists(os.path.join(self.builddir, 'hello.txt'))
+        out = self.run_target('aliased-run')
+        self.assertIn('a run target was here', out)
 
     def test_configure(self):
         testdir = os.path.join(self.common_test_dir, '2 cpp')
@@ -3084,7 +3087,7 @@ class AllPlatformTests(BasePlatformTests):
 
     def test_summary(self):
         testdir = os.path.join(self.unit_test_dir, '72 summary')
-        out = self.init(testdir)
+        out = self.init(testdir, extra_args=['-Denabled_opt=enabled'])
         expected = textwrap.dedent(r'''
             Some Subproject 2.0
 
@@ -3116,6 +3119,7 @@ class AllPlatformTests(BasePlatformTests):
                 missing prog   : NO
                 existing prog  : ''' + sys.executable + '''
                 missing dep    : NO
+                external dep   : YES 1.2.3
                 internal dep   : YES
 
               Plugins
@@ -3126,6 +3130,12 @@ class AllPlatformTests(BasePlatformTests):
                 sub            : YES
                 sub2           : NO Problem encountered: This subproject failed
                 subsub         : YES
+
+              User defined options
+                backend        : ''' + self.backend.name + '''
+                libdir         : lib
+                prefix         : /usr
+                enabled_opt    : enabled
             ''')
         expected_lines = expected.split('\n')[1:]
         out_start = out.find(expected_lines[0])
@@ -3133,9 +3143,13 @@ class AllPlatformTests(BasePlatformTests):
         if sys.version_info < (3, 7, 0):
             # Dictionary order is not stable in Python <3.7, so sort the lines
             # while comparing
-            self.assertEqual(sorted(expected_lines), sorted(out_lines))
-        else:
-            self.assertEqual(expected_lines, out_lines)
+            expected_lines = sorted(expected_lines)
+            out_lines = sorted(out_lines)
+        for e, o in zip(expected_lines, out_lines):
+            if e.startswith('    external dep'):
+                self.assertRegex(o, r'^    external dep   : (YES [0-9.]*|NO)$')
+            else:
+                self.assertEqual(o, e)
 
     def test_meson_compile(self):
         """Test the meson compile command."""
@@ -3764,7 +3778,7 @@ class AllPlatformTests(BasePlatformTests):
                 self.assertEqual(sorted(link_args), sorted(['-flto']))
 
     def test_install_tag(self) -> None:
-        testdir = os.path.join(self.unit_test_dir, '98 install tag')
+        testdir = os.path.join(self.unit_test_dir, '98 install all targets')
         self.init(testdir)
         self.build()
 
@@ -3796,29 +3810,36 @@ class AllPlatformTests(BasePlatformTests):
 
         expected_devel = expected_common | {
             Path(installpath, 'usr/include'),
-            Path(installpath, 'usr/include/foo1-devel.h'),
             Path(installpath, 'usr/include/bar-devel.h'),
+            Path(installpath, 'usr/include/bar2-devel.h'),
+            Path(installpath, 'usr/include/foo1-devel.h'),
             Path(installpath, 'usr/include/foo2-devel.h'),
+            Path(installpath, 'usr/include/foo3-devel.h'),
             Path(installpath, 'usr/include/out-devel.h'),
             Path(installpath, 'usr/lib'),
             Path(installpath, 'usr/lib/libstatic.a'),
             Path(installpath, 'usr/lib/libboth.a'),
+            Path(installpath, 'usr/lib/libboth2.a'),
         }
 
         if cc.get_id() in {'msvc', 'clang-cl'}:
             expected_devel |= {
                 Path(installpath, 'usr/bin'),
                 Path(installpath, 'usr/bin/app.pdb'),
+                Path(installpath, 'usr/bin/app2.pdb'),
                 Path(installpath, 'usr/bin/both.pdb'),
+                Path(installpath, 'usr/bin/both2.pdb'),
                 Path(installpath, 'usr/bin/bothcustom.pdb'),
                 Path(installpath, 'usr/bin/shared.pdb'),
                 Path(installpath, 'usr/lib/both.lib'),
+                Path(installpath, 'usr/lib/both2.lib'),
                 Path(installpath, 'usr/lib/bothcustom.lib'),
                 Path(installpath, 'usr/lib/shared.lib'),
             }
         elif is_windows() or is_cygwin():
             expected_devel |= {
                 Path(installpath, 'usr/lib/libboth.dll.a'),
+                Path(installpath, 'usr/lib/libboth2.dll.a'),
                 Path(installpath, 'usr/lib/libshared.dll.a'),
                 Path(installpath, 'usr/lib/libbothcustom.dll.a'),
             }
@@ -3826,8 +3847,10 @@ class AllPlatformTests(BasePlatformTests):
         expected_runtime = expected_common | {
             Path(installpath, 'usr/bin'),
             Path(installpath, 'usr/bin/' + exe_name('app')),
+            Path(installpath, 'usr/bin/' + exe_name('app2')),
             Path(installpath, 'usr/' + shared_lib_name('shared')),
             Path(installpath, 'usr/' + shared_lib_name('both')),
+            Path(installpath, 'usr/' + shared_lib_name('both2')),
         }
 
         expected_custom = expected_common | {
@@ -3855,6 +3878,9 @@ class AllPlatformTests(BasePlatformTests):
             Path(installpath, 'usr/share/out1-notag.txt'),
             Path(installpath, 'usr/share/out2-notag.txt'),
             Path(installpath, 'usr/share/out3-notag.txt'),
+            Path(installpath, 'usr/share/foo2.h'),
+            Path(installpath, 'usr/share/out1.txt'),
+            Path(installpath, 'usr/share/out2.txt'),
         }
 
         def do_install(tags=None):
@@ -3868,3 +3894,166 @@ class AllPlatformTests(BasePlatformTests):
         self.assertEqual(sorted(expected_custom), do_install('custom'))
         self.assertEqual(sorted(expected_runtime_custom), do_install('runtime,custom'))
         self.assertEqual(sorted(expected_all), do_install())
+
+    def test_introspect_install_plan(self):
+        testdir = os.path.join(self.unit_test_dir, '98 install all targets')
+        introfile = os.path.join(self.builddir, 'meson-info', 'intro-install_plan.json')
+        self.init(testdir)
+        self.assertPathExists(introfile)
+        with open(introfile, encoding='utf-8') as fp:
+            res = json.load(fp)
+
+        env = get_fake_env(testdir, self.builddir, self.prefix)
+
+        def output_name(name, type_):
+            return type_(name=name, subdir=None, subproject=None,
+                         for_machine=MachineChoice.HOST, sources=[],
+                         objects=[], environment=env, kwargs={}).filename
+
+        shared_lib_name = lambda name: output_name(name, SharedLibrary)
+        static_lib_name = lambda name: output_name(name, StaticLibrary)
+        exe_name = lambda name: output_name(name, Executable)
+
+        expected = {
+            'targets': {
+                f'{self.builddir}/out1-notag.txt': {
+                    'destination': '{prefix}/share/out1-notag.txt',
+                    'tag': None,
+                },
+                f'{self.builddir}/out2-notag.txt': {
+                    'destination': '{prefix}/share/out2-notag.txt',
+                    'tag': None,
+                },
+                f'{self.builddir}/libstatic.a': {
+                    'destination': '{libdir_static}/libstatic.a',
+                    'tag': 'devel',
+                },
+                f'{self.builddir}/' + exe_name('app'): {
+                    'destination': '{bindir}/' + exe_name('app'),
+                    'tag': 'runtime',
+                },
+                f'{self.builddir}/subdir/' + exe_name('app2'): {
+                    'destination': '{bindir}/' + exe_name('app2'),
+                    'tag': 'runtime',
+                },
+                f'{self.builddir}/' + shared_lib_name('shared'): {
+                    'destination': '{libdir_shared}/' + shared_lib_name('shared'),
+                    'tag': 'runtime',
+                },
+                f'{self.builddir}/' + shared_lib_name('both'): {
+                    'destination': '{libdir_shared}/' + shared_lib_name('both'),
+                    'tag': 'runtime',
+                },
+                f'{self.builddir}/' + static_lib_name('both'): {
+                    'destination': '{libdir_static}/' + static_lib_name('both'),
+                    'tag': 'devel',
+                },
+                f'{self.builddir}/' + shared_lib_name('bothcustom'): {
+                    'destination': '{libdir_shared}/' + shared_lib_name('bothcustom'),
+                    'tag': 'custom',
+                },
+                f'{self.builddir}/' + static_lib_name('bothcustom'): {
+                    'destination': '{libdir_static}/' + static_lib_name('bothcustom'),
+                    'tag': 'custom',
+                },
+                f'{self.builddir}/subdir/' + shared_lib_name('both2'): {
+                    'destination': '{libdir_shared}/' + shared_lib_name('both2'),
+                    'tag': 'runtime',
+                },
+                f'{self.builddir}/subdir/' + static_lib_name('both2'): {
+                    'destination': '{libdir_static}/' + static_lib_name('both2'),
+                    'tag': 'devel',
+                },
+                f'{self.builddir}/out1-custom.txt': {
+                    'destination': '{prefix}/share/out1-custom.txt',
+                    'tag': 'custom',
+                },
+                f'{self.builddir}/out2-custom.txt': {
+                    'destination': '{prefix}/share/out2-custom.txt',
+                    'tag': 'custom',
+                },
+                f'{self.builddir}/out3-custom.txt': {
+                    'destination': '{prefix}/share/out3-custom.txt',
+                    'tag': 'custom',
+                },
+                f'{self.builddir}/subdir/out1.txt': {
+                    'destination': '{prefix}/share/out1.txt',
+                    'tag': None,
+                },
+                f'{self.builddir}/subdir/out2.txt': {
+                    'destination': '{prefix}/share/out2.txt',
+                    'tag': None,
+                },
+                f'{self.builddir}/out-devel.h': {
+                    'destination': '{prefix}/include/out-devel.h',
+                    'tag': 'devel',
+                },
+                f'{self.builddir}/out3-notag.txt': {
+                    'destination': '{prefix}/share/out3-notag.txt',
+                    'tag': None,
+                },
+            },
+            'configure': {
+                f'{self.builddir}/foo-notag.h': {
+                    'destination': '{prefix}/share/foo-notag.h',
+                    'tag': None,
+                },
+                f'{self.builddir}/foo2-devel.h': {
+                    'destination': '{prefix}/include/foo2-devel.h',
+                    'tag': 'devel',
+                },
+                f'{self.builddir}/foo-custom.h': {
+                    'destination': '{prefix}/share/foo-custom.h',
+                    'tag': 'custom',
+                },
+                f'{self.builddir}/subdir/foo2.h': {
+                    'destination': '{prefix}/share/foo2.h',
+                    'tag': None,
+                },
+            },
+            'data': {
+                f'{testdir}/bar-notag.txt': {
+                    'destination': '{datadir}/share/bar-notag.txt',
+                    'tag': None,
+                },
+                f'{testdir}/bar-devel.h': {
+                    'destination': '{datadir}/include/bar-devel.h',
+                    'tag': 'devel',
+                },
+                f'{testdir}/bar-custom.txt': {
+                    'destination': '{datadir}/share/bar-custom.txt',
+                    'tag': 'custom',
+                },
+                f'{testdir}/subdir/bar2-devel.h': {
+                    'destination': '{datadir}/include/bar2-devel.h',
+                    'tag': 'devel',
+                },
+            },
+            'headers': {
+                f'{testdir}/foo1-devel.h': {
+                    'destination': '{includedir}/foo1-devel.h',
+                    'tag': 'devel',
+                },
+                f'{testdir}/subdir/foo3-devel.h': {
+                    'destination': '{includedir}/foo3-devel.h',
+                    'tag': 'devel',
+                },
+            }
+        }
+
+        fix_path = lambda path: os.path.sep.join(path.split('/'))
+        expected_fixed = {
+            data_type: {
+                fix_path(source): {
+                    key: fix_path(value) if key == 'destination' else value
+                    for key, value in attributes.items()
+                }
+                for source, attributes in files.items()
+            }
+            for data_type, files in expected.items()
+        }
+
+        for data_type, files in expected_fixed.items():
+            for file, details in files.items():
+                with self.subTest(key='{}.{}'.format(data_type, file)):
+                    self.assertEqual(res[data_type][file], details)

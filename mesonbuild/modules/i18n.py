@@ -143,6 +143,7 @@ class I18nModule(ExtensionModule):
         datadirs = self._get_data_dirs(state, mesonlib.stringlistify(kwargs.get('data_dirs', [])))
         extra_args = mesonlib.stringlistify(kwargs.get('args', []))
         targets = []
+        gmotargets = []
 
         preset = kwargs.pop('preset', None)
         if preset:
@@ -183,8 +184,12 @@ class I18nModule(ExtensionModule):
                           'install_dir': path.join(install_dir, l, 'LC_MESSAGES'),
                           'install_tag': 'i18n',
                           }
-            gmotarget = build.CustomTarget(l+'.mo', path.join(state.subdir, l, 'LC_MESSAGES'), state.subproject, gmo_kwargs)
+            gmotarget = build.CustomTarget(f'{packagename}-{l}.mo', path.join(state.subdir, l, 'LC_MESSAGES'), state.subproject, gmo_kwargs)
             targets.append(gmotarget)
+            gmotargets.append(gmotarget)
+
+        allgmotarget = build.AliasTarget(packagename + '-gmo', gmotargets, state.subdir, state.subproject)
+        targets.append(allgmotarget)
 
         updatepoargs = state.environment.get_build_command() + ['--internal', 'gettext', 'update_po', pkg_arg]
         if lang_arg:
@@ -196,7 +201,7 @@ class I18nModule(ExtensionModule):
         updatepotarget = build.RunTarget(packagename + '-update-po', updatepoargs, [], state.subdir, state.subproject)
         targets.append(updatepotarget)
 
-        return ModuleReturnValue(None, targets)
+        return ModuleReturnValue([gmotargets, pottarget, updatepotarget], targets)
 
 def initialize(*args, **kwargs):
     return I18nModule(*args, **kwargs)

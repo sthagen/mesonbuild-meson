@@ -7,14 +7,14 @@ from .. import mlog
 
 from ..mesonlib import MachineChoice, OptionKey
 from ..programs import OverrideProgram, ExternalProgram
+from ..interpreter.type_checking import ENV_KW
 from ..interpreterbase import (MesonInterpreterObject, FeatureNew, FeatureDeprecated,
                                typed_pos_args, permittedKwargs, noArgsFlattening, noPosargs, noKwargs,
                                typed_kwargs, KwargInfo, MesonVersionString, InterpreterException)
 
 from .interpreterobjects import (ExecutableHolder, ExternalProgramHolder,
-                                 CustomTargetHolder, CustomTargetIndexHolder,
-                                 EnvironmentVariablesObject)
-from .type_checking import NATIVE_KW
+                                 CustomTargetHolder, CustomTargetIndexHolder)
+from .type_checking import NATIVE_KW, NoneType
 
 import typing as T
 
@@ -112,9 +112,11 @@ class MesonMain(MesonInterpreterObject):
                 '0.55.0', self.interpreter.subproject)
         return script_args
 
-    @typed_kwargs('add_install_script',
-                  KwargInfo('skip_if_destdir', bool, default=False, since='0.57.0'),
-                  KwargInfo('install_tag', str, since='0.60.0'))
+    @typed_kwargs(
+        'add_install_script',
+        KwargInfo('skip_if_destdir', bool, default=False, since='0.57.0'),
+        KwargInfo('install_tag', (str, NoneType), since='0.60.0'),
+    )
     def add_install_script_method(self, args: 'T.Tuple[T.Union[str, mesonlib.File, ExecutableHolder], T.Union[str, mesonlib.File, CustomTargetHolder, CustomTargetIndexHolder], ...]', kwargs):
         if len(args) < 1:
             raise InterpreterException('add_install_script takes one or more arguments')
@@ -235,13 +237,12 @@ class MesonMain(MesonInterpreterObject):
         return self.can_run_host_binaries_impl(args, kwargs)
 
     def can_run_host_binaries_impl(self, args, kwargs):
-        if (self.is_cross_build_method(None, None) and
-                self.build.environment.need_exe_wrapper()):
-            if self.build.environment.exe_wrapper is None:
-                return False
-        # We return True when exe_wrap is defined, when it's not needed, and
-        # when we're compiling natively. The last two are semantically confusing.
-        # Need to revisit this.
+        if (self.build.environment.is_cross_build() and
+            self.build.environment.need_exe_wrapper() and
+            self.build.environment.exe_wrapper is None):
+            return False
+        # We return True when exe_wrap is defined, when it's not needed, or
+        # when we're compiling natively.
         return True
 
     @noPosargs
@@ -299,8 +300,11 @@ class MesonMain(MesonInterpreterObject):
             raise InterpreterException('Second argument must be an external program or executable.')
         self.interpreter.add_find_program_override(name, exe)
 
-    @typed_kwargs('meson.override_dependency', NATIVE_KW,
-                  KwargInfo('static', bool, since='0.60.0'))
+    @typed_kwargs(
+        'meson.override_dependency',
+        NATIVE_KW,
+        KwargInfo('static', (bool, NoneType), since='0.60.0'),
+    )
     @typed_pos_args('meson.override_dependency', str, dependencies.Dependency)
     @FeatureNew('meson.override_dependency', '0.54.0')
     def override_dependency_method(self, args: T.Tuple[str, dependencies.Dependency], kwargs: 'FuncOverrideDependency') -> None:
@@ -411,9 +415,10 @@ class MesonMain(MesonInterpreterObject):
 
     @FeatureNew('add_devenv', '0.58.0')
     @noKwargs
-    @typed_pos_args('add_devenv', (str, list, dict, EnvironmentVariablesObject))
-    def add_devenv_method(self, args: T.Union[str, list, dict, EnvironmentVariablesObject], kwargs: T.Dict[str, T.Any]) -> None:
+    @typed_pos_args('add_devenv', (str, list, dict, build.EnvironmentVariables))
+    def add_devenv_method(self, args: T.Tuple[T.Union[str, list, dict, build.EnvironmentVariables]], kwargs: T.Dict[str, T.Any]) -> None:
         env = args[0]
-        if isinstance(env, (str, list, dict)):
-            env = EnvironmentVariablesObject(env)
-        self.build.devenv.append(env.vars)
+        msg = ENV_KW.validator(env)
+        if msg:
+            raise build.InvalidArguments(f'"add_devenv": {msg}')
+        self.build.devenv.append(ENV_KW.convertor(env))

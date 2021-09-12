@@ -21,12 +21,12 @@ from .. import optinterpreter
 from .. import compilers
 from ..wrap import wrap, WrapMode
 from .. import mesonlib
-from ..mesonlib import HoldableObject, FileMode, MachineChoice, OptionKey, listify, extract_as_list, has_path_sep
+from ..mesonlib import MesonBugException, HoldableObject, FileMode, MachineChoice, OptionKey, listify, extract_as_list, has_path_sep
 from ..programs import ExternalProgram, NonExistingExternalProgram
 from ..dependencies import Dependency
 from ..depfile import DepFile
 from ..interpreterbase import ContainerTypeInfo, InterpreterBase, KwargInfo, typed_kwargs, typed_pos_args
-from ..interpreterbase import noPosargs, noKwargs, permittedKwargs, noArgsFlattening, noSecondLevelHolderResolving, permissive_unholder_return
+from ..interpreterbase import noPosargs, noKwargs, permittedKwargs, noArgsFlattening, noSecondLevelHolderResolving, unholder_return
 from ..interpreterbase import InterpreterException, InvalidArguments, InvalidCode, SubdirDoneRequest
 from ..interpreterbase import Disabler, disablerIfNotFound
 from ..interpreterbase import FeatureNew, FeatureDeprecated, FeatureNewKwargs, FeatureDeprecatedKwargs
@@ -42,7 +42,6 @@ from .mesonmain import MesonMain
 from .dependencyfallbacks import DependencyFallbacksHolder
 from .interpreterobjects import (
     SubprojectHolder,
-    EnvironmentVariablesObject,
     ConfigurationDataObject,
     Test,
     RunProcess,
@@ -51,11 +50,15 @@ from .interpreterobjects import (
     NullSubprojectInterpreter,
 )
 from .type_checking import (
+    ENV_KW,
     INSTALL_MODE_KW,
     LANGUAGE_KW,
     NATIVE_KW,
     REQUIRED_KW,
+    NoneType,
+    in_set_validator,
 )
+from . import primitives as P_OBJ
 
 from pathlib import Path
 import os
@@ -69,6 +72,7 @@ import textwrap
 import importlib
 
 if T.TYPE_CHECKING:
+    import argparse
     from . import kwargs
 
     # Input source types passed to Targets
@@ -177,17 +181,17 @@ TEST_KWARGS: T.List[KwargInfo] = [
               listify=True, default=[]),
     KwargInfo('should_fail', bool, default=False),
     KwargInfo('timeout', int, default=30),
-    KwargInfo('workdir', str, default=None,
+    KwargInfo('workdir', (str, NoneType), default=None,
               validator=lambda x: 'must be an absolute path' if not os.path.isabs(x) else None),
     KwargInfo('protocol', str,
               default='exitcode',
-              validator=lambda x: 'value must be one of "exitcode", "tap", "gtest", "rust"' if x not in {'exitcode', 'tap', 'gtest', 'rust'} else None,
+              validator=in_set_validator({'exitcode', 'tap', 'gtest', 'rust'}),
               since_values={'gtest': '0.55.0', 'rust': '0.57.0'}),
     KwargInfo('depends', ContainerTypeInfo(list, (build.CustomTarget, build.BuildTarget)),
               listify=True, default=[], since='0.46.0'),
     KwargInfo('priority', int, default=0, since='0.52.0'),
     # TODO: env needs reworks of the way the environment variable holder itself works probably
-    KwargInfo('env', (EnvironmentVariablesObject, list, dict, str)),
+    ENV_KW,
     KwargInfo('suite', ContainerTypeInfo(list, str), listify=True, default=['']),  # yes, a list of empty string
 ]
 
@@ -226,9 +230,9 @@ class Interpreter(InterpreterBase, HoldableObject):
                 mock: bool = False,
                 ast: T.Optional[mparser.CodeBlockNode] = None,
                 is_translated: bool = False,
+                user_defined_options: T.Optional['argparse.Namespace'] = None,
             ) -> None:
         super().__init__(_build.environment.get_source_dir(), subdir, subproject)
-        self.an_unpicklable_object = mesonlib.an_unpicklable_object
         self.build = _build
         self.environment = self.build.environment
         self.coredata = self.environment.get_coredata()
@@ -262,6 +266,7 @@ class Interpreter(InterpreterBase, HoldableObject):
         self.project_default_options = {}
         self.build_func_dict()
         self.build_holder_map()
+        self.user_defined_options = user_defined_options
 
         # build_def_files needs to be defined before parse_project is called
         #
@@ -275,6 +280,9 @@ class Interpreter(InterpreterBase, HoldableObject):
         if not mock:
             self.parse_project()
         self._redetect_machines()
+
+    def __getnewargs_ex__(self) -> T.Tuple[T.Tuple[object], T.Dict[str, object]]:
+        raise MesonBugException('This class is unpicklable')
 
     def _redetect_machines(self):
         # Re-initialize machine descriptions. We can do a better job now because we
@@ -293,18 +301,6 @@ class Interpreter(InterpreterBase, HoldableObject):
             OBJ.MachineHolder(self.build.environment.machines.host, self)
         self.builtin['target_machine'] = \
             OBJ.MachineHolder(self.build.environment.machines.target, self)
-
-    # TODO: Why is this in interpreter.py and not CoreData or Environment?
-    def get_non_matching_default_options(self) -> T.Iterator[T.Tuple[str, str, coredata.UserOption]]:
-        for def_opt_name, def_opt_value in self.project_default_options.items():
-            cur_opt_value = self.coredata.options.get(def_opt_name)
-            try:
-                if cur_opt_value is not None and cur_opt_value.validate_value(def_opt_value) != cur_opt_value.value:
-                    yield (str(def_opt_name), def_opt_value, cur_opt_value)
-            except mesonlib.MesonException:
-                # Since the default value does not validate, it cannot be in use
-                # Report the user-specified value as non-matching
-                yield (str(def_opt_name), def_opt_value, cur_opt_value)
 
     def build_func_dict(self):
         self.funcs.update({'add_global_arguments': self.func_add_global_arguments,
@@ -374,6 +370,11 @@ class Interpreter(InterpreterBase, HoldableObject):
             holderify all returned values from methods and functions.
         '''
         self.holder_map.update({
+            # Primitives
+            int: P_OBJ.IntegerHolder,
+            bool: P_OBJ.BooleanHolder,
+
+            # Meson types
             mesonlib.File: OBJ.FileHolder,
             build.SharedLibrary: OBJ.SharedLibraryHolder,
             build.StaticLibrary: OBJ.StaticLibraryHolder,
@@ -393,6 +394,7 @@ class Interpreter(InterpreterBase, HoldableObject):
             build.Data: OBJ.DataHolder,
             build.InstallDir: OBJ.InstallDirHolder,
             build.IncludeDirs: OBJ.IncludeDirsHolder,
+            build.EnvironmentVariables: OBJ.EnvironmentVariablesHolder,
             compilers.RunResult: compilerOBJ.TryRunResultHolder,
             dependencies.ExternalLibrary: OBJ.ExternalLibraryHolder,
             coredata.UserFeatureOption: OBJ.FeatureOptionHolder,
@@ -1099,17 +1101,18 @@ external dependencies (including libraries) must go to "dependencies".''')
         if not self.is_subproject():
             self.check_stdlibs()
 
-    @FeatureNewKwargs('add_languages', '0.54.0', ['native'])
-    @permittedKwargs({'required', 'native'})
+    @typed_kwargs('add_languages', KwargInfo('native', (bool, NoneType), since='0.54.0'), REQUIRED_KW)
     @typed_pos_args('add_languages', varargs=str)
-    def func_add_languages(self, node: mparser.FunctionNode, args: T.Tuple[T.List[str]], kwargs: 'TYPE_kwargs') -> bool:
+    def func_add_languages(self, node: mparser.FunctionNode, args: T.Tuple[T.List[str]], kwargs: 'kwargs.FuncAddLanguages') -> bool:
         langs = args[0]
         disabled, required, feature = extract_required_kwarg(kwargs, self.subproject)
+        native = kwargs['native']
+
         if disabled:
             for lang in sorted(langs, key=compilers.sort_clink):
                 mlog.log('Compiler for language', mlog.bold(lang), 'skipped: feature', mlog.bold(feature), 'disabled')
             return False
-        if 'native' in kwargs:
+        if native is not None:
             return self.add_languages(langs, required, self.machine_from_native_kwarg(kwargs))
         else:
             # absent 'native' means 'both' for backwards compatibility
@@ -1175,6 +1178,17 @@ external dependencies (including libraries) must go to "dependencies".''')
                               {'bool_yn': True,
                                'list_sep': ' ',
                               })
+        # Add automatic section with all user defined options
+        if self.user_defined_options:
+            values = collections.OrderedDict()
+            if self.user_defined_options.cross_file:
+                values['Cross files'] = self.user_defined_options.cross_file
+            if self.user_defined_options.native_file:
+                values['Native files'] = self.user_defined_options.native_file
+            sorted_options = sorted(self.user_defined_options.cmd_line_options.items())
+            values.update({str(k): v for k, v in sorted_options})
+            if values:
+                self.summary_impl('User defined options', values, {})
         # Print all summaries, main project last.
         mlog.log('')  # newline
         main_summary = self.summary.pop('', None)
@@ -1480,7 +1494,7 @@ external dependencies (including libraries) must go to "dependencies".''')
                 raise InvalidArguments('The `include_type` kwarg must be a string')
             actual = d.get_include_type()
             if wanted != actual:
-                mlog.debug(f'Current include type of {names[0]} is {actual}. Converting to requested {wanted}')
+                mlog.debug(f'Current include type of {args[0]} is {actual}. Converting to requested {wanted}')
                 d = d.generate_system_dependency(wanted)
         return d
 
@@ -1663,7 +1677,7 @@ This will become a hard error in the future.''' % kwargs['input'], location=self
         tg = build.RunTarget(name, cleaned_args, cleaned_deps, self.subdir, self.subproject, env)
         self.add_target(name, tg)
         full_name = (self.subproject, name)
-        assert(full_name not in self.build.run_target_names)
+        assert full_name not in self.build.run_target_names
         self.build.run_target_names.add(full_name)
         return tg
 
@@ -1684,7 +1698,7 @@ This will become a hard error in the future.''' % kwargs['input'], location=self
         'generator',
         KwargInfo('arguments', ContainerTypeInfo(list, str, allow_empty=False), required=True, listify=True),
         KwargInfo('output', ContainerTypeInfo(list, str, allow_empty=False), required=True, listify=True),
-        KwargInfo('depfile', str, validator=lambda x: 'Depfile must be a plain filename with a subdirectory' if has_path_sep(x) else None),
+        KwargInfo('depfile', (str, NoneType), validator=lambda x: 'Depfile must be a plain filename with a subdirectory' if has_path_sep(x) else None),
         KwargInfo('capture', bool, default=False, since='0.43.0'),
         KwargInfo('depends', ContainerTypeInfo(list, (build.BuildTarget, build.CustomTarget)), default=[], listify=True),
     )
@@ -1713,25 +1727,20 @@ This will become a hard error in the future.''' % kwargs['input'], location=self
         self.add_test(node, args, kwargs, False)
 
     @typed_pos_args('test', str, (build.Executable, build.Jar, ExternalProgram, mesonlib.File))
-    @typed_kwargs('benchmark', *TEST_KWARGS, KwargInfo('is_parallel', bool, default=True))
+    @typed_kwargs('test', *TEST_KWARGS, KwargInfo('is_parallel', bool, default=True))
     def func_test(self, node: mparser.BaseNode,
                   args: T.Tuple[str, T.Union[build.Executable, build.Jar, ExternalProgram, mesonlib.File]],
                   kwargs: 'kwargs.FuncTest') -> None:
         self.add_test(node, args, kwargs, True)
 
-    def unpack_env_kwarg(self, kwargs: T.Union[EnvironmentVariablesObject, T.Dict[str, str], T.List[str]]) -> build.EnvironmentVariables:
-        envlist = kwargs.get('env', EnvironmentVariablesObject())
-        if isinstance(envlist, EnvironmentVariablesObject):
-            env = envlist.vars
-        elif isinstance(envlist, dict):
-            FeatureNew.single_use('environment dictionary', '0.52.0', self.subproject)
-            env = EnvironmentVariablesObject(envlist)
-            env = env.vars
-        else:
-            # Convert from array to environment object
-            env = EnvironmentVariablesObject(envlist)
-            env = env.vars
-        return env
+    def unpack_env_kwarg(self, kwargs: T.Union[build.EnvironmentVariables, T.Dict[str, 'TYPE_var'], T.List['TYPE_var'], str]) -> build.EnvironmentVariables:
+        envlist = kwargs.get('env')
+        if envlist is None:
+            return build.EnvironmentVariables()
+        msg = ENV_KW.validator(envlist)
+        if msg:
+            raise InvalidArguments(f'"env": {msg}')
+        return ENV_KW.convertor(envlist)
 
     def make_test(self, node: mparser.BaseNode,
                   args: T.Tuple[str, T.Union[build.Executable, build.Jar, ExternalProgram, mesonlib.File]],
@@ -1784,8 +1793,8 @@ This will become a hard error in the future.''' % kwargs['input'], location=self
     @typed_pos_args('install_headers', varargs=(str, mesonlib.File))
     @typed_kwargs(
         'install_headers',
-        KwargInfo('install_dir', (str, None)),
-        KwargInfo('subdir', (str, None)),
+        KwargInfo('install_dir', (str, NoneType)),
+        KwargInfo('subdir', (str, NoneType)),
         INSTALL_MODE_KW.evolve(since='0.47.0'),
     )
     def func_install_headers(self, node: mparser.BaseNode,
@@ -1805,8 +1814,8 @@ This will become a hard error in the future.''' % kwargs['input'], location=self
     @typed_pos_args('install_man', varargs=(str, mesonlib.File))
     @typed_kwargs(
         'install_man',
-        KwargInfo('install_dir', (str, None)),
-        KwargInfo('locale', (str, None), since='0.58.0'),
+        KwargInfo('install_dir', (str, NoneType)),
+        KwargInfo('locale', (str, NoneType), since='0.58.0'),
         INSTALL_MODE_KW.evolve(since='0.47.0')
     )
     def func_install_man(self, node: mparser.BaseNode,
@@ -1866,7 +1875,7 @@ This will become a hard error in the future.''' % kwargs['input'], location=self
             raise InterpreterException(f"Non-existent build file '{buildfilename!s}'")
         with open(absname, encoding='utf-8') as f:
             code = f.read()
-        assert(isinstance(code, str))
+        assert isinstance(code, str)
         try:
             codeblock = mparser.Parser(code, absname).parse()
         except mesonlib.MesonException as me:
@@ -1900,11 +1909,11 @@ This will become a hard error in the future.''' % kwargs['input'], location=self
     @typed_pos_args('install_data', varargs=(str, mesonlib.File))
     @typed_kwargs(
         'install_data',
-        KwargInfo('install_dir', str),
+        KwargInfo('install_dir', (str, NoneType)),
         KwargInfo('sources', ContainerTypeInfo(list, (str, mesonlib.File)), listify=True, default=[]),
         KwargInfo('rename', ContainerTypeInfo(list, str), default=[], listify=True, since='0.46.0'),
         INSTALL_MODE_KW.evolve(since='0.38.0'),
-        KwargInfo('install_tag', str, since='0.60.0'),
+        KwargInfo('install_tag', (str, NoneType), since='0.60.0'),
     )
     def func_install_data(self, node: mparser.BaseNode,
                           args: T.Tuple[T.List['mesonlib.FileOrString']],
@@ -1917,14 +1926,24 @@ This will become a hard error in the future.''' % kwargs['input'], location=self
                     '"rename" and "sources" argument lists must be the same length if "rename" is given. '
                     f'Rename has {len(rename)} elements and sources has {len(sources)}.')
 
-        return self.install_data_impl(sources, kwargs['install_dir'], kwargs['install_mode'], rename,
-                                      kwargs['install_tag'])
+        install_dir_name = kwargs['install_dir']
+        if install_dir_name:
+            if not os.path.isabs(install_dir_name):
+                install_dir_name = os.path.join('{datadir}', install_dir_name)
+        else:
+            install_dir_name = '{datadir}'
+        return self.install_data_impl(sources, kwargs['install_dir'], kwargs['install_mode'],
+                                      rename, kwargs['install_tag'], install_dir_name)
 
     def install_data_impl(self, sources: T.List[mesonlib.File], install_dir: str,
                           install_mode: FileMode, rename: T.Optional[str],
-                          tag: T.Optional[str]) -> build.Data:
+                          tag: T.Optional[str],
+                          install_dir_name: T.Optional[str] = None,
+                          install_data_type: T.Optional[str] = None) -> build.Data:
+
         """Just the implementation with no validation."""
-        data = build.Data(sources, install_dir, install_mode, self.subproject, rename, tag)
+        data = build.Data(sources, install_dir, install_dir_name or install_dir, install_mode,
+                          self.subproject, rename, tag, install_data_type)
         self.build.data.append(data)
         return data
 
@@ -1932,7 +1951,7 @@ This will become a hard error in the future.''' % kwargs['input'], location=self
     @typed_kwargs(
         'install_subdir',
         KwargInfo('install_dir', str, required=True),
-        KwargInfo('install_tag', str, since='0.60.0'),
+        KwargInfo('install_tag', (str, NoneType), since='0.60.0'),
         KwargInfo('strip_directory', bool, default=False),
         KwargInfo('exclude_files', ContainerTypeInfo(list, str),
                   default=[], listify=True, since='0.42.0',
@@ -2149,7 +2168,8 @@ This will become a hard error in the future.''' % kwargs['input'], location=self
             install_tag = kwargs.get('install_tag')
             if install_tag is not None and not isinstance(install_tag, str):
                 raise InvalidArguments('install_tag keyword argument must be string')
-            self.build.data.append(build.Data([cfile], idir, install_mode, self.subproject, install_tag=install_tag))
+            self.build.data.append(build.Data([cfile], idir, idir, install_mode, self.subproject,
+                                              install_tag=install_tag, data_type='configure'))
         return mesonlib.File.from_built_file(self.subdir, output)
 
     def extract_incdirs(self, kwargs):
@@ -2357,17 +2377,17 @@ This will become a hard error in the future.''' % kwargs['input'], location=self
 
     @noKwargs
     @noArgsFlattening
-    def func_environment(self, node, args, kwargs):
-        if len(args) > 1:
-            raise InterpreterException('environment takes only one optional positional arguments')
-        elif len(args) == 1:
+    @typed_pos_args('environment', optargs=[(str, list, dict)])
+    def func_environment(self, node: mparser.FunctionNode, args: T.Tuple[T.Union[None, str, T.List['TYPE_var'], T.Dict[str, 'TYPE_var']]],
+                         kwargs: 'TYPE_kwargs') -> build.EnvironmentVariables:
+        init = args[0]
+        if init is not None:
             FeatureNew.single_use('environment positional arguments', '0.52.0', self.subproject)
-            initial_values = args[0]
-            if not isinstance(initial_values, dict) and not isinstance(initial_values, list):
-                raise InterpreterException('environment first argument must be a dictionary or a list')
-        else:
-            initial_values = {}
-        return EnvironmentVariablesObject(initial_values, self.subproject)
+            msg = ENV_KW.validator(init)
+            if msg:
+                raise InvalidArguments(f'"environment": {msg}')
+            return ENV_KW.convertor(init)
+        return build.EnvironmentVariables()
 
     @typed_pos_args('join_paths', varargs=str, min_varargs=1)
     @noKwargs
@@ -2637,7 +2657,7 @@ This will become a hard error in the future.''', location=self.current_node)
     @typed_pos_args('get_variable', (str, Disabler), optargs=[object])
     @noKwargs
     @noArgsFlattening
-    @permissive_unholder_return
+    @unholder_return
     def func_get_variable(self, node: mparser.BaseNode, args: T.Tuple[T.Union[str, Disabler], T.Optional[object]],
                           kwargs: 'TYPE_kwargs') -> 'TYPE_var':
         varname, fallback = args
@@ -2648,7 +2668,7 @@ This will become a hard error in the future.''', location=self.current_node)
             return self.variables[varname]
         except KeyError:
             if fallback is not None:
-                return fallback
+                return self._holderify(fallback)
         raise InterpreterException(f'Tried to get unknown variable "{varname}".')
 
     @typed_pos_args('is_variable', str)

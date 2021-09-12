@@ -12,16 +12,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import stat
-import subprocess
-import json
-import tempfile
-import os
-import io
-import operator
-from unittest import mock
 from configparser import ConfigParser
 from pathlib import Path
+from unittest import mock
+import contextlib
+import io
+import json
+import operator
+import os
+import pickle
+import stat
+import subprocess
+import tempfile
 import typing as T
 import unittest
 
@@ -40,6 +42,7 @@ from mesonbuild.mesonlib import (
     LibType, MachineChoice, PerMachine, Version, is_windows, is_osx,
     is_cygwin, is_openbsd, search_version, MesonException, OptionKey,
 )
+from mesonbuild.interpreter.type_checking import in_set_validator
 from mesonbuild.dependencies import PkgConfigDependency
 from mesonbuild.programs import ExternalProgram
 import mesonbuild.modules.pkgconfig
@@ -1203,7 +1206,7 @@ class InternalTests(unittest.TestCase):
     def test_typed_kwarg_basic(self) -> None:
         @typed_kwargs(
             'testfunc',
-            KwargInfo('input', str)
+            KwargInfo('input', str, default='')
         )
         def _(obj, node, args: T.Tuple, kwargs: T.Dict[str, str]) -> None:
             self.assertIsInstance(kwargs['input'], str)
@@ -1226,7 +1229,7 @@ class InternalTests(unittest.TestCase):
     def test_typed_kwarg_missing_optional(self) -> None:
         @typed_kwargs(
             'testfunc',
-            KwargInfo('input', str),
+            KwargInfo('input', (str, type(None))),
         )
         def _(obj, node, args: T.Tuple, kwargs: T.Dict[str, T.Optional[str]]) -> None:
             self.assertIsNone(kwargs['input'])
@@ -1246,7 +1249,7 @@ class InternalTests(unittest.TestCase):
     def test_typed_kwarg_container_valid(self) -> None:
         @typed_kwargs(
             'testfunc',
-            KwargInfo('input', ContainerTypeInfo(list, str), required=True),
+            KwargInfo('input', ContainerTypeInfo(list, str), default=[], required=True),
         )
         def _(obj, node, args: T.Tuple, kwargs: T.Dict[str, T.List[str]]) -> None:
             self.assertEqual(kwargs['input'], ['str'])
@@ -1280,7 +1283,7 @@ class InternalTests(unittest.TestCase):
     def test_typed_kwarg_container_listify(self) -> None:
         @typed_kwargs(
             'testfunc',
-            KwargInfo('input', ContainerTypeInfo(list, str), listify=True),
+            KwargInfo('input', ContainerTypeInfo(list, str), default=[], listify=True),
         )
         def _(obj, node, args: T.Tuple, kwargs: T.Dict[str, T.List[str]]) -> None:
             self.assertEqual(kwargs['input'], ['str'])
@@ -1346,7 +1349,7 @@ class InternalTests(unittest.TestCase):
     def test_typed_kwarg_validator(self) -> None:
         @typed_kwargs(
             'testfunc',
-            KwargInfo('input', str, validator=lambda x: 'invalid!' if x != 'foo' else None)
+            KwargInfo('input', str, default='', validator=lambda x: 'invalid!' if x != 'foo' else None)
         )
         def _(obj, node, args: T.Tuple, kwargs: T.Dict[str, str]) -> None:
             pass
@@ -1361,7 +1364,7 @@ class InternalTests(unittest.TestCase):
     def test_typed_kwarg_convertor(self) -> None:
         @typed_kwargs(
             'testfunc',
-            KwargInfo('native', bool, convertor=lambda n: MachineChoice.BUILD if n else MachineChoice.HOST)
+            KwargInfo('native', bool, default=False, convertor=lambda n: MachineChoice.BUILD if n else MachineChoice.HOST)
         )
         def _(obj, node, args: T.Tuple, kwargs: T.Dict[str, MachineChoice]) -> None:
             assert isinstance(kwargs['native'], MachineChoice)
@@ -1375,8 +1378,9 @@ class InternalTests(unittest.TestCase):
             KwargInfo('input', ContainerTypeInfo(list, str), listify=True, default=[], deprecated_values={'foo': '0.9'}, since_values={'bar': '1.1'}),
             KwargInfo('output', ContainerTypeInfo(dict, str), default={}, deprecated_values={'foo': '0.9'}, since_values={'bar': '1.1'}),
             KwargInfo(
-                'mode', str,
-                validator=lambda x: 'Should be one of "clean", "build", "rebuild"' if x not in {'clean', 'build', 'rebuild', 'deprecated', 'since'} else None,
+                'mode',
+                (str, type(None)),
+                validator=in_set_validator({'clean', 'build', 'rebuild', 'deprecated', 'since'}),
                 deprecated_values={'deprecated': '1.0'},
                 since_values={'since': '1.1'}),
         )
@@ -1420,3 +1424,106 @@ class InternalTests(unittest.TestCase):
         self.assertEqual(k.required, v.required)
         self.assertEqual(k.default, 'foo')
         self.assertEqual(v.default, 'bar')
+
+    def test_detect_cpu_family(self) -> None:
+        """Test the various cpu familes that we detect and normalize.
+
+        This is particularly useful as both documentation, and to keep testing
+        platforms that are less common.
+        """
+
+        @contextlib.contextmanager
+        def mock_trial(value: str) -> T.Iterable[None]:
+            """Mock all of the ways we could get the trial at once."""
+            mocked = mock.Mock(return_value=value)
+
+            with mock.patch('mesonbuild.environment.detect_windows_arch', mocked), \
+                    mock.patch('mesonbuild.environment.platform.processor', mocked), \
+                    mock.patch('mesonbuild.environment.platform.machine', mocked):
+                yield
+
+        cases = [
+            ('x86', 'x86'),
+            ('i386', 'x86'),
+            ('bepc', 'x86'),  # Haiku
+            ('earm', 'arm'),  # NetBSD
+            ('arm', 'arm'),
+            ('ppc64', 'ppc64'),
+            ('powerpc64', 'ppc64'),
+            ('powerpc', 'ppc'),
+            ('ppc', 'ppc'),
+            ('macppc', 'ppc'),
+            ('power macintosh', 'ppc'),
+            ('mips64el', 'mips64'),
+            ('mips64', 'mips64'),
+            ('mips', 'mips'),
+            ('mipsel', 'mips'),
+            ('ip30', 'mips64'),
+            ('ip35', 'mips64'),
+            ('parisc64', 'parisc'),
+            ('sun4u', 'sparc64'),
+            ('sun4v', 'sparc64'),
+            ('amd64', 'x86_64'),
+            ('x64', 'x86_64'),
+            ('i86pc', 'x86_64'),  # Solaris
+            ('aarch64', 'aarch64'),
+            ('aarch64_be', 'aarch64'),
+        ]
+
+        with mock.patch('mesonbuild.environment.any_compiler_has_define', mock.Mock(return_value=False)):
+            for test, expected in cases:
+                with self.subTest(test, has_define=False), mock_trial(test):
+                    actual = mesonbuild.environment.detect_cpu_family({})
+                    self.assertEqual(actual, expected)
+
+        with mock.patch('mesonbuild.environment.any_compiler_has_define', mock.Mock(return_value=True)):
+            for test, expected in [('x86_64', 'x86'), ('aarch64', 'arm'), ('ppc', 'ppc64')]:
+                with self.subTest(test, has_define=True), mock_trial(test):
+                    actual = mesonbuild.environment.detect_cpu_family({})
+                    self.assertEqual(actual, expected)
+
+    def test_detect_cpu(self) -> None:
+
+        @contextlib.contextmanager
+        def mock_trial(value: str) -> T.Iterable[None]:
+            """Mock all of the ways we could get the trial at once."""
+            mocked = mock.Mock(return_value=value)
+
+            with mock.patch('mesonbuild.environment.detect_windows_arch', mocked), \
+                    mock.patch('mesonbuild.environment.platform.processor', mocked), \
+                    mock.patch('mesonbuild.environment.platform.machine', mocked):
+                yield
+
+        cases = [
+            ('amd64', 'x86_64'),
+            ('x64', 'x86_64'),
+            ('i86pc', 'x86_64'),
+            ('earm', 'arm'),
+            ('mips64el', 'mips64'),
+            ('mips64', 'mips64'),
+            ('mips', 'mips'),
+            ('mipsel', 'mips'),
+            ('aarch64', 'aarch64'),
+            ('aarch64_be', 'aarch64'),
+        ]
+
+        with mock.patch('mesonbuild.environment.any_compiler_has_define', mock.Mock(return_value=False)):
+            for test, expected in cases:
+                with self.subTest(test, has_define=False), mock_trial(test):
+                    actual = mesonbuild.environment.detect_cpu({})
+                    self.assertEqual(actual, expected)
+
+        with mock.patch('mesonbuild.environment.any_compiler_has_define', mock.Mock(return_value=True)):
+            for test, expected in [('x86_64', 'i686'), ('aarch64', 'arm'), ('ppc', 'ppc64')]:
+                with self.subTest(test, has_define=True), mock_trial(test):
+                    actual = mesonbuild.environment.detect_cpu({})
+                    self.assertEqual(actual, expected)
+
+    def test_interpreter_unpicklable(self) -> None:
+        build = mock.Mock()
+        build.environment = mock.Mock()
+        build.environment.get_source_dir = mock.Mock(return_value='')
+        with mock.patch('mesonbuild.interpreter.Interpreter._redetect_machines', mock.Mock()), \
+                self.assertRaises(mesonbuild.mesonlib.MesonBugException):
+            i = mesonbuild.interpreter.Interpreter(build, mock=True)
+            pickle.dumps(i)

@@ -181,7 +181,7 @@ problem that has caused complications for GNU Autotools and SCons.
 Either by using [GCC symbol
 visibility](https://gcc.gnu.org/wiki/Visibility) or by writing a
 [linker
-script](https://ftp.gnu.org/old-gnu/Manuals/ld-2.9.1/html_mono/ld.html). This
+script](https://sourceware.org/binutils/docs/ld.html). This
 has the added benefit that your symbol definitions are in a standalone
 file instead of being buried inside your build definitions. An example
 can be found
@@ -332,6 +332,16 @@ that could fulfill these requirements:
 
 Out of these we have chosen Python because it is the best fit for our
 needs.
+
+## But I really want a version of Meson that doesn't use python!
+
+Ecosystem diversity is good. We encourage interested users to write this
+competing implementation of Meson themselves. As of September 2021, there are 3
+projects attempting to do just this:
+
+ - [muon](https://git.sr.ht/~lattis/muon)
+ - [Meson++](https://github.com/dcbaker/meson-plus-plus)
+ - [boson](https://git.sr.ht/~bl4ckb0ne/boson)
 
 ## I have proprietary compiler toolchain X that does not work with Meson, how can I make it work?
 

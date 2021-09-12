@@ -50,6 +50,7 @@ if T.TYPE_CHECKING:
     from configparser import ConfigParser
 
     from .dependencies import ExternalProgram
+    from .wrap.wrap import Resolver
 
 build_filename = 'meson.build'
 
@@ -313,6 +314,9 @@ def detect_cpu_family(compilers: CompilersDict) -> str:
         trial = 'x86'
     elif trial == 'arm64':
         trial = 'aarch64'
+    elif trial.startswith('aarch64'):
+        # This can be `aarch64_be`
+        trial = 'aarch64'
     elif trial.startswith('arm') or trial.startswith('earm'):
         trial = 'arm'
     elif trial.startswith(('powerpc64', 'ppc64')):
@@ -358,7 +362,7 @@ def detect_cpu_family(compilers: CompilersDict) -> str:
 
     return trial
 
-def detect_cpu(compilers: CompilersDict):
+def detect_cpu(compilers: CompilersDict) -> str:
     if mesonlib.is_windows():
         trial = detect_windows_arch(compilers)
     elif mesonlib.is_freebsd() or mesonlib.is_netbsd() or mesonlib.is_openbsd() or mesonlib.is_aix():
@@ -372,10 +376,13 @@ def detect_cpu(compilers: CompilersDict):
         # Same check as above for cpu_family
         if any_compiler_has_define(compilers, '__i386__'):
             trial = 'i686' # All 64 bit cpus have at least this level of x86 support.
-    elif trial == 'aarch64':
+    elif trial.startswith('aarch64'):
         # Same check as above for cpu_family
         if any_compiler_has_define(compilers, '__arm__'):
             trial = 'arm'
+        else:
+            # for aarch64_be
+            trial = 'aarch64'
     elif trial.startswith('earm'):
         trial = 'arm'
     elif trial == 'e2k':
@@ -386,20 +393,22 @@ def detect_cpu(compilers: CompilersDict):
             trial = 'mips'
         else:
             trial = 'mips64'
+    elif trial == 'ppc':
+        # AIX always returns powerpc, check here for 64-bit
+        if any_compiler_has_define(compilers, '__64BIT__'):
+            trial = 'ppc64'
 
     # Add more quirks here as bugs are reported. Keep in sync with
     # detect_cpu_family() above.
     return trial
 
-def detect_system():
+def detect_system() -> str:
     if sys.platform == 'cygwin':
         return 'cygwin'
     return platform.system().lower()
 
-def detect_msys2_arch():
-    if 'MSYSTEM_CARCH' in os.environ:
-        return os.environ['MSYSTEM_CARCH']
-    return None
+def detect_msys2_arch() -> T.Optional[str]:
+    return os.environ.get('MSYSTEM_CARCH', None)
 
 def detect_machine_info(compilers: T.Optional[CompilersDict] = None) -> MachineInfo:
     """Detect the machine we're running on
@@ -571,7 +580,7 @@ class Environment:
 
         self.default_cmake = ['cmake']
         self.default_pkgconfig = ['pkg-config']
-        self.wrap_resolver = None
+        self.wrap_resolver: T.Optional['Resolver'] = None
 
     def _load_machine_file_options(self, config: 'ConfigParser', properties: Properties, machine: MachineChoice) -> None:
         """Read the contents of a Machine file and put it in the options store."""

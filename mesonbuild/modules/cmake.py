@@ -71,8 +71,8 @@ endmacro()
 
 class CMakeSubproject(ModuleObject):
     def __init__(self, subp, pv):
-        assert(isinstance(subp, SubprojectHolder))
-        assert(hasattr(subp, 'cm_interpreter'))
+        assert isinstance(subp, SubprojectHolder)
+        assert hasattr(subp, 'cm_interpreter')
         super().__init__()
         self.subp = subp
         self.methods.update({'get_variable': self.get_variable,
@@ -96,7 +96,7 @@ class CMakeSubproject(ModuleObject):
                                        '    message(\'CMaket targets:\\n - \' + \'\\n - \'.join(<cmake_subproject>.target_list()))')
 
         # Make sure that all keys are present (if not this is a bug)
-        assert(all([x in res for x in ['inc', 'src', 'dep', 'tgt', 'func']]))
+        assert all([x in res for x in ['inc', 'src', 'dep', 'tgt', 'func']])
         return res
 
     @noKwargs
@@ -272,9 +272,10 @@ class CmakeModule(ExtensionModule):
         if not self.detect_cmake():
             raise mesonlib.MesonException('Unable to find cmake')
 
-        pkgroot = kwargs.get('install_dir', None)
+        pkgroot = pkgroot_name = kwargs.get('install_dir', None)
         if pkgroot is None:
             pkgroot = os.path.join(state.environment.coredata.get_option(mesonlib.OptionKey('libdir')), 'cmake', name)
+            pkgroot_name = os.path.join('{libdir}', 'cmake', name)
         if not isinstance(pkgroot, str):
             raise mesonlib.MesonException('Install_dir must be a string.')
 
@@ -290,7 +291,7 @@ class CmakeModule(ExtensionModule):
         }
         mesonlib.do_conf_file(template_file, version_file, conf, 'meson')
 
-        res = build.Data([mesonlib.File(True, state.environment.get_scratch_dir(), version_file)], pkgroot, None, state.subproject)
+        res = build.Data([mesonlib.File(True, state.environment.get_scratch_dir(), version_file)], pkgroot, pkgroot_name, None, state.subproject)
         return ModuleReturnValue(res, [res])
 
     def create_package_file(self, infile, outfile, PACKAGE_RELATIVE_PATH, extra, confdata):
@@ -375,7 +376,7 @@ class CmakeModule(ExtensionModule):
         if conffile not in self.interpreter.build_def_files:
             self.interpreter.build_def_files.append(conffile)
 
-        res = build.Data([mesonlib.File(True, ofile_path, ofile_fname)], install_dir, None, state.subproject)
+        res = build.Data([mesonlib.File(True, ofile_path, ofile_fname)], install_dir, install_dir, None, state.subproject)
         self.interpreter.build.data.append(res)
 
         return res

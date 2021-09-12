@@ -44,7 +44,6 @@ _U = T.TypeVar('_U')
 
 __all__ = [
     'GIT',
-    'an_unpicklable_object',
     'python_command',
     'project_meson_versions',
     'HoldableObject',
@@ -264,12 +263,6 @@ def check_direntry_issues(direntry_array: T.Union[T.List[T.Union[str, bytes]], s
                 locale but you are trying to access a file system entry called {de!r} which is
                 not pure ASCII. This may cause problems.
                 '''), file=sys.stderr)
-
-
-# Put this in objects that should not get dumped to pickle files
-# by accident.
-import threading
-an_unpicklable_object = threading.Lock()
 
 class HoldableObject(metaclass=abc.ABCMeta):
     ''' Dummy base class for all objects that can be
@@ -643,7 +636,7 @@ def is_windows() -> bool:
     return platname == 'windows'
 
 def is_wsl() -> bool:
-    return is_linux() and 'microsoft' in platform.version().lower()
+    return is_linux() and 'microsoft' in platform.release().lower()
 
 def is_cygwin() -> bool:
     return sys.platform == 'cygwin'
@@ -1059,7 +1052,7 @@ if is_windows():
             if c == '\\':
                 num_backslashes += 1
             else:
-                if c == '"' and not (num_backslashes % 2):
+                if c == '"' and not num_backslashes % 2:
                     # unescaped quote, eat it
                     arg += (num_backslashes // 2) * '\\'
                     num_quotes += 1
@@ -1974,15 +1967,15 @@ class OptionOverrideProxy(collections.abc.MutableMapping):
         return OptionOverrideProxy(self.overrides.copy(), self.options.copy())
 
 
-class OptionType(enum.Enum):
+class OptionType(enum.IntEnum):
 
     """Enum used to specify what kind of argument a thing is."""
 
     BUILTIN = 0
-    BASE = 1
-    COMPILER = 2
-    PROJECT = 3
-    BACKEND = 4
+    BACKEND = 1
+    BASE = 2
+    COMPILER = 3
+    PROJECT = 4
 
 # This is copied from coredata. There is no way to share this, because this
 # is used in the OptionKey constructor, and the coredata lists are
@@ -2112,11 +2105,9 @@ class OptionKey:
 
     def __lt__(self, other: object) -> bool:
         if isinstance(other, OptionKey):
-            return (
-                self.name < other.name and
-                self.subproject < other.subproject and
-                self.machine < other.machine and
-                self.lang < other.lang)
+            self_tuple = (self.subproject, self.type, self.lang, self.machine, self.name)
+            other_tuple = (other.subproject, other.type, other.lang, other.machine, other.name)
+            return self_tuple < other_tuple
         return NotImplemented
 
     def __str__(self) -> str:
