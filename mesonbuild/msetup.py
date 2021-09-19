@@ -177,8 +177,6 @@ class MesonApp:
         mlog.initialize(env.get_log_dir(), self.options.fatal_warnings)
         if self.options.profile:
             mlog.set_timestamp_start(time.monotonic())
-        if env.coredata.options[mesonlib.OptionKey('backend')].value == 'xcode':
-            mlog.warning('xcode backend is currently unmaintained, patches welcome')
         with mesonlib.BuildDirLock(self.build_dir):
             self._generate(env)
 
@@ -264,6 +262,18 @@ class MesonApp:
 
             # Post-conf scripts must be run after writing coredata or else introspection fails.
             intr.backend.run_postconf_scripts()
+
+            # collect warnings about unsupported build configurations; must be done after full arg processing
+            # by Interpreter() init, but this is most visible at the end
+            if env.coredata.options[mesonlib.OptionKey('backend')].value == 'xcode':
+                mlog.warning('xcode backend is currently unmaintained, patches welcome')
+            if env.coredata.options[mesonlib.OptionKey('layout')].value == 'flat':
+                mlog.warning('-Dlayout=flat is unsupported and probably broken. It was a failed experiment at '
+                             'making Windows build artifacts runnable while uninstalled, due to PATH considerations, '
+                             'but was untested by CI and anyways breaks reasonable use of conflicting targets in different subdirs. '
+                             'Please consider using `meson devenv` instead. See https://github.com/mesonbuild/meson/pull/9243 '
+                             'for details.')
+
         except Exception as e:
             mintro.write_meson_info_file(b, [e])
             if 'cdf' in locals():

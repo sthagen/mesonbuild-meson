@@ -3066,9 +3066,6 @@ class AllPlatformTests(BasePlatformTests):
         self.init(testdir, extra_args=['-Dcmake_prefix_path=' + os.path.join(testdir, 'prefix')])
 
     def test_alias_target(self):
-        if self.backend is Backend.vs:
-            # FIXME: This unit test is broken with vs backend, needs investigation
-            raise SkipTest(f'Skipping alias_target test with {self.backend.name} backend')
         testdir = os.path.join(self.unit_test_dir, '65 alias target')
         self.init(testdir)
         self.build()
@@ -3860,6 +3857,8 @@ class AllPlatformTests(BasePlatformTests):
             Path(installpath, 'usr/share/out1-custom.txt'),
             Path(installpath, 'usr/share/out2-custom.txt'),
             Path(installpath, 'usr/share/out3-custom.txt'),
+            Path(installpath, 'usr/share/custom_files'),
+            Path(installpath, 'usr/share/custom_files/data.txt'),
             Path(installpath, 'usr/lib'),
             Path(installpath, 'usr/lib/libbothcustom.a'),
             Path(installpath, 'usr/' + shared_lib_name('bothcustom')),
