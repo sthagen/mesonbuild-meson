@@ -33,11 +33,11 @@ from .mesonlib import (
     extract_as_list, typeslistify, stringlistify, classify_unity_sources,
     get_filenames_templates_dict, substitute_values, has_path_sep,
     OptionKey, PerMachineDefaultable,
-    MesonBugException, FileOrString,
+    MesonBugException,
 )
 from .compilers import (
     Compiler, is_object, clink_langs, sort_clink, lang_suffixes,
-    is_known_suffix, detect_static_linker
+    is_known_suffix, detect_static_linker, detect_compiler_for
 )
 from .linkers import StaticLinker
 from .interpreterbase import FeatureNew
@@ -206,6 +206,19 @@ class InstallDir(HoldableObject):
         self.install_tag = install_tag
 
 
+class DepManifest:
+
+    def __init__(self, version: str, license: T.List[str]):
+        self.version = version
+        self.license = license
+
+    def to_json(self) -> T.Dict[str, T.Union[str, T.List[str]]]:
+        return {
+            'version': self.version,
+            'license': self.license,
+        }
+
+
 class Build:
     """A class that holds the status of one build including
     all dependencies and so on.
@@ -230,16 +243,16 @@ class Build:
         self.static_linker: PerMachine[StaticLinker] = PerMachine(None, None)
         self.subprojects = {}
         self.subproject_dir = ''
-        self.install_scripts = []
+        self.install_scripts: T.List['ExecutableSerialisation'] = []
         self.postconf_scripts: T.List['ExecutableSerialisation'] = []
-        self.dist_scripts = []
+        self.dist_scripts: T.List['ExecutableSerialisation'] = []
         self.install_dirs: T.List[InstallDir] = []
-        self.dep_manifest_name = None
-        self.dep_manifest = {}
+        self.dep_manifest_name: T.Optional[str] = None
+        self.dep_manifest: T.Dict[str, DepManifest] = {}
         self.stdlibs = PerMachine({}, {})
         self.test_setups: T.Dict[str, TestSetup] = {}
         self.test_setup_default_name = None
-        self.find_overrides = {}
+        self.find_overrides: T.Dict[str, T.Union['Executable', programs.ExternalProgram, programs.OverrideProgram]] = {}
         self.searched_programs = set() # The list of all programs that have been searched for.
 
         # If we are doing a cross build we need two caches, if we're doing a
@@ -833,8 +846,40 @@ class BuildTarget(Target):
 
         # If all our sources are Vala, our target also needs the C compiler but
         # it won't get added above.
-        if ('vala' in self.compilers or 'cython' in self.compilers) and 'c' not in self.compilers:
+        if 'vala' in self.compilers and 'c' not in self.compilers:
             self.compilers['c'] = compilers['c']
+        if 'cython' in self.compilers:
+            key = OptionKey('language', machine=self.for_machine, lang='cython')
+            if key in self.option_overrides_compiler:
+                value = self.option_overrides_compiler[key]
+            else:
+                value = self.environment.coredata.options[key].value
+
+            try:
+                self.compilers[value] = compilers[value]
+            except KeyError:
+                # TODO: it would be nice to not have to do this here, but we
+                # have two problems to work around:
+                # 1. If this is set via an override we have no way to know
+                #    before now that we need a compiler for the non-default language
+                # 2. Because Cython itself initializes the `cython_language`
+                #    option, we have no good place to insert that you need it
+                #    before now, so we just have to do it here.
+                comp = detect_compiler_for(self.environment, value, self.for_machine)
+
+                # This is copied verbatim from the interpreter
+                if self.for_machine == MachineChoice.HOST or self.environment.is_cross_build():
+                    logger_fun = mlog.log
+                else:
+                    logger_fun = mlog.debug
+                logger_fun(comp.get_display_language(), 'compiler for the', self.for_machine.get_lower_case_name(), 'machine:',
+                        mlog.bold(' '.join(comp.get_exelist())), comp.get_version_string())
+                if comp.linker is not None:
+                    logger_fun(comp.get_display_language(), 'linker for the', self.for_machine.get_lower_case_name(), 'machine:',
+                            mlog.bold(' '.join(comp.linker.get_exelist())), comp.linker.id, comp.linker.version)
+                if comp is None:
+                    raise MesonException(f'Cannot find required compiler {value}')
+                self.compilers[value] = comp
 
     def validate_sources(self):
         if not self.sources:
@@ -889,7 +934,7 @@ class BuildTarget(Target):
             if t in self.kwargs:
                 self.kwargs[t] = listify(self.kwargs[t], flatten=True)
 
-    def extract_objects(self, srclist: T.List[FileOrString]) -> ExtractedObjects:
+    def extract_objects(self, srclist: T.List['FileOrString']) -> ExtractedObjects:
         obj_src: T.List['File'] = []
         sources_set = set(self.sources)
         for src in srclist:
@@ -1425,7 +1470,7 @@ You probably should put it in link_with instead.''')
         # If the user set the link_language, just return that.
         if self.link_language:
             comp = all_compilers[self.link_language]
-            return comp, comp.language_stdlib_only_link_flags()
+            return comp, comp.language_stdlib_only_link_flags(self.environment)
 
         # Languages used by dependencies
         dep_langs = self.get_langs_used_by_deps()
@@ -1443,7 +1488,7 @@ You probably should put it in link_with instead.''')
                 added_languages: T.Set[str] = set()
                 for dl in itertools.chain(self.compilers, dep_langs):
                     if dl != linker.language:
-                        stdlib_args += all_compilers[dl].language_stdlib_only_link_flags()
+                        stdlib_args += all_compilers[dl].language_stdlib_only_link_flags(self.environment)
                         added_languages.add(dl)
                 # Type of var 'linker' is Compiler.
                 # Pretty hard to fix because the return value is passed everywhere
@@ -2478,6 +2523,9 @@ class CustomTarget(Target, CommandBase):
     def __iter__(self):
         for i in self.outputs:
             yield CustomTargetIndex(self, i)
+
+    def __len__(self) -> int:
+        return len(self.outputs)
 
 class RunTarget(Target, CommandBase):
     def __init__(self, name: str, command, dependencies,

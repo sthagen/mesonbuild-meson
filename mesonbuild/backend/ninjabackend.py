@@ -515,7 +515,13 @@ class NinjaBackend(backends.Backend):
         ninja = environment.detect_ninja_command_and_version(log=True)
         if need_setup_vsenv:
             builddir = Path(self.environment.get_build_dir())
-            builddir = builddir.relative_to(Path.cwd())
+            try:
+                # For prettier printing, reduce to a relative path. If
+                # impossible (e.g., because builddir and cwd are on
+                # different Windows drives), skip and use the full path.
+                builddir = builddir.relative_to(Path.cwd())
+            except ValueError:
+                pass
             meson_command = mesonlib.join_args(mesonlib.get_meson_command())
             mlog.log()
             mlog.log('Visual Studio environment is needed to run Ninja. It is recommended to use Meson wrapper:')
@@ -887,7 +893,7 @@ class NinjaBackend(backends.Backend):
         else:
             final_obj_list = obj_list
         elem = self.generate_link(target, outname, final_obj_list, linker, pch_objects, stdlib_args=stdlib_args)
-        self.generate_dependency_scan_target(target, compiled_sources, source2object)
+        self.generate_dependency_scan_target(target, compiled_sources, source2object, generated_source_files)
         self.generate_shlib_aliases(target, self.get_target_dir(target))
         self.add_build(elem)
 
@@ -911,7 +917,7 @@ class NinjaBackend(backends.Backend):
             return False
         return True
 
-    def generate_dependency_scan_target(self, target, compiled_sources, source2object):
+    def generate_dependency_scan_target(self, target, compiled_sources, source2object, generated_source_files: T.List[mesonlib.File]):
         if not self.should_use_dyndeps_for_target(target):
             return
         depscan_file = self.get_dep_scan_file_for(target)
@@ -929,6 +935,10 @@ class NinjaBackend(backends.Backend):
             json.dump(scan_sources, f)
         elem = NinjaBuildElement(self.all_outputs, depscan_file, rule_name, json_abs)
         elem.add_item('picklefile', pickle_file)
+        # Add any generated outputs to the order deps of the scan target, so
+        # that those sources are present
+        for g in generated_source_files:
+            elem.orderdeps.add(g.relative_name())
         scaninfo = TargetDependencyScannerInfo(self.get_target_private_dir(target), source2object)
         with open(pickle_abs, 'wb') as p:
             pickle.dump(scaninfo, p)
@@ -1588,9 +1598,11 @@ class NinjaBackend(backends.Backend):
         args += self.build.get_global_args(cython, target.for_machine)
         args += self.build.get_project_args(cython, target.subproject, target.for_machine)
 
+        ext = opt_proxy[OptionKey('language', machine=target.for_machine, lang='cython')].value
+
         for src in target.get_sources():
             if src.endswith('.pyx'):
-                output = os.path.join(self.get_target_private_dir(target), f'{src}.c')
+                output = os.path.join(self.get_target_private_dir(target), f'{src}.{ext}')
                 args = args.copy()
                 args += cython.get_output_args(output)
                 element = NinjaBuildElement(
@@ -1612,7 +1624,7 @@ class NinjaBackend(backends.Backend):
                     ssrc = os.path.join(gen.get_subdir(), ssrc)
                 if ssrc.endswith('.pyx'):
                     args = args.copy()
-                    output = os.path.join(self.get_target_private_dir(target), f'{ssrc}.c')
+                    output = os.path.join(self.get_target_private_dir(target), f'{ssrc}.{ext}')
                     args += cython.get_output_args(output)
                     element = NinjaBuildElement(
                         self.all_outputs, [output],
@@ -1679,20 +1691,12 @@ class NinjaBackend(backends.Backend):
         if cratetype in {'bin', 'dylib'}:
             args.extend(rustc.get_linker_always_args())
 
-        opt_proxy = self.get_compiler_options_for_target(target)
-
+        args += self.generate_basic_compiler_args(target, rustc, False)
         args += ['--crate-name', target.name]
-        args += rustc.get_buildtype_args(self.get_option_for_target(OptionKey('buildtype'), target))
-        args += rustc.get_debug_args(self.get_option_for_target(OptionKey('debug'), target))
-        args += rustc.get_optimization_args(self.get_option_for_target(OptionKey('optimization'), target))
-        args += rustc.get_option_compile_args(opt_proxy)
-        args += self.build.get_global_args(rustc, target.for_machine)
-        args += self.build.get_project_args(rustc, target.subproject, target.for_machine)
         depfile = os.path.join(target.subdir, target.name + '.d')
         args += ['--emit', f'dep-info={depfile}', '--emit', 'link']
         args += target.get_extra_args('rust')
         args += rustc.get_output_args(os.path.join(target.subdir, target.get_filename()))
-        args += self.environment.coredata.get_external_args(target.for_machine, rustc.language)
         linkdirs = mesonlib.OrderedSet()
         external_deps = target.external_deps.copy()
         for d in target.link_targets:

@@ -73,7 +73,9 @@ import importlib
 
 if T.TYPE_CHECKING:
     import argparse
+
     from . import kwargs
+    from ..programs import OverrideProgram
 
     # Input source types passed to Targets
     SourceInputs = T.Union[mesonlib.File, build.GeneratedList, build.BuildTarget, build.BothLibraries,
@@ -89,6 +91,8 @@ def stringifyUserArguments(args, quote=False):
         return '[%s]' % ', '.join([stringifyUserArguments(x, True) for x in args])
     elif isinstance(args, dict):
         return '{%s}' % ', '.join(['{} : {}'.format(stringifyUserArguments(k, True), stringifyUserArguments(v, True)) for k, v in args.items()])
+    elif isinstance(args, bool):
+        pass # bools are a type of int, make this fallthrough to the error case
     elif isinstance(args, int):
         return str(args)
     elif isinstance(args, str):
@@ -233,6 +237,7 @@ class Interpreter(InterpreterBase, HoldableObject):
                 user_defined_options: T.Optional['argparse.Namespace'] = None,
             ) -> None:
         super().__init__(_build.environment.get_source_dir(), subdir, subproject)
+        self.active_projectname = ''
         self.build = _build
         self.environment = self.build.environment
         self.coredata = self.environment.get_coredata()
@@ -373,6 +378,8 @@ class Interpreter(InterpreterBase, HoldableObject):
             # Primitives
             int: P_OBJ.IntegerHolder,
             bool: P_OBJ.BooleanHolder,
+            str: P_OBJ.StringHolder,
+            P_OBJ.MesonVersionString: P_OBJ.MesonVersionStringHolder,
 
             # Meson types
             mesonlib.File: OBJ.FileHolder,
@@ -1057,8 +1064,7 @@ external dependencies (including libraries) must go to "dependencies".''')
         if self.build.project_version is None:
             self.build.project_version = self.project_version
         proj_license = mesonlib.stringlistify(kwargs.get('license', 'unknown'))
-        self.build.dep_manifest[proj_name] = {'version': self.project_version,
-                                              'license': proj_license}
+        self.build.dep_manifest[proj_name] = build.DepManifest(self.project_version, proj_license)
         if self.subproject in self.build.projects:
             raise InvalidCode('Second call to project().')
 
@@ -1241,9 +1247,14 @@ external dependencies (including libraries) must go to "dependencies".''')
         args = [a.lower() for a in args]
         langs = set(self.coredata.compilers[for_machine].keys())
         langs.update(args)
-        if ('vala' in langs or 'cython' in langs) and 'c' not in langs:
-            if 'vala' in langs:
-                FeatureNew.single_use('Adding Vala language without C', '0.59.0', self.subproject)
+        # We'd really like to add cython's default language here, but it can't
+        # actually be done because the cython compiler hasn't been initialized,
+        # so we can't actually get the option yet. Because we can't know what
+        # compiler to add by default, and we don't want to add unnecessary
+        # compilers we don't add anything for cython here, and instead do it
+        # When the first cython target using a particular language is used.
+        if 'vala' in langs and 'c' not in langs:
+            FeatureNew.single_use('Adding Vala language without C', '0.59.0', self.subproject)
             args.append('c')
 
         success = True
@@ -1337,7 +1348,7 @@ external dependencies (including libraries) must go to "dependencies".''')
             if isinstance(name, str):
                 self.build.searched_programs.add(name)
 
-    def add_find_program_override(self, name, exe):
+    def add_find_program_override(self, name: str, exe: T.Union[build.Executable, ExternalProgram, 'OverrideProgram']) -> None:
         if name in self.build.searched_programs:
             raise InterpreterException(f'Tried to override finding of executable "{name}" which has already been found.')
         if name in self.build.find_overrides:
@@ -1430,7 +1441,7 @@ external dependencies (including libraries) must go to "dependencies".''')
     @FeatureNewKwargs('find_program', '0.49.0', ['disabler'])
     @disablerIfNotFound
     @permittedKwargs({'required', 'native', 'version', 'dirs'})
-    def func_find_program(self, node, args, kwargs):
+    def func_find_program(self, node, args, kwargs) -> T.Union['build.Executable', ExternalProgram, 'OverrideProgram']:
         if not args:
             raise InterpreterException('No program name specified.')
 
@@ -1472,8 +1483,8 @@ external dependencies (including libraries) must go to "dependencies".''')
             raise InvalidArguments('"allow_fallback" argument must be boolean')
         fallback = kwargs.get('fallback')
         default_options = kwargs.get('default_options')
-        df = DependencyFallbacksHolder(self, names, allow_fallback)
-        df.set_fallback(fallback, default_options)
+        df = DependencyFallbacksHolder(self, names, allow_fallback, default_options)
+        df.set_fallback(fallback)
         not_found_message = kwargs.get('not_found_message', '')
         if not isinstance(not_found_message, str):
             raise InvalidArguments('The not_found_message must be a string.')
@@ -2322,7 +2333,7 @@ This will become a hard error in the future.''' % kwargs['input'], location=self
         # https://github.com/mesonbuild/meson/issues/3275#issuecomment-641354956
         # https://github.com/mesonbuild/meson/issues/3742
         warnargs = ('/W1', '/W2', '/W3', '/W4', '/Wall', '-Wall', '-Wextra')
-        optargs = ('-O0', '-O2', '-O3', '-Os', '/O1', '/O2', '/Os')
+        optargs = ('-O0', '-O2', '-O3', '-Os', '-Oz', '/O1', '/O2', '/Os')
         for arg in args:
             if arg in warnargs:
                 mlog.warning(f'Consider using the built-in warning_level option instead of using "{arg}".',
@@ -2392,7 +2403,7 @@ This will become a hard error in the future.''' % kwargs['input'], location=self
     @typed_pos_args('join_paths', varargs=str, min_varargs=1)
     @noKwargs
     def func_join_paths(self, node: mparser.BaseNode, args: T.Tuple[T.List[str]], kwargs: 'TYPE_kwargs') -> str:
-        return self.join_path_strings(args[0])
+        return os.path.join(*args[0]).replace('\\', '/')
 
     def run(self) -> None:
         super().run()
@@ -2643,7 +2654,7 @@ This will become a hard error in the future.''', location=self.current_node)
         if self.subproject != buildtarget.subproject:
             raise InterpreterException('Tried to extract objects from a different subproject.')
 
-    def is_subproject(self):
+    def is_subproject(self) -> bool:
         return self.subproject != ''
 
     @typed_pos_args('set_variable', str, object)

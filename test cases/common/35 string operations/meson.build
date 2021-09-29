@@ -1,4 +1,4 @@
-project('string formatting', 'c')
+project('string formatting', 'c', meson_version: '>=0.59.0')
 
 templ = '@0@bar@1@'
 
@@ -18,6 +18,9 @@ assert('@@0@@ @@1@@'.format(1, 2) == '@1@ @2@', 'String format is recursive.')
 long = 'abcde'
 prefix = 'abc'
 suffix = 'cde'
+
+assert(long[0] == 'a')
+assert(long[2] == 'c')
 
 assert(long.replace('b', 'd') == 'adcde')
 assert(long.replace('z', 'x') == long)
@@ -61,6 +64,7 @@ assert('@0@'.format(true) == 'true', 'bool string formatting failed')
 assert(' '.join(['a', 'b', 'c']) == 'a b c', 'join() array broken')
 assert(''.join(['a', 'b', 'c']) == 'abc', 'empty join() broken')
 assert(' '.join(['a']) == 'a', 'single join broken')
+assert(' '.join(['a'], ['b', ['c']], 'd') == 'a b c d', 'varargs join broken')
 
 version_number = '1.2.8'
 

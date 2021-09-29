@@ -2268,6 +2268,7 @@ are immutable, all operations return their results as a new string.
 
 - `join(list_of_strings)`: the opposite of split, for example
   `'.'.join(['a', 'b', 'c']` yields `'a.b.c'`.
+  *(Since 0.60.0)* more than one argument is supported and lists will be flattened.
 
 - `replace('old_substr', 'new_str')` *(since 0.58.0)*: replaces instances of
   `old_substr` in the string with `new_str` and returns a new string
@@ -2513,7 +2514,10 @@ the following methods:
   positional argument compiles and links, you can specify external
   dependencies to use with `dependencies` keyword argument, `code` can
   be either a string containing source code or a `file` object
-  pointing to the source code.
+  pointing to the source code.  *Since 0.60.0*, if the `file` object's
+  suffix does not match the compiler object's language, the compiler
+  corresponding to the suffix is used to compile the source, while the
+  target of the `links` method is used to link the resulting object file.
 
 - `run(code)`: attempts to compile and execute the given code fragment,
   returns a run result object, you can specify external dependencies

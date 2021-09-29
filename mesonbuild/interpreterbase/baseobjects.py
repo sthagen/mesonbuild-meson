@@ -129,8 +129,8 @@ class MesonInterpreterObject(InterpreterObject):
 class MutableInterpreterObject:
     ''' Dummy class to mark the object type as mutable '''
 
-HoldableTypes = (HoldableObject, int, bool)
-TYPE_HoldableTypes = T.Union[HoldableObject, int, bool]
+HoldableTypes = (HoldableObject, int, bool, str)
+TYPE_HoldableTypes = T.Union[HoldableObject, int, bool, str]
 InterpreterObjectTypeVar = T.TypeVar('InterpreterObjectTypeVar', bound=TYPE_HoldableTypes)
 
 class ObjectHolder(InterpreterObject, T.Generic[InterpreterObjectTypeVar]):
@@ -168,12 +168,18 @@ class RangeHolder(MesonInterpreterObject):
     def __init__(self, start: int, stop: int, step: int, *, subproject: str) -> None:
         super().__init__(subproject=subproject)
         self.range = range(start, stop, step)
+        self.operators.update({
+            MesonOperator.INDEX: self.op_index,
+        })
+
+    def op_index(self, other: int) -> int:
+        try:
+            return self.range[other]
+        except:
+            raise InvalidArguments(f'Index {other} out of bounds of range.')
 
     def __iter__(self) -> T.Iterator[int]:
         return iter(self.range)
-
-    def __getitem__(self, key: int) -> int:
-        return self.range[key]
 
     def __len__(self) -> int:
         return len(self.range)

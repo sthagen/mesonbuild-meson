@@ -248,21 +248,33 @@ class Runner:
             self.log(mlog.red(e.output))
             self.log(mlog.red(str(e)))
             return False
-        try:
-            # Fetch only the revision we need, this avoids fetching useless branches.
-            # revision can be either a branch, tag or commit id. In all cases we want
-            # FETCH_HEAD to be set to the desired commit and "git checkout <revision>"
-            # to to either switch to existing/new branch, or detach to tag/commit.
-            # It is more complicated than it first appear, see discussion there:
-            # https://github.com/mesonbuild/meson/pull/7723#discussion_r488816189.
-            heads_refmap = '+refs/heads/*:refs/remotes/origin/*'
-            tags_refmap = '+refs/tags/*:refs/tags/*'
-            self.git_output(['fetch', '--refmap', heads_refmap, '--refmap', tags_refmap, 'origin', revision])
-        except GitException as e:
-            self.log('  -> Could not fetch revision', mlog.bold(revision), 'in', mlog.bold(self.repo_dir))
-            self.log(mlog.red(e.output))
-            self.log(mlog.red(str(e)))
-            return False
+        if self.wrap_resolver.is_git_full_commit_id(revision) and \
+                quiet_git(['rev-parse', '--verify', revision + '^{commit}'], self.repo_dir)[0]:
+            # The revision we need is both a commit and available. So we do not
+            # need to fetch it because it cannot be updated.  Instead, trick
+            # git into setting FETCH_HEAD just in case, from the local commit.
+            self.git_output(['fetch', '.', revision])
+        else:
+            try:
+                # Fetch only the revision we need, this avoids fetching useless branches.
+                # revision can be either a branch, tag or commit id. In all cases we want
+                # FETCH_HEAD to be set to the desired commit and "git checkout <revision>"
+                # to to either switch to existing/new branch, or detach to tag/commit.
+                # It is more complicated than it first appear, see discussion there:
+                # https://github.com/mesonbuild/meson/pull/7723#discussion_r488816189.
+                heads_refmap = '+refs/heads/*:refs/remotes/origin/*'
+                tags_refmap = '+refs/tags/*:refs/tags/*'
+                self.git_output(['fetch', '--refmap', heads_refmap, '--refmap', tags_refmap, 'origin', revision])
+            except GitException as e:
+                self.log('  -> Could not fetch revision', mlog.bold(revision), 'in', mlog.bold(self.repo_dir))
+                if quiet_git(['rev-parse', revision + '^{commit}'], self.repo_dir)[0]:
+                    self.log(mlog.yellow('WARNING:'), 'Proceeding with locally available copy')
+                    # Trick git into setting FETCH_HEAD from the local revision.
+                    quiet_git(['fetch', '.', revision], self.repo_dir)
+                else:
+                    self.log(mlog.red(e.output))
+                    self.log(mlog.red(str(e)))
+                    return False
 
         if branch == '':
             # We are currently in detached mode

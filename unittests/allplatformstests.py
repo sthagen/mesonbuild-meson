@@ -1924,6 +1924,20 @@ class AllPlatformTests(BasePlatformTests):
                'recommended as it is not supported on some platforms')
         self.assertIn(msg, out)
 
+    def test_mixed_language_linker_check(self):
+        testdir = os.path.join(self.unit_test_dir, '97 compiler.links file arg')
+        self.init(testdir)
+        cmds = self.get_meson_log_compiler_checks()
+        self.assertEqual(len(cmds), 5)
+        # Path to the compilers, gleaned from cc.compiles tests
+        cc = cmds[0][0]
+        cxx = cmds[1][0]
+        # cc.links
+        self.assertEqual(cmds[2][0], cc)
+        # cxx.links with C source
+        self.assertEqual(cmds[3][0], cc)
+        self.assertEqual(cmds[4][0], cxx)
+
     def test_ndebug_if_release_disabled(self):
         testdir = os.path.join(self.unit_test_dir, '28 ndebug if-release')
         self.init(testdir, extra_args=['--buildtype=release', '-Db_ndebug=if-release'])
@@ -2356,16 +2370,12 @@ class AllPlatformTests(BasePlatformTests):
         self.wipe()
         self.init(testdir, extra_args=['-Dstart_native=true'], override_envvars=env)
 
-    def __reconfigure(self, change_minor=False):
+    def __reconfigure(self):
         # Set an older version to force a reconfigure from scratch
         filename = os.path.join(self.privatedir, 'coredata.dat')
         with open(filename, 'rb') as f:
             obj = pickle.load(f)
-        if change_minor:
-            v = mesonbuild.coredata.version.split('.')
-            obj.version = '.'.join(v[0:2] + [str(int(v[2]) + 1)])
-        else:
-            obj.version = '0.47.0'
+        obj.version = '0.47.0'
         with open(filename, 'wb') as f:
             pickle.dump(obj, f)
 
@@ -2382,7 +2392,7 @@ class AllPlatformTests(BasePlatformTests):
         self.assertRegex(out, 'opt2 val2')
         self.assertRegex(out, 'opt3 val3')
         self.assertRegex(out, 'opt4 default4')
-        self.assertRegex(out, 'sub1:werror True')
+        self.assertRegex(out, 'sub1:werror true')
         self.build()
         self.run_tests()
 
@@ -2396,7 +2406,7 @@ class AllPlatformTests(BasePlatformTests):
         self.assertRegex(out, 'opt2 val2')
         self.assertRegex(out, 'opt3 val3')
         self.assertRegex(out, 'opt4 val4')
-        self.assertRegex(out, 'sub1:werror True')
+        self.assertRegex(out, 'sub1:werror true')
         self.assertTrue(Path(self.builddir, '.gitignore').exists())
         self.build()
         self.run_tests()
@@ -2405,25 +2415,7 @@ class AllPlatformTests(BasePlatformTests):
         testdir = os.path.join(self.common_test_dir, '157 custom target subdir depend files')
         self.init(testdir)
         self.__reconfigure()
-
-        with Path(self.builddir):
-            self.init(testdir, extra_args=['--wipe'])
-
-    def test_minor_version_does_not_reconfigure_wipe(self):
-        testdir = os.path.join(self.unit_test_dir, '48 reconfigure')
-        self.init(testdir, extra_args=['-Dopt1=val1'])
-        self.setconf('-Dopt2=val2')
-
-        self.__reconfigure(change_minor=True)
-
-        out = self.init(testdir, extra_args=['--reconfigure', '-Dopt3=val3'])
-        self.assertNotRegex(out, 'Regenerating configuration from scratch')
-        self.assertRegex(out, 'opt1 val1')
-        self.assertRegex(out, 'opt2 val2')
-        self.assertRegex(out, 'opt3 val3')
-        self.assertRegex(out, 'opt4 default4')
-        self.build()
-        self.run_tests()
+        self.init(testdir, extra_args=['--wipe'], workdir=self.builddir)
 
     def test_target_construct_id_from_path(self):
         # This id is stable but not guessable.
@@ -4056,3 +4048,16 @@ class AllPlatformTests(BasePlatformTests):
             for file, details in files.items():
                 with self.subTest(key='{}.{}'.format(data_type, file)):
                     self.assertEqual(res[data_type][file], details)
+
+    @skip_if_not_language('rust')
+    @unittest.skipIf(not shutil.which('clippy-driver'), 'Test requires clippy-driver')
+    def test_rust_clippy(self) -> None:
+        if self.backend is not Backend.ninja:
+            raise unittest.SkipTest('Rust is only supported with ninja currently')
+        # Wehn clippy is used, we should get an exception since a variable named
+        # "foo" is used, but is on our denylist
+        testdir = os.path.join(self.rust_test_dir, '1 basic')
+        self.init(testdir, extra_args=['--werror'], override_envvars={'RUSTC': 'clippy-driver'})
+        with self.assertRaises(subprocess.CalledProcessError) as cm:
+            self.build()
+        self.assertIn('error: use of a blacklisted/placeholder name `foo`', cm.exception.stdout)
