@@ -144,7 +144,6 @@ if T.TYPE_CHECKING:
     from ..programs import ExternalProgram
 
 
-
 # Default compilers and linkers
 # =============================
 
@@ -167,12 +166,10 @@ if is_windows():
     defaults['cs'] = ['csc', 'mcs']
 else:
     if platform.machine().lower() == 'e2k':
-        # There are no objc or objc++ compilers for Elbrus,
-        # and there's no clang which can build binaries for host.
-        defaults['c'] = ['cc', 'gcc', 'lcc']
-        defaults['cpp'] = ['c++', 'g++', 'l++']
-        defaults['objc'] = []
-        defaults['objcpp'] = []
+        defaults['c'] = ['cc', 'gcc', 'lcc', 'clang']
+        defaults['cpp'] = ['c++', 'g++', 'l++', 'clang++']
+        defaults['objc'] = ['clang']
+        defaults['objcpp'] = ['clang++']
     else:
         defaults['c'] = ['cc', 'gcc', 'clang', 'nvc', 'pgcc', 'icc']
         defaults['cpp'] = ['c++', 'g++', 'clang++', 'nvc++', 'pgc++', 'icpc']
@@ -342,7 +339,6 @@ def detect_static_linker(env: 'Environment', compiler: Compiler) -> StaticLinker
     _handle_exceptions(popen_exceptions, linkers, 'linker')
 
 
-
 # Compilers
 # =========
 
@@ -367,7 +363,7 @@ def _detect_c_or_cpp_compiler(env: 'Environment', lang: str, for_machine: Machin
             compiler = [compiler]
         compiler_name = os.path.basename(compiler[0])
 
-        if not {'cl', 'cl.exe', 'clang-cl', 'clang-cl.exe'}.isdisjoint(compiler):
+        if any(os.path.basename(x) in {'cl', 'cl.exe', 'clang-cl', 'clang-cl.exe'} for x in compiler):
             # Watcom C provides it's own cl.exe clone that mimics an older
             # version of Microsoft's compiler. Since Watcom's cl.exe is
             # just a wrapper, we skip using it if we detect its presence
@@ -620,7 +616,6 @@ def _detect_c_or_cpp_compiler(env: 'Environment', lang: str, for_machine: Machin
                 ccache + compiler, version, for_machine, is_cross, info,
                 exe_wrap, full_version=full_version, linker=linker)
 
-
     _handle_exceptions(popen_exceptions, compilers)
     raise EnvironmentException(f'Unknown compiler {compilers}')
 
@@ -696,14 +691,17 @@ def detect_fortran_compiler(env: 'Environment', for_machine: MachineChoice) -> C
                 if guess_gcc_or_lcc == 'lcc':
                     version = _get_lcc_version_from_defines(defines)
                     cls = ElbrusFortranCompiler
+                    linker = guess_nix_linker(env, compiler, cls, for_machine)
+                    return cls(
+                        compiler, version, for_machine, is_cross, info,
+                        exe_wrap, defines, full_version=full_version, linker=linker)
                 else:
                     version = _get_gnu_version_from_defines(defines)
                     cls = GnuFortranCompiler
-                linker = guess_nix_linker(env, compiler, cls, for_machine)
-                return cls(
-                    compiler, version, for_machine, is_cross, info,
-                    exe_wrap, defines, full_version=full_version,
-                    linker=linker)
+                    linker = guess_nix_linker(env, compiler, cls, for_machine)
+                    return cls(
+                        compiler, version, for_machine, is_cross, info,
+                        exe_wrap, defines, full_version=full_version, linker=linker)
 
             if 'G95' in out:
                 cls = G95FortranCompiler

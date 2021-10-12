@@ -42,7 +42,7 @@ from mesonbuild.mesonlib import (
     LibType, MachineChoice, PerMachine, Version, is_windows, is_osx,
     is_cygwin, is_openbsd, search_version, MesonException, OptionKey,
 )
-from mesonbuild.interpreter.type_checking import in_set_validator
+from mesonbuild.interpreter.type_checking import in_set_validator, NoneType
 from mesonbuild.dependencies import PkgConfigDependency
 from mesonbuild.programs import ExternalProgram
 import mesonbuild.modules.pkgconfig
@@ -509,8 +509,8 @@ class InternalTests(unittest.TestCase):
     def _test_all_naming(self, cc, env, patterns, platform):
         shr = patterns[platform]['shared']
         stc = patterns[platform]['static']
-        shrstc = shr + tuple([x for x in stc if x not in shr])
-        stcshr = stc + tuple([x for x in shr if x not in stc])
+        shrstc = shr + tuple(x for x in stc if x not in shr)
+        stcshr = stc + tuple(x for x in shr if x not in stc)
         p = cc.get_library_naming(env, LibType.SHARED)
         self.assertEqual(p, shr)
         p = cc.get_library_naming(env, LibType.STATIC)
@@ -1266,7 +1266,7 @@ class InternalTests(unittest.TestCase):
 
         with self.assertRaises(InvalidArguments) as cm:
             _(None, mock.Mock(), [], {'input': {}})
-        self.assertEqual(str(cm.exception), 'testfunc keyword argument "input" container type was "dict", but should have been "list"')
+        self.assertEqual(str(cm.exception), "testfunc keyword argument 'input' was of type 'dict' but should have been list[str]")
 
     def test_typed_kwarg_contained_invalid(self) -> None:
         @typed_kwargs(
@@ -1278,7 +1278,7 @@ class InternalTests(unittest.TestCase):
 
         with self.assertRaises(InvalidArguments) as cm:
             _(None, mock.Mock(), [], {'input': {'key': 1}})
-        self.assertEqual(str(cm.exception), 'testfunc keyword argument "input" contained a value of type "int" but should have been "str"')
+        self.assertEqual(str(cm.exception), "testfunc keyword argument 'input' was of type 'dict' but should have been dict[str]")
 
     def test_typed_kwarg_container_listify(self) -> None:
         @typed_kwargs(
@@ -1313,7 +1313,7 @@ class InternalTests(unittest.TestCase):
 
         with self.assertRaises(MesonException) as cm:
             _(None, mock.Mock(), [], {'input': ['a']})
-        self.assertEqual(str(cm.exception), "testfunc keyword argument \"input\" container should be of even length, but is not")
+        self.assertEqual(str(cm.exception), "testfunc keyword argument 'input' was of type 'list' but should have been list[str] that has even size")
 
     @mock.patch.dict(mesonbuild.mesonlib.project_meson_versions, {})
     def test_typed_kwarg_since(self) -> None:
@@ -1425,8 +1425,41 @@ class InternalTests(unittest.TestCase):
         self.assertEqual(k.default, 'foo')
         self.assertEqual(v.default, 'bar')
 
+    def test_typed_kwarg_default_type(self) -> None:
+        @typed_kwargs(
+            'testfunc',
+            KwargInfo('no_default', (str, ContainerTypeInfo(list, str), NoneType)),
+            KwargInfo('str_default', (str, ContainerTypeInfo(list, str)), default=''),
+            KwargInfo('list_default', (str, ContainerTypeInfo(list, str)), default=['']),
+        )
+        def _(obj, node, args: T.Tuple, kwargs: T.Dict[str, str]) -> None:
+            self.assertEqual(kwargs['no_default'], None)
+            self.assertEqual(kwargs['str_default'], '')
+            self.assertEqual(kwargs['list_default'], [''])
+        _(None, mock.Mock(), [], {})
+
+    def test_typed_kwarg_invalid_default_type(self) -> None:
+        @typed_kwargs(
+            'testfunc',
+            KwargInfo('invalid_default', (str, ContainerTypeInfo(list, str), NoneType), default=42),
+        )
+        def _(obj, node, args: T.Tuple, kwargs: T.Dict[str, str]) -> None:
+            pass
+        self.assertRaises(AssertionError, _, None, mock.Mock(), [], {})
+
+    def test_typed_kwarg_container_in_tuple(self) -> None:
+        @typed_kwargs(
+            'testfunc',
+            KwargInfo('input', (str, ContainerTypeInfo(list, str))),
+        )
+        def _(obj, node, args: T.Tuple, kwargs: T.Dict[str, str]) -> None:
+            self.assertEqual(kwargs['input'], args[0])
+        _(None, mock.Mock(), [''], {'input': ''})
+        _(None, mock.Mock(), [['']], {'input': ['']})
+        self.assertRaises(InvalidArguments, _, None, mock.Mock(), [], {'input': 42})
+
     def test_detect_cpu_family(self) -> None:
-        """Test the various cpu familes that we detect and normalize.
+        """Test the various cpu families that we detect and normalize.
 
         This is particularly useful as both documentation, and to keep testing
         platforms that are less common.

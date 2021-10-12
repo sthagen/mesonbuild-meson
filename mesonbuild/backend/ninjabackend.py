@@ -49,7 +49,6 @@ from ..mesonlib import get_compiler_for_source, has_path_sep, OptionKey
 from .backends import CleanTrees
 from ..build import GeneratedList, InvalidArguments, ExtractedObjects
 from ..interpreter import Interpreter
-from ..mesonmain import need_setup_vsenv
 
 if T.TYPE_CHECKING:
     from .._typing import ImmutableListProtocol
@@ -513,7 +512,7 @@ class NinjaBackend(backends.Backend):
 
     def generate(self):
         ninja = environment.detect_ninja_command_and_version(log=True)
-        if need_setup_vsenv:
+        if self.build.need_vsenv:
             builddir = Path(self.environment.get_build_dir())
             try:
                 # For prettier printing, reduce to a relative path. If
@@ -1012,8 +1011,9 @@ class NinjaBackend(backends.Backend):
             elem.add_item('DEPFILE', rel_dfile)
         if target.console:
             elem.add_item('pool', 'console')
+        full_name = Path(target.subdir, target.name).as_posix()
         elem.add_item('COMMAND', cmd)
-        elem.add_item('description', f'Generating {target.name} with a custom command{cmd_type}')
+        elem.add_item('description', f'Generating {full_name} with a custom command{cmd_type}')
         self.add_build(elem)
         self.processed_targets.add(target.get_id())
 
@@ -1650,7 +1650,10 @@ class NinjaBackend(backends.Backend):
         args += compilers.get_base_compile_args(base_proxy, rustc)
         self.generate_generator_list_rules(target)
 
-        orderdeps = [os.path.join(t.subdir, t.get_filename()) for t in target.link_targets]
+        # dependencies need to cause a relink, they're not just for odering
+        deps = [os.path.join(t.subdir, t.get_filename()) for t in target.link_targets]
+
+        orderdeps: T.List[str] = []
 
         main_rust_file = None
         for i in target.get_sources():
@@ -1771,6 +1774,8 @@ class NinjaBackend(backends.Backend):
         element = NinjaBuildElement(self.all_outputs, target_name, compiler_name, main_rust_file)
         if orderdeps:
             element.add_orderdep(orderdeps)
+        if deps:
+            element.add_dep(deps)
         element.add_item('ARGS', args)
         element.add_item('targetdep', depfile)
         element.add_item('cratetype', cratetype)
@@ -2143,7 +2148,6 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
         self.add_rule(NinjaRule(rule, command, [], description, deps=deps,
                                 depfile=depfile))
 
-
     def generate_scanner_rules(self):
         rulename = 'depscan'
         if rulename in self.ruledict:
@@ -2155,7 +2159,6 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
         description = 'Module scanner.'
         rule = NinjaRule(rulename, command, args, description)
         self.add_rule(rule)
-
 
     def generate_compile_rules(self):
         for for_machine in MachineChoice:
@@ -2786,7 +2789,7 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
             if target.import_filename:
                 commands += linker.gen_import_library_args(self.get_import_filename(target))
         elif isinstance(target, build.StaticLibrary):
-            commands += linker.get_std_link_args()
+            commands += linker.get_std_link_args(not target.should_install())
         else:
             raise RuntimeError('Unknown build target type.')
         return commands

@@ -360,7 +360,7 @@ class MesonMain(MesonInterpreterObject):
         else:
             # dependency('foo') without specifying static kwarg should find this
             # override regardless of the static value here. But do not raise error
-            # if it has already been overridden, which would happend when overriding
+            # if it has already been overridden, which would happen when overriding
             # static and shared separately:
             # meson.override_dependency('foo', shared_dep, static: false)
             # meson.override_dependency('foo', static_dep, static: true)
@@ -434,7 +434,6 @@ class MesonMain(MesonInterpreterObject):
     def get_external_property_method(self, args: T.Tuple[str, T.Optional[object]], kwargs: 'NativeKW') -> object:
         propname, fallback = args
         return self.__get_external_property_impl(propname, fallback, kwargs['native'])
-
 
     @FeatureNew('meson.has_external_property', '0.58.0')
     @typed_pos_args('meson.has_external_property', str)

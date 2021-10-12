@@ -195,7 +195,7 @@ class CudaCompiler(Compiler):
         a double-quoted string a split-point. Single-quotes do not provide protection
         against splitting; In fact, after splitting they are \-escaped. Unfortunately,
         double-quotes don't protect against shell expansion. What follows is a
-        complex dance to accomodate everybody.
+        complex dance to accommodate everybody.
         """
 
         SQ = "'"
@@ -319,7 +319,7 @@ class CudaCompiler(Compiler):
             #     follow the name of the option itself by either one of more spaces or an
             #     equals character. When a one-character short name such as -I, -l, and -L
             #     is used, the value of the option may also immediately follow the option
-            #     itself without being seperated by spaces or an equal character. The
+            #     itself without being separated by spaces or an equal character. The
             #     individual values of list options may be separated by commas in a single
             #     instance of the option, or the option may be repeated, or any
             #     combination of these two cases.
@@ -355,7 +355,6 @@ class CudaCompiler(Compiler):
             if flag in self._FLAG_PASSTHRU_NOARGS:
                 xflags.append(flag)
                 continue
-
 
             # Handle breakup of flag-values into a flag-part and value-part.
             if   flag[:1] not in '-/':
@@ -425,9 +424,7 @@ class CudaCompiler(Compiler):
                     # The above should securely handle GCC's -Wl, -Wa, -Wp, arguments.
                 continue
 
-
             assert val is not None  # Should only trip if there is a missing argument.
-
 
             # Take care of the various NVCC-supported flags that need special handling.
             flag = self._FLAG_LONG2SHORT_WITHARGS.get(flag,flag)

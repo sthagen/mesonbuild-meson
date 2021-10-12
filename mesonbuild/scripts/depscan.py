@@ -106,7 +106,6 @@ class DependencyScanner:
                 else:
                     self.needs[fname] = [parent_module_name_full]
 
-
     def scan_cpp_file(self, fname: str) -> None:
         fpath = pathlib.Path(fname)
         for line in fpath.read_text(encoding='utf-8').split('\n'):
@@ -197,7 +196,7 @@ class DependencyScanner:
 def run(args: T.List[str]) -> int:
     assert len(args) == 3, 'got wrong number of arguments!'
     pickle_file, outfile, jsonfile = args
-    with open(jsonfile, 'r', encoding='utf-8') as f:
+    with open(jsonfile, encoding='utf-8') as f:
         sources = json.load(f)
     scanner = DependencyScanner(pickle_file, outfile, sources)
     return scanner.scan()

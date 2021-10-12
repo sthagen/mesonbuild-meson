@@ -16,7 +16,7 @@ __all__ = [
     'InterpreterObject',
     'MesonInterpreterObject',
     'ObjectHolder',
-    'RangeHolder',
+    'IterableObject',
     'MutableInterpreterObject',
 
     'MesonOperator',
@@ -76,7 +76,7 @@ from .baseobjects import (
     InterpreterObject,
     MesonInterpreterObject,
     ObjectHolder,
-    RangeHolder,
+    IterableObject,
     MutableInterpreterObject,
 
     TV_fw_var,

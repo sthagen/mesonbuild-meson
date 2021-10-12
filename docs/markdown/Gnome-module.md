@@ -225,9 +225,9 @@ useful when running the application locally for example during tests.
 * `build_by_default`: causes, when set to true, to have this target be
   built by default, that is, when invoking plain `meson compile`, the default
   value is true for all built target types
-* `depend_files`: files ([`string`](Reference-manual.md#string-object),
-  [`files()`](Reference-manual.md#files), or
-  [`configure_file()`](Reference-manual.md#configure_file)) of
+* `depend_files`: files ([[@str]],
+  [[files]], or
+  [[configure_file]]) of
   schema source XML files that should trigger a re-compile if changed.
 
 ### gnome.gdbus_codegen()
@@ -298,8 +298,22 @@ VAPI or Vala binaries.
 
 ### gnome.yelp()
 
+```meson
+  gnome.yelp(id: string, sources: ...string, sources: []string, media: []string,
+             languages: []string, symlink_media: bool = true): void
+```
+
 Installs help documentation using Yelp. The first argument is the
 project id.
+
+Additionally, sources can be passed as additional positional arguments. This
+was, however, undocumented and never officially supported. Due to a longstanding
+bug, passing sources as a keyword argument will result in the positional
+argument sources to be ignored. *since 0.60.0* A warning is raised in this case.
+
+*Since 0.60.0* the use of the positional argument sources has been deprecated,
+and the "sources" keyword argument should be used instead. The passing of
+sources as positional arguments will be removed in the future.
 
 This also creates two targets for translations
 `help-$project-update-po` and `help-$project-pot`.

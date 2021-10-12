@@ -1,6 +1,6 @@
 # SPDX-Licnese-Identifier: Apache-2.0
 # Copyright 2012-2021 The Meson development team
-# Copyright © 2021 Intel Corpration
+# Copyright © 2021 Intel Corporation
 
 import enum
 import functools
@@ -250,7 +250,7 @@ class CompilerHolder(ObjectHolder['Compiler']):
                 deps = next_deps
             deps = final_deps
         else:
-            # Ensure that we alway return a new instance
+            # Ensure that we always return a new instance
             deps = deps.copy()
         return deps, self._dep_msg(deps, endl)
 
@@ -352,7 +352,7 @@ class CompilerHolder(ObjectHolder['Compiler']):
         return had
 
     @typed_pos_args('compiler.has_function', str)
-    @typed_kwargs('compiler.has_type', *_COMMON_KWS)
+    @typed_kwargs('compiler.has_function', *_COMMON_KWS)
     def has_function_method(self, args: T.Tuple[str], kwargs: 'CommonKW') -> bool:
         funcname = args[0]
         extra_args = self._determine_args(kwargs['no_builtin_args'], kwargs['include_directories'], kwargs['args'])
@@ -574,7 +574,7 @@ class CompilerHolder(ObjectHolder['Compiler']):
         KwargInfo('static', (bool, NoneType), since='0.51.0'),
         KwargInfo('disabler', bool, default=False, since='0.49.0'),
         KwargInfo('dirs', ContainerTypeInfo(list, str), listify=True, default=[]),
-        *[k.evolve(name=f'header_{k.name}') for k in _HEADER_KWS]
+        *(k.evolve(name=f'header_{k.name}') for k in _HEADER_KWS)
     )
     def find_library_method(self, args: T.Tuple[str], kwargs: 'FindLibraryKW') -> 'dependencies.ExternalLibrary':
         # TODO add dependencies support?
@@ -622,7 +622,7 @@ class CompilerHolder(ObjectHolder['Compiler']):
 
     def _has_argument_impl(self, arguments: T.Union[str, T.List[str]],
                            mode: _TestMode = _TestMode.COMPILER) -> bool:
-        """Shared implementaiton for methods checking compiler and linker arguments."""
+        """Shared implementation for methods checking compiler and linker arguments."""
         # This simplifies the callers
         if isinstance(arguments, str):
             arguments = [arguments]
@@ -645,6 +645,7 @@ class CompilerHolder(ObjectHolder['Compiler']):
 
     @noKwargs
     @typed_pos_args('compiler.has_multi_arguments', varargs=str)
+    @FeatureNew('compiler.has_multi_arguments', '0.37.0')
     def has_multi_arguments_method(self, args: T.Tuple[T.List[str]], kwargs: 'TYPE_kwargs') -> bool:
         return self._has_argument_impl(args[0])
 
@@ -718,7 +719,7 @@ class CompilerHolder(ObjectHolder['Compiler']):
         result, cached = self.compiler.has_func_attribute(attr, self.environment)
         cached_msg = mlog.blue('(cached)') if cached else ''
         h = mlog.green('YES') if result else mlog.red('NO')
-        mlog.log('Compiler for {} supports function attribute {}:'.format(self.compiler.get_display_language(), attr), h, cached_msg)
+        mlog.log(f'Compiler for {self.compiler.get_display_language()} supports function attribute {attr}:', h, cached_msg)
         return result
 
     @FeatureNew('compiler.has_function_attribute', '0.48.0')

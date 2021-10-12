@@ -586,7 +586,6 @@ class PerMachineDefaultable(PerMachine[T.Optional[_T]]):
         return m.default_missing()
 
 
-
 class PerThreeMachineDefaultable(PerMachineDefaultable, PerThreeMachine[T.Optional[_T]]):
     """Extends `PerThreeMachine` with the ability to default from `None`s.
     """
@@ -1093,7 +1092,7 @@ def join_args(args: T.Iterable[str]) -> str:
 
 
 def do_replacement(regex: T.Pattern[str], line: str, variable_format: str,
-                   confdata: 'ConfigurationData') -> T.Tuple[str, T.Set[str]]:
+                   confdata: T.Union[T.Dict[str, T.Tuple[str, T.Optional[str]]], 'ConfigurationData']) -> T.Tuple[str, T.Set[str]]:
     missing_variables = set()  # type: T.Set[str]
     if variable_format == 'cmake':
         start_tag = '${'
@@ -1116,7 +1115,7 @@ def do_replacement(regex: T.Pattern[str], line: str, variable_format: str,
             varname = match.group(1)
             var_str = ''
             if varname in confdata:
-                (var, desc) = confdata.get(varname)
+                var, _ = confdata.get(varname)
                 if isinstance(var, str):
                     var_str = var
                 elif isinstance(var, int):
@@ -1299,7 +1298,6 @@ def replace_if_different(dst: str, dst_tmp: str) -> None:
         os.unlink(dst_tmp)
 
 
-
 def listify(item: T.Any, flatten: bool = True) -> T.List[T.Any]:
     '''
     Returns a list with all args embedded in a list if they are not a list.
@@ -1469,8 +1467,7 @@ def _substitute_values_check_errors(command: T.List[str], values: T.Dict[str, T.
         # Error out if any output-derived templates are present in the command
         match = iter_regexin_iter(outregex, command)
         if match:
-            m = 'Command cannot have {!r} since there are no outputs'
-            raise MesonException(m.format(match))
+            raise MesonException(f'Command cannot have {match!r} since there are no outputs')
     else:
         # Error out if an invalid @OUTPUTnn@ template was specified
         for each in command:
@@ -1734,7 +1731,7 @@ class OrderedSet(T.MutableSet[_T]):
         return 'OrderedSet()'
 
     def __reversed__(self) -> T.Iterator[_T]:
-        # Mypy is complaining that sets cant be reversed, which is true for
+        # Mypy is complaining that sets can't be reversed, which is true for
         # unordered sets, but this is an ordered, set so reverse() makes sense.
         return reversed(self.__container.keys())  # type: ignore
 
@@ -2027,7 +2024,7 @@ def _classify_argument(key: 'OptionKey') -> OptionType:
         return OptionType.BASE
     elif key.lang is not None:
         return OptionType.COMPILER
-    elif key.name in _BUILTIN_NAMES:
+    elif key.name in _BUILTIN_NAMES or key.module:
         return OptionType.BUILTIN
     elif key.name.startswith('backend_'):
         assert key.machine is MachineChoice.HOST, str(key)
@@ -2047,7 +2044,7 @@ class OptionKey:
     internally easier to reason about and produce.
     """
 
-    __slots__ = ['name', 'subproject', 'machine', 'lang', '_hash', 'type']
+    __slots__ = ['name', 'subproject', 'machine', 'lang', '_hash', 'type', 'module']
 
     name: str
     subproject: str
@@ -2055,10 +2052,13 @@ class OptionKey:
     lang: T.Optional[str]
     _hash: int
     type: OptionType
+    module: T.Optional[str]
 
     def __init__(self, name: str, subproject: str = '',
                  machine: MachineChoice = MachineChoice.HOST,
-                 lang: T.Optional[str] = None, _type: T.Optional[OptionType] = None):
+                 lang: T.Optional[str] = None,
+                 module: T.Optional[str] = None,
+                 _type: T.Optional[OptionType] = None):
         # the _type option to the constructor is kinda private. We want to be
         # able tos ave the state and avoid the lookup function when
         # pickling/unpickling, but we need to be able to calculate it when
@@ -2067,7 +2067,8 @@ class OptionKey:
         object.__setattr__(self, 'subproject', subproject)
         object.__setattr__(self, 'machine', machine)
         object.__setattr__(self, 'lang', lang)
-        object.__setattr__(self, '_hash', hash((name, subproject, machine, lang)))
+        object.__setattr__(self, 'module', module)
+        object.__setattr__(self, '_hash', hash((name, subproject, machine, lang, module)))
         if _type is None:
             _type = _classify_argument(self)
         object.__setattr__(self, 'type', _type)
@@ -2082,6 +2083,7 @@ class OptionKey:
             'machine': self.machine,
             'lang': self.lang,
             '_type': self.type,
+            'module': self.module,
         }
 
     def __setstate__(self, state: T.Dict[str, T.Any]) -> None:
@@ -2098,20 +2100,17 @@ class OptionKey:
     def __hash__(self) -> int:
         return self._hash
 
+    def _to_tuple(self) -> T.Tuple[str, OptionType, str, str, MachineChoice, str]:
+        return (self.subproject, self.type, self.lang or '', self.module or '', self.machine, self.name)
+
     def __eq__(self, other: object) -> bool:
         if isinstance(other, OptionKey):
-            return (
-                self.name == other.name and
-                self.subproject == other.subproject and
-                self.machine is other.machine and
-                self.lang == other.lang)
+            return self._to_tuple() == other._to_tuple()
         return NotImplemented
 
     def __lt__(self, other: object) -> bool:
         if isinstance(other, OptionKey):
-            self_tuple = (self.subproject, self.type, self.lang, self.machine, self.name)
-            other_tuple = (other.subproject, other.type, other.lang, other.machine, other.name)
-            return self_tuple < other_tuple
+            return self._to_tuple() < other._to_tuple()
         return NotImplemented
 
     def __str__(self) -> str:
@@ -2120,6 +2119,8 @@ class OptionKey:
             out = f'{self.lang}_{out}'
         if self.machine is MachineChoice.BUILD:
             out = f'build.{out}'
+        if self.module:
+            out = f'{self.module}.{out}'
         if self.subproject:
             out = f'{self.subproject}:{out}'
         return out
@@ -2139,12 +2140,16 @@ class OptionKey:
         except ValueError:
             subproject, raw2 = '', raw
 
-        if raw2.startswith('build.'):
-            raw3 = raw2.split('.', 1)[1]
-            for_machine = MachineChoice.BUILD
-        else:
+        module = None
+        for_machine = MachineChoice.HOST
+        try:
+            prefix, raw3 = raw2.split('.')
+            if prefix == 'build':
+                for_machine = MachineChoice.BUILD
+            else:
+                module = prefix
+        except ValueError:
             raw3 = raw2
-            for_machine = MachineChoice.HOST
 
         from ..compilers import all_languages
         if any(raw3.startswith(f'{l}_') for l in all_languages):
@@ -2152,12 +2157,13 @@ class OptionKey:
         else:
             lang, opt = None, raw3
         assert ':' not in opt
-        assert 'build.' not in opt
+        assert '.' not in opt
 
-        return cls(opt, subproject, for_machine, lang)
+        return cls(opt, subproject, for_machine, lang, module)
 
     def evolve(self, name: T.Optional[str] = None, subproject: T.Optional[str] = None,
-               machine: T.Optional[MachineChoice] = None, lang: T.Optional[str] = '') -> 'OptionKey':
+               machine: T.Optional[MachineChoice] = None, lang: T.Optional[str] = '',
+               module: T.Optional[str] = '') -> 'OptionKey':
         """Create a new copy of this key, but with alterted members.
 
         For example:
@@ -2173,6 +2179,7 @@ class OptionKey:
             subproject if subproject is not None else self.subproject,
             machine if machine is not None else self.machine,
             lang if lang != '' else self.lang,
+            module if module != '' else self.module
         )
 
     def as_root(self) -> 'OptionKey':

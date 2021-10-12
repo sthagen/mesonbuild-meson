@@ -25,7 +25,7 @@ import sys
 import typing as T
 
 from . import environment
-from .backend.backends import InstallData, InstallDataBase, TargetInstallData, ExecutableSerialisation
+from .backend.backends import InstallData, InstallDataBase, InstallEmptyDir, TargetInstallData, ExecutableSerialisation
 from .coredata import major_versions_differ, MesonVersionMismatchException
 from .coredata import version as coredata_version
 from .mesonlib import Popen_safe, RealPathAction, is_windows
@@ -89,10 +89,12 @@ class DirMaker:
     def __init__(self, lf: T.TextIO, makedirs: T.Callable[..., None]):
         self.lf = lf
         self.dirs: T.List[str] = []
+        self.all_dirs: T.Set[str] = set()
         self.makedirs_impl = makedirs
 
     def makedirs(self, path: str, exist_ok: bool = False) -> None:
         dirname = os.path.normpath(path)
+        self.all_dirs.add(dirname)
         dirs = []
         while dirname != os.path.dirname(dirname):
             if dirname in self.dirs:
@@ -172,7 +174,7 @@ def set_chmod(path: str, mode: int, dir_fd: T.Optional[int] = None,
 
 def sanitize_permissions(path: str, umask: T.Union[str, int]) -> None:
     # TODO: with python 3.8 or typing_extensions we could replace this with
-    # `umask: T.Union[T.Literal['preserve'], int]`, which would be mroe correct
+    # `umask: T.Union[T.Literal['preserve'], int]`, which would be more correct
     if umask == 'preserve':
         return
     assert isinstance(umask, int), 'umask should only be "preserver" or an integer'
@@ -181,8 +183,7 @@ def sanitize_permissions(path: str, umask: T.Union[str, int]) -> None:
     try:
         set_chmod(path, new_perms, follow_symlinks=False)
     except PermissionError as e:
-        msg = '{!r}: Unable to set permissions {!r}: {}, ignoring...'
-        print(msg.format(path, new_perms, e.strerror))
+        print(f'{path!r}: Unable to set permissions {new_perms!r}: {e.strerror}, ignoring...')
 
 
 def set_mode(path: str, mode: T.Optional['FileMode'], default_umask: T.Union[str, int]) -> None:
@@ -195,15 +196,12 @@ def set_mode(path: str, mode: T.Optional['FileMode'], default_umask: T.Union[str
         try:
             set_chown(path, mode.owner, mode.group, follow_symlinks=False)
         except PermissionError as e:
-            msg = '{!r}: Unable to set owner {!r} and group {!r}: {}, ignoring...'
-            print(msg.format(path, mode.owner, mode.group, e.strerror))
+            print(f'{path!r}: Unable to set owner {mode.owner!r} and group {mode.group!r}: {e.strerror}, ignoring...')
         except LookupError:
-            msg = '{!r}: Non-existent owner {!r} or group {!r}: ignoring...'
-            print(msg.format(path, mode.owner, mode.group))
+            print(f'{path!r}: Non-existent owner {mode.owner!r} or group {mode.group!r}: ignoring...')
         except OSError as e:
             if e.errno == errno.EINVAL:
-                msg = '{!r}: Non-existent numeric owner {!r} or group {!r}: ignoring...'
-                print(msg.format(path, mode.owner, mode.group))
+                print(f'{path!r}: Non-existent numeric owner {mode.owner!r} or group {mode.group!r}: ignoring...')
             else:
                 raise
     # Must set permissions *after* setting owner/group otherwise the
@@ -213,8 +211,7 @@ def set_mode(path: str, mode: T.Optional['FileMode'], default_umask: T.Union[str
         try:
             set_chmod(path, mode.perms, follow_symlinks=False)
         except PermissionError as e:
-            msg = '{!r}: Unable to set permissions {!r}: {}, ignoring...'
-            print(msg.format(path, mode.perms_s, e.strerror))
+            print('{path!r}: Unable to set permissions {mode.perms_s!r}: {e.strerror}, ignoring...')
     else:
         sanitize_permissions(path, default_umask)
 
@@ -246,7 +243,7 @@ def restore_selinux_contexts() -> None:
               'Standard output:', out,
               'Standard error:', err, sep='\n')
 
-def apply_ldconfig() -> None:
+def apply_ldconfig(dm: DirMaker) -> None:
     '''
     Apply ldconfig to update the ld.so.cache.
     '''
@@ -254,11 +251,22 @@ def apply_ldconfig() -> None:
         # If we don't have ldconfig, failure is ignored quietly.
         return
 
-    proc, out, err = Popen_safe(['ldconfig'])
-    if proc.returncode != 0:
-        print('Failed to apply ldconfig ...',
-              'Standard output:', out,
-              'Standard error:', err, sep='\n')
+    # Try to update ld cache, it could fail if we don't have permission.
+    proc, out, err = Popen_safe(['ldconfig', '-v'])
+    if proc.returncode == 0:
+        return
+
+    # ldconfig failed, print the error only if we actually installed files in
+    # any of the directories it lookup for libraries. Otherwise quietly ignore
+    # the error.
+    for l in out.splitlines():
+        # Lines that start with a \t are libraries, not directories.
+        if not l or l[0].isspace():
+            continue
+        # Example: `/usr/lib/i386-linux-gnu/i686: (hwcap: 0x0002000000000000)`
+        if l[:l.find(':')] in dm.all_dirs:
+            print(f'Failed to apply ldconfig:\n{err}')
+            break
 
 def get_destdir_path(destdir: str, fullprefix: str, path: str) -> str:
     if os.path.isabs(path):
@@ -360,9 +368,9 @@ class Installer:
         if not self.dry_run and not destdir:
             restore_selinux_contexts()
 
-    def apply_ldconfig(self, destdir: str) -> None:
+    def apply_ldconfig(self, dm: DirMaker, destdir: str) -> None:
         if not self.dry_run and not destdir:
-            apply_ldconfig()
+            apply_ldconfig(dm)
 
     def Popen_safe(self, *args: T.Any, **kwargs: T.Any) -> T.Tuple[int, str, str]:
         if not self.dry_run:
@@ -375,7 +383,7 @@ class Installer:
             return run_exe(*args, **kwargs)
         return 0
 
-    def should_install(self, d: T.Union[TargetInstallData, InstallDataBase, ExecutableSerialisation]) -> bool:
+    def should_install(self, d: T.Union[TargetInstallData, InstallEmptyDir,  InstallDataBase, ExecutableSerialisation]) -> bool:
         if d.subproject and (d.subproject in self.skip_subprojects or '*' in self.skip_subprojects):
             return False
         if self.tags and d.tag not in self.tags:
@@ -400,15 +408,13 @@ class Installer:
                     makedirs: T.Optional[T.Tuple[T.Any, str]] = None) -> bool:
         outdir = os.path.split(to_file)[0]
         if not os.path.isfile(from_file) and not os.path.islink(from_file):
-            raise RuntimeError('Tried to install something that isn\'t a file:'
-                               '{!r}'.format(from_file))
+            raise RuntimeError(f'Tried to install something that isn\'t a file: {from_file!r}')
         # copyfile fails if the target file already exists, so remove it to
         # allow overwriting a previous install. If the target is not a file, we
         # want to give a readable error.
         if os.path.exists(to_file):
             if not os.path.isfile(to_file):
-                raise RuntimeError('Destination {!r} already exists and is not '
-                                   'a file'.format(to_file))
+                raise RuntimeError(f'Destination {to_file!r} already exists and is not a file')
             if self.should_preserve_existing_file(from_file, to_file):
                 append_to_log(self.lf, f'# Preserving old file {to_file}\n')
                 self.preserved_file_count += 1
@@ -538,9 +544,10 @@ class Installer:
                 self.install_targets(d, dm, destdir, fullprefix)
                 self.install_headers(d, dm, destdir, fullprefix)
                 self.install_man(d, dm, destdir, fullprefix)
+                self.install_emptydir(d, dm, destdir, fullprefix)
                 self.install_data(d, dm, destdir, fullprefix)
                 self.restore_selinux_contexts(destdir)
-                self.apply_ldconfig(destdir)
+                self.apply_ldconfig(dm, destdir)
                 self.run_install_script(d, destdir, fullprefix)
                 if not self.did_install_something:
                     self.log('Nothing to install.')
@@ -587,6 +594,19 @@ class Installer:
             if self.do_copyfile(full_source_filename, outfilename, makedirs=(dm, outdir)):
                 self.did_install_something = True
             self.set_mode(outfilename, m.install_mode, d.install_umask)
+
+    def install_emptydir(self, d: InstallData, dm: DirMaker, destdir: str, fullprefix: str) -> None:
+        for e in d.emptydir:
+            if not self.should_install(e):
+                continue
+            self.did_install_something = True
+            full_dst_dir = get_destdir_path(destdir, fullprefix, e.path)
+            self.log(f'Installing new directory {full_dst_dir}')
+            if os.path.isfile(full_dst_dir):
+                print(f'Tried to create directory {full_dst_dir} but a file of that name already exists.')
+                sys.exit(1)
+            dm.makedirs(full_dst_dir, exist_ok=True)
+            self.set_mode(full_dst_dir, e.install_mode, d.install_umask)
 
     def install_headers(self, d: InstallData, dm: DirMaker, destdir: str, fullprefix: str) -> None:
         for t in d.headers:

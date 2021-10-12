@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from mesonbuild.mesonlib.universal import windows_proof_rm
 import subprocess
 import re
 import json
@@ -1338,7 +1339,7 @@ class AllPlatformTests(BasePlatformTests):
                 tar = tarfile.open(xz_distfile, "r:xz")  # [ignore encoding]
                 self.assertEqual(sorted(['samerepo-1.0',
                                          'samerepo-1.0/meson.build']),
-                                 sorted([i.name for i in tar]))
+                                 sorted(i.name for i in tar))
 
     def test_rpath_uses_ORIGIN(self):
         '''
@@ -1446,7 +1447,7 @@ class AllPlatformTests(BasePlatformTests):
             link_cmd = ['ar', 'csr', outfile, objectfile]
         link_cmd = linker.get_exelist()
         link_cmd += linker.get_always_args()
-        link_cmd += linker.get_std_link_args()
+        link_cmd += linker.get_std_link_args(False)
         link_cmd += linker.get_output_args(outfile)
         link_cmd += [objectfile]
         self.pbcompile(compiler, source, objectfile, extra_args=extra_args)
@@ -2538,6 +2539,7 @@ class AllPlatformTests(BasePlatformTests):
         testheader = os.path.join(testdir, 'header.h')
         badheader = os.path.join(testdir, 'header_orig_h')
         goodheader = os.path.join(testdir, 'header_expected_h')
+        includefile = os.path.join(testdir, '.clang-format-include')
         try:
             shutil.copyfile(badfile, testfile)
             shutil.copyfile(badheader, testheader)
@@ -2546,6 +2548,17 @@ class AllPlatformTests(BasePlatformTests):
                                 Path(goodfile).read_text(encoding='utf-8'))
             self.assertNotEqual(Path(testheader).read_text(encoding='utf-8'),
                                 Path(goodheader).read_text(encoding='utf-8'))
+
+            # test files are not in git so this should do nothing
+            self.run_target('clang-format')
+            self.assertNotEqual(Path(testfile).read_text(encoding='utf-8'),
+                                Path(goodfile).read_text(encoding='utf-8'))
+            self.assertNotEqual(Path(testheader).read_text(encoding='utf-8'),
+                                Path(goodheader).read_text(encoding='utf-8'))
+
+            # Add an include file to reformat everything
+            with open(includefile, 'w', encoding='utf-8') as f:
+                f.write('*')
             self.run_target('clang-format')
             self.assertEqual(Path(testheader).read_text(encoding='utf-8'),
                              Path(goodheader).read_text(encoding='utf-8'))
@@ -2554,6 +2567,8 @@ class AllPlatformTests(BasePlatformTests):
                 os.unlink(testfile)
             if os.path.exists(testheader):
                 os.unlink(testheader)
+            if os.path.exists(includefile):
+                os.unlink(includefile)
 
     @skipIfNoExecutable('clang-tidy')
     def test_clang_tidy(self):
@@ -2624,7 +2639,7 @@ class AllPlatformTests(BasePlatformTests):
         def assertKeyTypes(key_type_list, obj, strict: bool = True):
             for i in key_type_list:
                 if isinstance(i[1], (list, tuple)) and None in i[1]:
-                    i = (i[0], tuple([x for x in i[1] if x is not None]))
+                    i = (i[0], tuple(x for x in i[1] if x is not None))
                     if i[0] not in obj or obj[i[0]] is None:
                         continue
                 self.assertIn(i[0], obj)
@@ -4054,10 +4069,49 @@ class AllPlatformTests(BasePlatformTests):
     def test_rust_clippy(self) -> None:
         if self.backend is not Backend.ninja:
             raise unittest.SkipTest('Rust is only supported with ninja currently')
-        # Wehn clippy is used, we should get an exception since a variable named
+        # When clippy is used, we should get an exception since a variable named
         # "foo" is used, but is on our denylist
         testdir = os.path.join(self.rust_test_dir, '1 basic')
         self.init(testdir, extra_args=['--werror'], override_envvars={'RUSTC': 'clippy-driver'})
         with self.assertRaises(subprocess.CalledProcessError) as cm:
             self.build()
         self.assertIn('error: use of a blacklisted/placeholder name `foo`', cm.exception.stdout)
+
+    @skip_if_not_language('rust')
+    def test_rust_rlib_linkage(self) -> None:
+        if self.backend is not Backend.ninja:
+            raise unittest.SkipTest('Rust is only supported with ninja currently')
+        template = textwrap.dedent('''\
+                use std::process::exit;
+
+                pub fn fun() {{
+                    exit({});
+                }}
+            ''')
+
+        testdir = os.path.join(self.unit_test_dir, '100 rlib linkage')
+        gen_file = os.path.join(testdir, 'lib.rs')
+        with open(gen_file, 'w') as f:
+            f.write(template.format(0))
+        self.addCleanup(windows_proof_rm, gen_file)
+
+        self.init(testdir)
+        self.build()
+        self.run_tests()
+
+        with open(gen_file, 'w') as f:
+            f.write(template.format(39))
+
+        self.build()
+        with self.assertRaises(subprocess.CalledProcessError) as cm:
+            self.run_tests()
+        self.assertEqual(cm.exception.returncode, 1)
+        self.assertIn('exit status 39', cm.exception.stdout)
+
+    def test_custom_target_name(self):
+        testdir = os.path.join(self.unit_test_dir, '99 custom target name')
+        self.init(testdir)
+        out = self.build()
+        if self.backend is Backend.ninja:
+            self.assertIn('Generating file.txt with a custom command', out)
+            self.assertIn('Generating subdir/file.txt with a custom command', out)

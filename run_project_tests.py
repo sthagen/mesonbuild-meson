@@ -48,10 +48,9 @@ from mesonbuild import mlog
 from mesonbuild import mtest
 from mesonbuild.compilers import compiler_from_language, detect_objc_compiler, detect_objcpp_compiler
 from mesonbuild.build import ConfigurationData
-from mesonbuild.mesonlib import MachineChoice, Popen_safe, TemporaryDirectoryWinProof
+from mesonbuild.mesonlib import MachineChoice, Popen_safe, TemporaryDirectoryWinProof, setup_vsenv
 from mesonbuild.mlog import blue, bold, cyan, green, red, yellow, normal_green
 from mesonbuild.coredata import backendlist, version as meson_version
-from mesonbuild.mesonmain import setup_vsenv
 from mesonbuild.modules.python import PythonExternalProgram
 from run_tests import get_fake_options, run_configure, get_meson_script
 from run_tests import get_backend_commands, get_backend_args_for_dir, Backend
@@ -518,7 +517,7 @@ def _compare_output(expected: T.List[T.Dict[str, str]], output: str, desc: str) 
 def validate_output(test: TestDef, stdo: str, stde: str) -> str:
     return _compare_output(test.stdout, stdo, 'stdout')
 
-# There are some class variables and such that cahce
+# There are some class variables and such that cache
 # information. Clear all of these. The better solution
 # would be to change the code so that no state is persisted
 # but that would be a lot of work given that Meson was originally
@@ -614,7 +613,7 @@ def run_test(test: TestDef,
     global is_worker_process
     is_worker_process = True
     # Setup the test environment
-    assert not test.skip, 'Skipped thest should not be run'
+    assert not test.skip, 'Skipped test should not be run'
     build_dir = create_deterministic_builddir(test, use_tmp)
     try:
         with TemporaryDirectoryWinProof(prefix='i ', dir=None if use_tmp else os.getcwd()) as install_dir:
@@ -1244,7 +1243,7 @@ def _run_tests(all_tests: T.List[T.Tuple[str, T.List[TestDef], bool]],
             f.log()
             continue
 
-        # Acutal Test run
+        # Actual Test run
         testname = f.name
         t        = f.testdef
         try:
@@ -1253,11 +1252,11 @@ def _run_tests(all_tests: T.List[T.Tuple[str, T.List[TestDef], bool]],
             f.status = TestStatus.CANCELED
 
         if stop and not tests_canceled:
-            num_running = sum([1 if f2.status is TestStatus.RUNNING  else 0 for f2 in futures])
+            num_running = sum(1 if f2.status is TestStatus.RUNNING  else 0 for f2 in futures)
             for f2 in futures:
                 f2.cancel()
             executor.shutdown()
-            num_canceled = sum([1 if f2.status is TestStatus.CANCELED else 0 for f2 in futures])
+            num_canceled = sum(1 if f2.status is TestStatus.CANCELED else 0 for f2 in futures)
             safe_print(f'\nCanceled {num_canceled} out of {num_running} running tests.')
             safe_print(f'Finishing the remaining {num_running - num_canceled} tests.\n')
             tests_canceled = True
@@ -1297,7 +1296,7 @@ def _run_tests(all_tests: T.List[T.Tuple[str, T.List[TestDef], bool]],
             else:
                 skip_msg = 'Test ran, but was expected to be skipped'
                 status = TestStatus.UNEXRUN
-            result.msg = "%s for MESON_CI_JOBNAME '%s'" % (skip_msg, ci_jobname)
+            result.msg = f"{skip_msg} for MESON_CI_JOBNAME '{ci_jobname}'"
 
             f.update_log(status)
             current_test = ET.SubElement(current_suite, 'testcase', {'name': testname, 'classname': t.category})
@@ -1310,7 +1309,7 @@ def _run_tests(all_tests: T.List[T.Tuple[str, T.List[TestDef], bool]],
             safe_print(bold('During:'), result.step.name)
             safe_print(bold('Reason:'), result.msg)
             failing_tests += 1
-            # Append a visual seperator for the different test cases
+            # Append a visual separator for the different test cases
             cols = shutil.get_terminal_size((100, 20)).columns
             name_str = ' '.join([str(x) for x in f.testdef.display_name()])
             name_len = len(re.sub(r'\x1B[^m]+m', '', name_str))  # Do not count escape sequences
@@ -1479,7 +1478,7 @@ def print_tool_versions() -> None:
         args = [t.tool] + t.args
         pc, o, e = Popen_safe(args)
         if pc.returncode != 0:
-            return '{} (invalid {} executable)'.format(exe, t.tool)
+            return f'{exe} (invalid {t.tool} executable)'
         for i in o.split('\n'):
             i = i.strip('\n\r\t ')
             m = t.regex.match(i)

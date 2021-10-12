@@ -100,8 +100,7 @@ class DependenciesHelper:
             else:
                 raise mesonlib.MesonException('requires argument not a string, '
                                               'library with pkgconfig-generated file '
-                                              'or pkgconfig-dependency object, '
-                                              'got {!r}'.format(obj))
+                                              'or pkgconfig-dependency object, got {obj!r}')
         return processed_reqs
 
     def add_cflags(self, cflags):
@@ -319,9 +318,11 @@ class PkgConfigModule(ExtensionModule):
         prefix = PurePath(prefix)
         subdir = PurePath(subdir)
         try:
-            return subdir.relative_to(prefix).as_posix()
+            libdir = subdir.relative_to(prefix)
         except ValueError:
-            return subdir.as_posix()
+            libdir = subdir
+        # pathlib joining makes sure absolute libdir is not appended to '${prefix}'
+        return ('${prefix}' / libdir).as_posix()
 
     def _generate_pkgconfig_file(self, state, deps, subdirs, name, description,
                                  url, version, pcfile, conflicts, variables,
@@ -381,18 +382,19 @@ class PkgConfigModule(ExtensionModule):
                         if uninstalled:
                             install_dir = os.path.dirname(state.backend.get_target_filename_abs(l))
                         else:
-                            install_dir = l.get_custom_install_dir()[0]
+                            _i = l.get_custom_install_dir()
+                            install_dir = _i[0] if _i else None
                         if install_dir is False:
                             continue
                         is_custom_target = isinstance(l, (build.CustomTarget, build.CustomTargetIndex))
                         if not is_custom_target and 'cs' in l.compilers:
                             if isinstance(install_dir, str):
-                                Lflag = '-r${{prefix}}/{}/{}'.format(self._escape(self._make_relative(prefix, install_dir)), l.filename)
+                                Lflag = '-r{}/{}'.format(self._escape(self._make_relative(prefix, install_dir)), l.filename)
                             else:  # install_dir is True
                                 Lflag = '-r${libdir}/%s' % l.filename
                         else:
                             if isinstance(install_dir, str):
-                                Lflag = '-L${prefix}/%s' % self._escape(self._make_relative(prefix, install_dir))
+                                Lflag = '-L{}'.format(self._escape(self._make_relative(prefix, install_dir)))
                             else:  # install_dir is True
                                 Lflag = '-L${libdir}'
                         if Lflag not in Lflags:
@@ -471,9 +473,9 @@ class PkgConfigModule(ExtensionModule):
                 raise mesonlib.MesonException('Pkgconfig_gen first positional argument must be a library object')
             default_name = mainlib.name
             default_description = state.project_name + ': ' + mainlib.name
-            install_dir = mainlib.get_custom_install_dir()[0]
-            if isinstance(install_dir, str):
-                default_install_dir = os.path.join(install_dir, 'pkgconfig')
+            install_dir = mainlib.get_custom_install_dir()
+            if install_dir and isinstance(install_dir[0], str):
+                default_install_dir = os.path.join(install_dir[0], 'pkgconfig')
         elif len(args) > 1:
             raise mesonlib.MesonException('Too many positional arguments passed to Pkgconfig_gen.')
 

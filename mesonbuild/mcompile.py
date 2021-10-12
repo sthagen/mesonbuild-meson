@@ -26,9 +26,10 @@ from pathlib import Path
 from . import mlog
 from . import mesonlib
 from . import coredata
-from .mesonlib import MesonException
+from .mesonlib import MesonException, RealPathAction, setup_vsenv
 from mesonbuild.environment import detect_ninja
 from mesonbuild.coredata import UserArrayOption
+from mesonbuild import build
 
 if T.TYPE_CHECKING:
     import argparse
@@ -125,7 +126,7 @@ def get_target_from_intro_data(target: ParsedTargetName, builddir: Path, introsp
     if not found_targets:
         raise MesonException(f'Can\'t invoke target `{target.full_name}`: target not found')
     elif len(found_targets) > 1:
-        raise MesonException(f'Can\'t invoke target `{target.full_name}`: ambigious name. Add target type and/or path: `PATH/NAME:TYPE`')
+        raise MesonException(f'Can\'t invoke target `{target.full_name}`: ambiguous name. Add target type and/or path: `PATH/NAME:TYPE`')
 
     return found_targets[0]
 
@@ -286,14 +287,9 @@ def add_arguments(parser: 'argparse.ArgumentParser') -> None:
         action='store_true',
         help='Clean the build directory.'
     )
-    parser.add_argument(
-        '-C',
-        action='store',
-        dest='builddir',
-        type=Path,
-        default='.',
-        help='The directory containing build files to be built.'
-    )
+    parser.add_argument('-C', dest='wd', action=RealPathAction,
+                        help='directory to cd into before running')
+
     parser.add_argument(
         '-j', '--jobs',
         action='store',
@@ -333,8 +329,12 @@ def add_arguments(parser: 'argparse.ArgumentParser') -> None:
     )
 
 def run(options: 'argparse.Namespace') -> int:
-    bdir = options.builddir  # type: Path
-    validate_builddir(bdir.resolve())
+    bdir = Path(options.wd)
+    buildfile = bdir / 'meson-private' / 'build.dat'
+    if not buildfile.is_file():
+        raise MesonException(f'Directory {options.wd!r} does not seem to be a Meson build directory.')
+    b = build.load(options.wd)
+    setup_vsenv(b.need_vsenv)
 
     cmd = []    # type: T.List[str]
     env = None  # type: T.Optional[T.Dict[str, str]]

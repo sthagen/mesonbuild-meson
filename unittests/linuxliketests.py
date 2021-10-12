@@ -157,7 +157,8 @@ class LinuxlikeTests(BasePlatformTests):
         self.assertEqual(libhello_nolib.get_compile_args(), [])
         self.assertEqual(libhello_nolib.get_pkgconfig_variable('foo', {}), 'bar')
         self.assertEqual(libhello_nolib.get_pkgconfig_variable('prefix', {}), self.prefix)
-        self.assertEqual(libhello_nolib.get_pkgconfig_variable('escaped_var', {}), r'hello\ world')
+        if version_compare(libhello_nolib.check_pkgconfig(libhello_nolib.pkgbin),">=0.29.1"):
+            self.assertEqual(libhello_nolib.get_pkgconfig_variable('escaped_var', {}), r'hello\ world')
         self.assertEqual(libhello_nolib.get_pkgconfig_variable('unescaped_var', {}), 'hello world')
 
         cc = detect_c_compiler(env, MachineChoice.HOST)
@@ -1696,3 +1697,35 @@ class LinuxlikeTests(BasePlatformTests):
         obj_files = p.stdout.strip().split('\n')
         self.assertEqual(len(obj_files), 1)
         self.assertTrue(obj_files[0].endswith('-prelink.o'))
+
+    def do_one_test_with_nativefile(self, testdir, args):
+        testdir = os.path.join(self.common_test_dir, testdir)
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / 'nativefile'
+            with p.open('wt', encoding='utf-8') as f:
+                f.write(f'''[binaries]
+                    c = {args}
+                    ''')
+            self.init(testdir, extra_args=['--native-file=' + str(p)])
+            self.build()
+
+    def test_cmake_multilib(self):
+        '''
+        Test that the cmake module handles multilib paths correctly.
+        '''
+        # Verify that "gcc -m32" works
+        try:
+            self.do_one_test_with_nativefile('1 trivial', "['gcc', '-m32']")
+        except subprocess.CalledProcessError as e:
+            raise SkipTest('Not GCC, or GCC does not have the -m32 option')
+        self.wipe()
+
+        # Verify that cmake works
+        try:
+            self.do_one_test_with_nativefile('../cmake/1 basic', "['gcc']")
+        except subprocess.CalledProcessError as e:
+            raise SkipTest('Could not build basic cmake project')
+        self.wipe()
+
+        # If so, we can test that cmake works with "gcc -m32"
+        self.do_one_test_with_nativefile('../cmake/1 basic', "['gcc', '-m32']")

@@ -451,7 +451,6 @@ class XCodeBackend(backends.Backend):
         self.generator_buildfile_ids[k] = buildfile_ids
         self.generator_fileref_ids[k] = fileref_ids
 
-
     def generate_native_frameworks_map(self):
         self.native_frameworks = {}
         self.native_frameworks_fileref = {}
@@ -623,7 +622,6 @@ class XCodeBackend(backends.Backend):
                     fullpath = os.path.join(self.environment.get_build_dir(), s)
                 else:
                     fullpath = os.path.join(self.environment.get_source_dir(), s)
-                compiler_args = ''
                 sdict.add_item('isa', 'PBXBuildFile')
                 sdict.add_item('fileRef', fileref, fullpath)
                 objects_dict.add_item(idval, sdict)
@@ -1028,7 +1026,6 @@ class XCodeBackend(backends.Backend):
             if i:
                 children_array.add_item(i)
 
-
     def generate_project_tree(self):
         tree_info = FileTreeEntry()
         for tname, t in self.build_targets.items():
@@ -1276,7 +1273,6 @@ class XCodeBackend(backends.Backend):
         gen_dict.add_item('shellScript', cmdstr)
         gen_dict.add_item('showEnvVarsInLog', 0)
 
-
     def generate_pbx_sources_build_phase(self, objects_dict):
         for name in self.source_phase:
             phase_dict = PbxDict()
@@ -1392,7 +1388,6 @@ class XCodeBackend(backends.Backend):
             settings_dict.add_item('SDKROOT', '"macosx"')
             settings_dict.add_item('SYMROOT', '"%s/build"' % self.environment.get_build_dir())
             bt_dict.add_item('name', f'"{buildtype}"')
-
 
     def determine_internal_dep_link_args(self, target, buildtype):
         links_dylib = False

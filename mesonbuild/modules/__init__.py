@@ -18,13 +18,14 @@ import os
 import typing as T
 
 from .. import build, mesonlib
-from ..mesonlib import relpath, HoldableObject
+from ..mesonlib import relpath, HoldableObject, MachineChoice, OptionKey
 from ..interpreterbase.decorators import noKwargs, noPosargs
 
 if T.TYPE_CHECKING:
     from ..interpreter import Interpreter
     from ..interpreterbase import TYPE_var, TYPE_kwargs
     from ..programs import ExternalProgram
+    from ..wrap import WrapMode
 
 class ModuleState:
     """Object passed to all module methods.
@@ -101,6 +102,12 @@ class ModuleState:
                   }
         # TODO: Use interpreter internal API, but we need to go through @typed_kwargs
         self._interpreter.func_test(self.current_node, args, kwargs)
+
+    def get_option(self, name: str, subproject: str = '',
+                   machine: MachineChoice = MachineChoice.HOST,
+                   lang: T.Optional[str] = None,
+                   module: T.Optional[str] = None) -> T.Union[str, int, bool, 'WrapMode']:
+        return self.environment.coredata.get_option(mesonlib.OptionKey(name, subproject, machine, lang, module))
 
 
 class ModuleObject(HoldableObject):
@@ -185,7 +192,7 @@ def is_module_library(fname):
 
 
 class ModuleReturnValue:
-    def __init__(self, return_value: T.Optional['TYPE_var'], new_objects: T.List['TYPE_var']) -> None:
+    def __init__(self, return_value: T.Optional['TYPE_var'], new_objects: T.Sequence['TYPE_var']) -> None:
         self.return_value = return_value
         assert isinstance(new_objects, list)
         self.new_objects = new_objects

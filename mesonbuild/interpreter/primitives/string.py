@@ -21,11 +21,6 @@ from ...interpreterbase import (
 
     InvalidArguments,
 )
-from ...mparser import (
-    MethodNode,
-    StringNode,
-    ArrayNode,
-)
 
 
 if T.TYPE_CHECKING:
@@ -51,7 +46,6 @@ class StringHolder(ObjectHolder[str]):
             'underscorify': self.underscorify_method,
             'version_compare': self.version_compare_method,
         })
-
 
         self.trivial_operators.update({
             # Arithmetic
@@ -110,13 +104,6 @@ class StringHolder(ObjectHolder[str]):
     @noKwargs
     @typed_pos_args('str.join', varargs=str)
     def join_method(self, args: T.Tuple[T.List[str]], kwargs: TYPE_kwargs) -> str:
-        # Implement some basic FeatureNew check on the AST level
-        assert isinstance(self.current_node, MethodNode)
-        n_args = self.current_node.args.arguments
-        if len(n_args) != 1 or not isinstance(n_args[0], ArrayNode) or not all(isinstance(x, StringNode) for x in n_args[0].args.arguments):
-            FeatureNew.single_use('str.join (varargs)', '0.60.0', self.subproject, 'List-flattening and variadic arguments')
-
-        # Actual implementation
         return self.held_object.join(args[0])
 
     @noKwargs
@@ -168,7 +155,6 @@ class StringHolder(ObjectHolder[str]):
     @typed_pos_args('str.version_compare', str)
     def version_compare_method(self, args: T.Tuple[str], kwargs: TYPE_kwargs) -> bool:
         return version_compare(self.held_object, args[0])
-
 
     @FeatureNew('/ with string arguments', '0.49.0')
     @typed_operator(MesonOperator.DIV, str)

@@ -252,7 +252,7 @@ class EnvironmentVariablesHolder(ObjectHolder[build.EnvironmentVariables], Mutab
         return repr_str.format(self.__class__.__name__, self.held_object.envvars)
 
     def __deepcopy__(self, memo: T.Dict[str, object]) -> 'EnvironmentVariablesHolder':
-        # Avoid trying to copy the intepreter
+        # Avoid trying to copy the interpreter
         return EnvironmentVariablesHolder(copy.deepcopy(self.held_object), self.interpreter)
 
     def warn_if_has_name(self, name: str) -> None:
@@ -646,6 +646,9 @@ class InstallDirHolder(ObjectHolder[build.InstallDir]):
 class ManHolder(ObjectHolder[build.Man]):
     pass
 
+class EmptyDirHolder(ObjectHolder[build.EmptyDir]):
+    pass
+
 class GeneratedObjectsHolder(ObjectHolder[build.ExtractedObjects]):
     pass
 
@@ -684,7 +687,7 @@ class NullSubprojectInterpreter(HoldableObject):
 
 # TODO: This should really be an `ObjectHolder`, but the additional stuff in this
 #       class prevents this. Thus, this class should be split into a pure
-#       `ObjectHolder` and a class specifically for stroing in `Interpreter`.
+#       `ObjectHolder` and a class specifically for storing in `Interpreter`.
 class SubprojectHolder(MesonInterpreterObject):
 
     def __init__(self, subinterpreter: T.Union['Interpreter', NullSubprojectInterpreter],
@@ -975,7 +978,7 @@ class GeneratorHolder(ObjectHolder[build.Generator]):
 
         if any(isinstance(a, (build.CustomTarget, build.CustomTargetIndex, build.GeneratedList)) for a in args[0]):
             FeatureNew.single_use(
-                f'Calling generator.process with CustomTaget or Index of CustomTarget.',
+                'Calling generator.process with CustomTaget or Index of CustomTarget.',
                 '0.57.0', self.interpreter.subproject)
 
         gl = self.held_object.process_files(args[0], self.interpreter,

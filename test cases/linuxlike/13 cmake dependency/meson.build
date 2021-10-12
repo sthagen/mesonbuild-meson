@@ -48,6 +48,10 @@ depPrefEnv1 = dependency('cmMesonTestF1', required : true, method : 'cmake')
 depPrefEnv2 = dependency('cmMesonTestF2', required : true, method : 'cmake')
 depPrefEnv3 = dependency('cmMesonTestF3', required : true, method : 'cmake')
 
+# Try to actually link with depPrefEnv1, since we are doing "fun" stuff there
+exe3 = executable('zlibprog3', 'prog.c', dependencies : depPrefEnv1)
+test('zlibtest3', exe3)
+
 # Try to find a dependency with a custom CMake module
 
 depm1 = dependency('SomethingLikeZLIB', required : true, components : 'required_comp',   method : 'cmake', cmake_module_path : 'cmake')
@@ -69,7 +73,7 @@ endif
 # test.json sets CMAKE_PREFIX_PATH to include ./cmake_pref_env/
 verdep1 = dependency('cmMesonVersionedTestDep', required : true, method : 'cmake', cmake_package_version : '3.0')
 verdep2 = dependency('cmMesonVersionedTestDep', required : false, method : 'cmake', cmake_package_version : '200.0')
-assert(not verdep2.found(), 'found a version dep we shouldnt have')
+assert(not verdep2.found(), 'found a version dep we shouldn\'t have')
 
 # Try to compile a test that takes a dep and an include_directories
 

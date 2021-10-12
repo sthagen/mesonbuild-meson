@@ -59,7 +59,7 @@ class StaticLinker:
     def get_exelist(self) -> T.List[str]:
         return self.exelist.copy()
 
-    def get_std_link_args(self) -> T.List[str]:
+    def get_std_link_args(self, is_thin: bool) -> T.List[str]:
         return []
 
     def get_buildtype_linker_args(self, buildtype: str) -> T.List[str]:
@@ -113,7 +113,7 @@ class StaticLinker:
         be implemented
         """
         assert not self.can_linker_accept_rsp(), f'{self.id} linker accepts RSP, but doesn\' provide a supported format, this is a bug'
-        raise EnvironmentException(f'{self.id} does not implemnt rsp format, this shouldn\'t be called')
+        raise EnvironmentException(f'{self.id} does not implement rsp format, this shouldn\'t be called')
 
 
 class VisualStudioLikeLinker:
@@ -167,23 +167,16 @@ class IntelVisualStudioLinker(VisualStudioLikeLinker, StaticLinker):
         VisualStudioLikeLinker.__init__(self, machine)
 
 
-class ArLinker(StaticLinker):
-
-    def __init__(self, exelist: T.List[str]):
-        super().__init__(exelist)
-        self.id = 'ar'
-        pc, stdo = mesonlib.Popen_safe(self.exelist + ['-h'])[0:2]
-        # Enable deterministic builds if they are available.
-        if '[D]' in stdo:
-            self.std_args = ['csrD']
-        else:
-            self.std_args = ['csr']
-        self.can_rsp = '@<' in stdo
+class ArLikeLinker(StaticLinker):
+    # POSIX requires supporting the dash, GNU permits omitting it
+    std_args = ['-csr']
 
     def can_linker_accept_rsp(self) -> bool:
-        return self.can_rsp
+        # armar / AIX can't accept arguments using the @rsp syntax
+        # in fact, only the 'ar' id can
+        return False
 
-    def get_std_link_args(self) -> T.List[str]:
+    def get_std_link_args(self, is_thin: bool) -> T.List[str]:
         return self.std_args
 
     def get_output_args(self, target: str) -> T.List[str]:
@@ -193,16 +186,36 @@ class ArLinker(StaticLinker):
         return RSPFileSyntax.GCC
 
 
-class ArmarLinker(ArLinker):  # lgtm [py/missing-call-to-init]
+class ArLinker(ArLikeLinker):
+    id = 'ar'
 
     def __init__(self, exelist: T.List[str]):
-        StaticLinker.__init__(self, exelist)
-        self.id = 'armar'
-        self.std_args = ['-csr']
+        super().__init__(exelist)
+        stdo = mesonlib.Popen_safe(self.exelist + ['-h'])[1]
+        # Enable deterministic builds if they are available.
+        stdargs = 'csr'
+        thinargs = ''
+        if '[D]' in stdo:
+            stdargs += 'D'
+        if '[T]' in stdo:
+            thinargs = 'T'
+        self.std_args = [stdargs]
+        self.std_thin_args = [stdargs + thinargs]
+        self.can_rsp = '@<' in stdo
 
     def can_linker_accept_rsp(self) -> bool:
-        # armar can't accept arguments using the @rsp syntax
-        return False
+        return self.can_rsp
+
+    def get_std_link_args(self, is_thin: bool) -> T.List[str]:
+        # FIXME: osx ld rejects this: "file built for unknown-unsupported file format"
+        if is_thin and not mesonlib.is_osx():
+            return self.std_thin_args
+        else:
+            return self.std_args
+
+
+class ArmarLinker(ArLikeLinker):
+    id = 'armar'
 
 
 class DLinker(StaticLinker):
@@ -212,7 +225,7 @@ class DLinker(StaticLinker):
         self.arch = arch
         self.__rsp_syntax = rsp_syntax
 
-    def get_std_link_args(self) -> T.List[str]:
+    def get_std_link_args(self, is_thin: bool) -> T.List[str]:
         return ['-lib']
 
     def get_output_args(self, target: str) -> T.List[str]:
@@ -291,16 +304,9 @@ class C2000Linker(StaticLinker):
         return ['-r']
 
 
-class AIXArLinker(ArLinker):
-
-    def __init__(self, exelist: T.List[str]):
-        StaticLinker.__init__(self, exelist)
-        self.id = 'aixar'
-        self.std_args = ['-csr', '-Xany']
-
-    def can_linker_accept_rsp(self) -> bool:
-        # AIXAr can't accept arguments using the @rsp syntax
-        return False
+class AIXArLinker(ArLikeLinker):
+    id = 'aixar'
+    std_args = ['-csr', '-Xany']
 
 
 def prepare_rpaths(raw_rpaths: str, build_dir: str, from_dir: str) -> T.List[str]:
@@ -1119,7 +1125,7 @@ class PGIStaticLinker(StaticLinker):
         self.id = 'ar'
         self.std_args = ['-r']
 
-    def get_std_link_args(self) -> T.List[str]:
+    def get_std_link_args(self, is_thin: bool) -> T.List[str]:
         return self.std_args
 
     def get_output_args(self, target: str) -> T.List[str]:

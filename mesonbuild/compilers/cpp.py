@@ -248,7 +248,7 @@ class ClangCPPCompiler(ClangCompiler, CPPCompiler):
 
     def language_stdlib_only_link_flags(self, env: 'Environment') -> T.List[str]:
         # We need to apply the search prefix here, as these link arguments may
-        # be passed to a differen compiler with a different set of default
+        # be passed to a different compiler with a different set of default
         # search paths, such as when using Clang for C/C++ and gfortran for
         # fortran,
         search_dir = self._get_search_dirs(env)
@@ -262,7 +262,7 @@ class ClangCPPCompiler(ClangCompiler, CPPCompiler):
 class AppleClangCPPCompiler(ClangCPPCompiler):
     def language_stdlib_only_link_flags(self, env: 'Environment') -> T.List[str]:
         # We need to apply the search prefix here, as these link arguments may
-        # be passed to a differen compiler with a different set of default
+        # be passed to a different compiler with a different set of default
         # search paths, such as when using Clang for C/C++ and gfortran for
         # fortran,
         search_dir = self._get_search_dirs(env)
@@ -416,7 +416,7 @@ class GnuCPPCompiler(GnuCompiler, CPPCompiler):
 
     def language_stdlib_only_link_flags(self, env: 'Environment') -> T.List[str]:
         # We need to apply the search prefix here, as these link arguments may
-        # be passed to a differen compiler with a different set of default
+        # be passed to a different compiler with a different set of default
         # search paths, such as when using Clang for C/C++ and gfortran for
         # fortran,
         search_dir = self._get_search_dirs(env)
@@ -449,30 +449,34 @@ class NvidiaHPC_CPPCompiler(PGICompiler, CPPCompiler):
         self.id = 'nvidia_hpc'
 
 
-class ElbrusCPPCompiler(GnuCPPCompiler, ElbrusCompiler):
+class ElbrusCPPCompiler(ElbrusCompiler, CPPCompiler):
     def __init__(self, exelist: T.List[str], version: str, for_machine: MachineChoice, is_cross: bool,
                  info: 'MachineInfo', exe_wrapper: T.Optional['ExternalProgram'] = None,
                  linker: T.Optional['DynamicLinker'] = None,
                  defines: T.Optional[T.Dict[str, str]] = None,
                  full_version: T.Optional[str] = None):
-        GnuCPPCompiler.__init__(self, exelist, version, for_machine, is_cross,
-                                info, exe_wrapper, linker=linker,
-                                full_version=full_version, defines=defines)
+        CPPCompiler.__init__(self, exelist, version, for_machine, is_cross,
+                             info, exe_wrapper, linker=linker, full_version=full_version)
         ElbrusCompiler.__init__(self)
 
     def get_options(self) -> 'KeyedOptionDictType':
         opts = CPPCompiler.get_options(self)
 
-        cpp_stds = [
-            'none', 'c++98', 'c++03', 'c++0x', 'c++11', 'c++14', 'c++1y',
-            'gnu++98', 'gnu++03', 'gnu++0x', 'gnu++11', 'gnu++14', 'gnu++1y',
-        ]
-
+        cpp_stds = ['none', 'c++98', 'gnu++98']
+        if version_compare(self.version, '>=1.20.00'):
+            cpp_stds += ['c++03', 'c++0x', 'c++11', 'gnu++03', 'gnu++0x', 'gnu++11']
+        if version_compare(self.version, '>=1.21.00') and version_compare(self.version, '<1.22.00'):
+            cpp_stds += ['c++14', 'gnu++14', 'c++1y', 'gnu++1y']
+        if version_compare(self.version, '>=1.22.00'):
+            cpp_stds += ['c++14', 'gnu++14']
+        if version_compare(self.version, '>=1.23.00'):
+            cpp_stds += ['c++1y', 'gnu++1y']
         if version_compare(self.version, '>=1.24.00'):
-            cpp_stds += [ 'c++1z', 'c++17', 'gnu++1z', 'gnu++17' ]
-
+            cpp_stds += ['c++1z', 'c++17', 'gnu++1z', 'gnu++17']
         if version_compare(self.version, '>=1.25.00'):
-            cpp_stds += [ 'c++2a', 'gnu++2a' ]
+            cpp_stds += ['c++2a', 'gnu++2a']
+        if version_compare(self.version, '>=1.26.00'):
+            cpp_stds += ['c++20', 'gnu++20']
 
         key = OptionKey('std', machine=self.for_machine, lang=self.language)
         opts.update({
@@ -549,7 +553,6 @@ class IntelCPPCompiler(IntelGnuLikeCompiler, CPPCompiler):
         if version_compare(self.version, '>=19.1.0'):
             c_stds += ['c++2a']
             g_stds += ['gnu++2a']
-
 
         key = OptionKey('std', machine=self.for_machine, lang=self.language)
         opts.update({

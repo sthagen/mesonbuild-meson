@@ -159,7 +159,7 @@ joined = 'C:\\foo\\bar' / 'builddir'     # => C:/foo/bar/builddir
 joined = 'C:\\foo\\bar' / 'D:\\builddir' # => D:/builddir
 ```
 
-Note that this is equivalent to using [`join_paths()`](Reference-manual.md#join_paths),
+Note that this is equivalent to using [[join_paths]],
 which was obsoleted by this operator.
 
 ### Strings running over multiple lines
@@ -180,8 +180,8 @@ functionality described below.
 
 ### String index
 
-Stings support the indexing (`[<num>]`) operator. This operator allows (read
-only) acessing a specific character. The returned value is guaranteed to be
+Strings support the indexing (`[<num>]`) operator. This operator allows (read
+only) accessing a specific character. The returned value is guaranteed to be
 a string of length 1.
 
 ```meson
@@ -253,7 +253,15 @@ s = s.replace('as', 'are')
 define = ' -Dsomedefine '
 stripped_define = define.strip()
 # 'stripped_define' now has the value '-Dsomedefine'
+
+# You may also pass a string to strip, which specifies the set of characters to
+# be removed.
+string = 'xyxHelloxyx'.strip('xy')
+# 'string' now has the value 'Hello'
 ```
+
+Since 0.43.0, you can specify one positional string argument,
+and all characters in that string will be stripped.
 
 #### .to_upper(), .to_lower()
 
@@ -447,7 +455,7 @@ Dictionaries are immutable and do not have a guaranteed order.
 
 Dictionaries are available since 0.47.0.
 
-Visit the [Reference Manual](Reference-manual.md#dictionary-object) to read
+Visit the [[@dict]] objects page in the Reference Manual to read
 about the methods exposed by dictionaries.
 
 Since 0.49.0, you can check if a dictionary contains a key like this:
@@ -505,7 +513,7 @@ executable('progname',
   kwargs: d)
 ```
 
-A single function can take keyword argumets both directly in the
+A single function can take keyword arguments both directly in the
 function call and indirectly via the `kwargs` keyword argument. The
 only limitation is that it is a hard error to pass any particular key
 both as a direct and indirect argument.

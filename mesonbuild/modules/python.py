@@ -141,8 +141,7 @@ class PythonSystemDependency(SystemDependency, _PythonDependencyBase):
             elif pycc.startswith(('i686', 'i386')):
                 return '32'
             else:
-                mlog.log('MinGW Python built with unknown CC {!r}, please file'
-                         'a bug'.format(pycc))
+                mlog.log(f'MinGW Python built with unknown CC {pycc!r}, please file a bug')
                 return None
         elif self.platform == 'win32':
             return '32'
@@ -199,8 +198,7 @@ class PythonSystemDependency(SystemDependency, _PythonDependencyBase):
             return
         # Pyarch ends in '32' or '64'
         if arch != pyarch:
-            mlog.log('Need', mlog.bold(self.name), 'for {}-bit, but '
-                     'found {}-bit'.format(arch, pyarch))
+            mlog.log('Need', mlog.bold(self.name), f'for {arch}-bit, but found {pyarch}-bit')
             self.is_found = False
             return
         # This can fail if the library is not found
@@ -267,7 +265,7 @@ def python_factory(env: 'Environment', for_machine: 'MachineChoice',
     if DependencyMethods.EXTRAFRAMEWORK in methods:
         nkwargs = kwargs.copy()
         if mesonlib.version_compare(pkg_version, '>= 3'):
-            # There is a python in /System/Library/Frameworks, but thats python 2.x,
+            # There is a python in /System/Library/Frameworks, but that's python 2.x,
             # Python 3 will always be in /Library
             nkwargs['paths'] = ['/Library/Frameworks']
         candidates.append(functools.partial(PythonFrameworkDependency, 'Python', env, nkwargs, installation))
@@ -276,11 +274,43 @@ def python_factory(env: 'Environment', for_machine: 'MachineChoice',
 
 
 INTROSPECT_COMMAND = '''\
+import os.path
 import sysconfig
 import json
 import sys
+import distutils.command.install
 
-install_paths = sysconfig.get_paths(vars={'base': '', 'platbase': '', 'installed_base': ''})
+def get_distutils_paths(scheme=None, prefix=None):
+    import distutils.dist
+    distribution = distutils.dist.Distribution()
+    install_cmd = distribution.get_command_obj('install')
+    if prefix is not None:
+        install_cmd.prefix = prefix
+    if scheme:
+        install_cmd.select_scheme(scheme)
+    install_cmd.finalize_options()
+    return {
+        'data': install_cmd.install_data,
+        'include': os.path.dirname(install_cmd.install_headers),
+        'platlib': install_cmd.install_platlib,
+        'purelib': install_cmd.install_purelib,
+        'scripts': install_cmd.install_scripts,
+    }
+
+# On Debian derivatives, the Python interpreter shipped by the distribution uses
+# a custom install scheme, deb_system, for the system install, and changes the
+# default scheme to a custom one pointing to /usr/local and replacing
+# site-packages with dist-packages.
+# See https://github.com/mesonbuild/meson/issues/8739.
+# XXX: We should be using sysconfig, but Debian only patches distutils.
+
+if 'deb_system' in distutils.command.install.INSTALL_SCHEMES:
+    paths = get_distutils_paths(scheme='deb_system')
+    install_paths = get_distutils_paths(scheme='deb_system', prefix='')
+else:
+    paths = sysconfig.get_paths()
+    empty_vars = {'base': '', 'platbase': '', 'installed_base': ''}
+    install_paths = sysconfig.get_paths(vars=empty_vars)
 
 def links_against_libpython():
     from distutils.core import Distribution, Extension
@@ -290,7 +320,7 @@ def links_against_libpython():
 
 print(json.dumps({
   'variables': sysconfig.get_config_vars(),
-  'paths': sysconfig.get_paths(),
+  'paths': paths,
   'install_paths': install_paths,
   'sys_paths': sys.path,
   'version': sysconfig.get_python_version(),
@@ -325,7 +355,7 @@ class PythonExternalProgram(ExternalProgram):
 
         # We want strong key values, so we always populate this with bogus data.
         # Otherwise to make the type checkers happy we'd have to do .get() for
-        # everycall, even though we konw that the introspection data will be
+        # everycall, even though we know that the introspection data will be
         # complete
         self.info: 'PythonIntrospectionDict' = {
             'install_paths': {},
@@ -344,7 +374,7 @@ class PythonExternalProgram(ExternalProgram):
             return mesonlib.version_compare(version, '>= 3.0')
         return True
 
-    def sanity(self) -> bool:
+    def sanity(self, state: T.Optional['ModuleState'] = None) -> bool:
         # Sanity check, we expect to have something that at least quacks in tune
         cmd = self.get_command() + ['-c', INTROSPECT_COMMAND]
         p, stdout, stderr = mesonlib.Popen_safe(cmd)
@@ -362,25 +392,25 @@ class PythonExternalProgram(ExternalProgram):
             variables = info['variables']
             info['suffix'] = variables.get('EXT_SUFFIX') or variables.get('SO') or variables.get('.so')
             self.info = T.cast('PythonIntrospectionDict', info)
-            self.platlib = self._get_path('platlib')
-            self.purelib = self._get_path('purelib')
+            self.platlib = self._get_path(state, 'platlib')
+            self.purelib = self._get_path(state, 'purelib')
             return True
         else:
             return False
 
-    def _get_path(self, key: str) -> None:
+    def _get_path(self, state: T.Optional['ModuleState'], key: str) -> None:
+        if state:
+            value = state.get_option(f'{key}dir', module='python')
+            if value:
+                return value
         user_dir = str(Path.home())
         sys_paths = self.info['sys_paths']
         rel_path = self.info['install_paths'][key][1:]
         if not any(p.endswith(rel_path) for p in sys_paths if not p.startswith(user_dir)):
-            # On Debian derivatives sysconfig install path is broken and is not
-            # included in the locations python actually lookup.
-            # See https://github.com/mesonbuild/meson/issues/8739.
             mlog.warning('Broken python installation detected. Python files',
-                         'installed by Meson might not be found by python interpreter.',
+                         'installed by Meson might not be found by python interpreter.\n',
+                         f'This warning can be avoided by setting "python.{key}dir" option.',
                          once=True)
-            if mesonlib.is_debianlike():
-                rel_path = 'lib/python3/dist-packages'
         return rel_path
 
 
@@ -604,7 +634,7 @@ class PythonModule(ExtensionModule):
         missing_modules: T.List[str] = []
 
         # FIXME: this code is *full* of sharp corners. It assumes that it's
-        # going to get a string value (or now a list of lenght 1), of `python2`
+        # going to get a string value (or now a list of length 1), of `python2`
         # or `python3` which is completely nonsense.  On windows the value could
         # easily be `['py', '-3']`, or `['py', '-3.7']` to get a very specific
         # version of python. On Linux we might want a python that's not in
@@ -672,7 +702,7 @@ class PythonModule(ExtensionModule):
                 raise mesonlib.MesonException('{} is missing modules: {}'.format(name_or_path or 'python', ', '.join(missing_modules)))
             return NonExistingExternalProgram()
         else:
-            sane = python.sanity()
+            sane = python.sanity(state)
 
             if sane:
                 return python

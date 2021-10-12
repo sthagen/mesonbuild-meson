@@ -238,6 +238,9 @@ class CmakeModule(ExtensionModule):
             return True
 
         cmakebin = ExternalProgram('cmake', silent=False)
+        if not cmakebin.found():
+            return False
+
         p, stdout, stderr = mesonlib.Popen_safe(cmakebin.get_command() + ['--system-information', '-G', 'Ninja'])[0:3]
         if p.returncode != 0:
             mlog.log(f'error retrieving cmake information: returnCode={p.returncode} stdout={stdout} stderr={stderr}')
@@ -304,7 +307,7 @@ class CmakeModule(ExtensionModule):
             with open(infile, encoding='utf-8') as fin:
                 data = fin.readlines()
         except Exception as e:
-            raise mesonlib.MesonException('Could not read input file {}: {}'.format(infile, str(e)))
+            raise mesonlib.MesonException(f'Could not read input file {infile}: {e!s}')
 
         result = []
         regex = re.compile(r'(?:\\\\)+(?=\\?@)|\\@|@([-a-zA-Z0-9_]+)@')

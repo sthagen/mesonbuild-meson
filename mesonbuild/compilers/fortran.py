@@ -213,7 +213,7 @@ class GnuFortranCompiler(GnuCompiler, FortranCompiler):
 
     def language_stdlib_only_link_flags(self, env: 'Environment') -> T.List[str]:
         # We need to apply the search prefix here, as these link arguments may
-        # be passed to a differen compiler with a different set of default
+        # be passed to a different compiler with a different set of default
         # search paths, such as when using Clang for C/C++ and gfortran for
         # fortran,
         search_dir = self._get_search_dirs(env)
@@ -237,16 +237,26 @@ class GnuFortranCompiler(GnuCompiler, FortranCompiler):
                              dependencies=dependencies, mode='preprocess', disable_cache=disable_cache)
 
 
-class ElbrusFortranCompiler(GnuFortranCompiler, ElbrusCompiler):
+class ElbrusFortranCompiler(ElbrusCompiler, FortranCompiler):
     def __init__(self, exelist: T.List[str], version: str, for_machine: MachineChoice, is_cross: bool,
                  info: 'MachineInfo', exe_wrapper: T.Optional['ExternalProgram'] = None,
                  defines: T.Optional[T.Dict[str, str]] = None,
                  linker: T.Optional['DynamicLinker'] = None,
                  full_version: T.Optional[str] = None):
-        GnuFortranCompiler.__init__(self, exelist, version, for_machine, is_cross,
-                                    info, exe_wrapper, defines=defines,
-                                    linker=linker, full_version=full_version)
+        FortranCompiler.__init__(self, exelist, version, for_machine, is_cross,
+                                 info, exe_wrapper, linker=linker, full_version=full_version)
         ElbrusCompiler.__init__(self)
+
+    def get_options(self) -> 'KeyedOptionDictType':
+        opts = FortranCompiler.get_options(self)
+        fortran_stds = ['f95', 'f2003', 'f2008', 'gnu', 'legacy', 'f2008ts']
+        key = OptionKey('std', machine=self.for_machine, lang=self.language)
+        opts[key].choices = ['none'] + fortran_stds
+        return opts
+
+    def get_module_outdir_args(self, path: str) -> T.List[str]:
+        return ['-J' + path]
+
 
 class G95FortranCompiler(FortranCompiler):
 
@@ -474,7 +484,7 @@ class FlangFortranCompiler(ClangCompiler, FortranCompiler):
 
     def language_stdlib_only_link_flags(self, env: 'Environment') -> T.List[str]:
         # We need to apply the search prefix here, as these link arguments may
-        # be passed to a differen compiler with a different set of default
+        # be passed to a different compiler with a different set of default
         # search paths, such as when using Clang for C/C++ and gfortran for
         # fortran,
         # XXX: Untested....

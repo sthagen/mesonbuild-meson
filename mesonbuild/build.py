@@ -187,6 +187,16 @@ class Man(HoldableObject):
         return self.sources
 
 
+class EmptyDir(HoldableObject):
+
+    def __init__(self, path: str, install_mode: 'FileMode', subproject: str,
+                 install_tag: T.Optional[str] = None):
+        self.path = path
+        self.install_mode = install_mode
+        self.subproject = subproject
+        self.install_tag = install_tag
+
+
 class InstallDir(HoldableObject):
 
     def __init__(self, src_subdir: str, inst_subdir: str, install_dir: str,
@@ -239,6 +249,7 @@ class Build:
         self.benchmarks: T.List['Test'] = []
         self.headers: T.List[Headers] = []
         self.man: T.List[Man] = []
+        self.emptydir: T.List[EmptyDir] = []
         self.data: T.List[Data] = []
         self.static_linker: PerMachine[StaticLinker] = PerMachine(None, None)
         self.subprojects = {}
@@ -260,6 +271,8 @@ class Build:
         self.dependency_overrides: PerMachine[T.Dict[T.Tuple, DependencyOverride]] = PerMachineDefaultable.default(
             environment.is_cross_build(), {}, {})
         self.devenv: T.List[EnvironmentVariables] = []
+        self.modules: T.List[str] = []
+        self.need_vsenv = False
 
     def get_build_targets(self):
         build_targets = OrderedDict()
@@ -315,6 +328,9 @@ class Build:
 
     def get_data(self) -> T.List['Data']:
         return self.data
+
+    def get_emptydir(self) -> T.List['EmptyDir']:
+        return self.emptydir
 
     def get_install_subdirs(self) -> T.List['InstallDir']:
         return self.install_dirs
@@ -513,40 +529,49 @@ class Target(HoldableObject):
             raise RuntimeError(f'Target type is not set for target class "{type(self).__name__}". This is a bug')
 
     def __lt__(self, other: object) -> bool:
-        if not hasattr(other, 'get_id') and not callable(other.get_id):
+        if not isinstance(other, Target):
             return NotImplemented
         return self.get_id() < other.get_id()
 
     def __le__(self, other: object) -> bool:
-        if not hasattr(other, 'get_id') and not callable(other.get_id):
+        if not isinstance(other, Target):
             return NotImplemented
         return self.get_id() <= other.get_id()
 
     def __gt__(self, other: object) -> bool:
-        if not hasattr(other, 'get_id') and not callable(other.get_id):
+        if not isinstance(other, Target):
             return NotImplemented
         return self.get_id() > other.get_id()
 
     def __ge__(self, other: object) -> bool:
-        if not hasattr(other, 'get_id') and not callable(other.get_id):
+        if not isinstance(other, Target):
             return NotImplemented
         return self.get_id() >= other.get_id()
 
     def get_default_install_dir(self, env: environment.Environment) -> T.Tuple[str, str]:
         raise NotImplementedError
 
+    def get_custom_install_dir(self) -> T.List[T.Union[str, bool]]:
+        raise NotImplementedError
+
     def get_install_dir(self, environment: environment.Environment) -> T.Tuple[T.Any, str, bool]:
         # Find the installation directory.
         default_install_dir, install_dir_name = self.get_default_install_dir(environment)
         outdirs = self.get_custom_install_dir()
-        if outdirs[0] is not None and outdirs[0] != default_install_dir and outdirs[0] is not True:
+        if outdirs and outdirs[0] != default_install_dir and outdirs[0] is not True:
             # Either the value is set to a non-default value, or is set to
             # False (which means we want this specific output out of many
             # outputs to not be installed).
             custom_install_dir = True
         else:
             custom_install_dir = False
-            outdirs[0] = default_install_dir
+            # if outdirs is empty we need to set to something, otherwise we set
+            # only the first value to the default
+            if outdirs:
+                outdirs[0] = default_install_dir
+            else:
+                outdirs = [default_install_dir]
+
         return outdirs, install_dir_name, custom_install_dir
 
     def get_basename(self) -> str:
@@ -611,8 +636,15 @@ class Target(HoldableObject):
 
     @staticmethod
     def parse_overrides(kwargs: T.Dict[str, T.Any]) -> T.Dict[OptionKey, str]:
+        opts =  kwargs.get('override_options', [])
+
+        # In this case we have an already parsed and ready to go dictionary
+        # provided by typed_kwargs
+        if isinstance(opts, dict):
+            return T.cast(T.Dict[OptionKey, str], opts)
+
         result: T.Dict[OptionKey, str] = {}
-        overrides = stringlistify(kwargs.get('override_options', []))
+        overrides = stringlistify(opts)
         for o in overrides:
             if '=' not in o:
                 raise InvalidArguments('Overrides must be of form "key=value"')
@@ -633,6 +665,8 @@ class Target(HoldableObject):
 
 class BuildTarget(Target):
     known_kwargs = known_build_target_kwargs
+
+    install_dir: T.List[T.Union[str, bool]]
 
     def __init__(self, name: str, subdir: str, subproject: str, for_machine: MachineChoice,
                  sources: T.List['SourceOutputs'], objects, environment: environment.Environment, kwargs):
@@ -915,8 +949,7 @@ class BuildTarget(Target):
                 self.link_depends.append(
                     File.from_source_file(environment.source_dir, self.subdir, s))
             elif hasattr(s, 'get_outputs'):
-                self.link_depends.extend(
-                    [File.from_built_file(s.get_subdir(), p) for p in s.get_outputs()])
+                self.link_depends.append(s)
             else:
                 raise InvalidArguments(
                     'Link_depends arguments must be strings, Files, '
@@ -990,7 +1023,7 @@ class BuildTarget(Target):
     def get_default_install_dir(self, environment: environment.Environment) -> T.Tuple[str, str]:
         return environment.get_libdir(), '{libdir}'
 
-    def get_custom_install_dir(self):
+    def get_custom_install_dir(self) -> T.List[T.Union[str, bool]]:
         return self.install_dir
 
     def get_custom_install_mode(self) -> T.Optional['FileMode']:
@@ -1017,7 +1050,7 @@ class BuildTarget(Target):
             self.link_whole(linktarget)
 
         c_pchlist, cpp_pchlist, clist, cpplist, cudalist, cslist, valalist,  objclist, objcpplist, fortranlist, rustlist \
-            = [extract_as_list(kwargs, c) for c in ['c_pch', 'cpp_pch', 'c_args', 'cpp_args', 'cuda_args', 'cs_args', 'vala_args', 'objc_args', 'objcpp_args', 'fortran_args', 'rust_args']]
+            = (extract_as_list(kwargs, c) for c in ['c_pch', 'cpp_pch', 'c_args', 'cpp_args', 'cuda_args', 'cs_args', 'vala_args', 'objc_args', 'objcpp_args', 'fortran_args', 'rust_args'])
 
         self.add_pch('c', c_pchlist)
         self.add_pch('cpp', cpp_pchlist)
@@ -1074,7 +1107,7 @@ class BuildTarget(Target):
         self.add_deps(deplist)
         # If an item in this list is False, the output corresponding to
         # the list index of that item will not be installed
-        self.install_dir = typeslistify(kwargs.get('install_dir', [None]),
+        self.install_dir = typeslistify(kwargs.get('install_dir', []),
                                         (str, bool))
         self.install_mode = kwargs.get('install_mode', None)
         self.install_tag = stringlistify(kwargs.get('install_tag', [None]))
@@ -2111,20 +2144,18 @@ class SharedLibrary(BuildTarget):
                     self.vs_module_defs = File.from_absolute_file(path)
                 else:
                     self.vs_module_defs = File.from_source_file(environment.source_dir, self.subdir, path)
-                self.link_depends.append(self.vs_module_defs)
             elif isinstance(path, File):
                 # When passing a generated file.
                 self.vs_module_defs = path
-                self.link_depends.append(path)
             elif hasattr(path, 'get_filename'):
                 # When passing output of a Custom Target
-                path = File.from_built_file(path.subdir, path.get_filename())
-                self.vs_module_defs = path
-                self.link_depends.append(path)
+                self.vs_module_defs = File.from_built_file(path.subdir, path.get_filename())
             else:
                 raise InvalidArguments(
                     'Shared library vs_module_defs must be either a string, '
                     'a file object or a Custom Target')
+            self.process_link_depends(path, environment)
+
         if 'rust_crate_type' in kwargs:
             rust_crate_type = kwargs['rust_crate_type']
             if isinstance(rust_crate_type, str):
@@ -2226,9 +2257,15 @@ class BothLibraries(SecondLevelHolder):
         raise MesonBugException(f'self._preferred_library == "{self._preferred_library}" is neither "shared" nor "static".')
 
 class CommandBase:
-    def flatten_command(self, cmd):
+
+    depend_files: T.List[File]
+    dependencies: T.List[T.Union[BuildTarget, 'CustomTarget']]
+    subproject: str
+
+    def flatten_command(self, cmd: T.Sequence[T.Union[str, File, programs.ExternalProgram, 'BuildTarget', 'CustomTarget', 'CustomTargetIndex']]) -> \
+            T.List[T.Union[str, File, BuildTarget, 'CustomTarget']]:
         cmd = listify(cmd)
-        final_cmd = []
+        final_cmd: T.List[T.Union[str, File, BuildTarget, 'CustomTarget']] = []
         for c in cmd:
             if isinstance(c, str):
                 final_cmd.append(c)
@@ -2279,6 +2316,8 @@ class CustomTarget(Target, CommandBase):
         'env',
     }
 
+    install_dir: T.List[T.Union[str, bool]]
+
     def __init__(self, name: str, subdir: str, subproject: str, kwargs: T.Dict[str, T.Any],
                  absolute_paths: bool = False, backend: T.Optional['Backend'] = None):
         self.typename = 'custom'
@@ -2311,6 +2350,8 @@ class CustomTarget(Target, CommandBase):
         for c in self.sources:
             if isinstance(c, (BuildTarget, CustomTarget)):
                 deps.append(c)
+            if isinstance(c, CustomTargetIndex):
+                deps.append(c.target)
         return deps
 
     def get_transitive_build_target_deps(self) -> T.Set[T.Union[BuildTarget, 'CustomTarget']]:
@@ -2360,6 +2401,8 @@ class CustomTarget(Target, CommandBase):
                     "there is more than one input (we can't know which to use)"
                 raise InvalidArguments(m)
         self.outputs = substitute_values(self.outputs, values)
+        if not self.name:
+            self.name = self.outputs[0]
         self.capture = kwargs.get('capture', False)
         if self.capture and len(self.outputs) != 1:
             raise InvalidArguments('Capturing can only output to a single file.')
@@ -2373,7 +2416,7 @@ class CustomTarget(Target, CommandBase):
             raise InvalidArguments("Can't both capture output and output to console")
         if 'command' not in kwargs:
             raise InvalidArguments('Missing keyword argument "command".')
-        if 'depfile' in kwargs:
+        if kwargs.get('depfile') is not None:
             depfile = kwargs['depfile']
             if not isinstance(depfile, str):
                 raise InvalidArguments('Depfile must be a string.')
@@ -2395,36 +2438,40 @@ class CustomTarget(Target, CommandBase):
                     raise InvalidArguments('"install_dir" must be specified '
                                            'when installing a target')
 
-                if isinstance(kwargs['install_dir'], list):
-                    FeatureNew.single_use('multiple install_dir for custom_target', '0.40.0', self.subproject)
-                # If an item in this list is False, the output corresponding to
-                # the list index of that item will not be installed
-                self.install_dir = typeslistify(kwargs['install_dir'], (str, bool))
-                self.install_mode = kwargs.get('install_mode', None)
-                # If only one tag is provided, assume all outputs have the same tag.
-                # Otherwise, we must have as much tags as outputs.
-                self.install_tag = typeslistify(kwargs.get('install_tag', [None]), (str, bool))
-                if len(self.install_tag) == 1:
-                    self.install_tag = self.install_tag * len(self.outputs)
-                elif len(self.install_tag) != len(self.outputs):
-                    m = f'Target {self.name!r} has {len(self.outputs)} outputs but {len(self.install_tag)} "install_tag"s were found.'
-                    raise InvalidArguments(m)
+            if isinstance(kwargs['install_dir'], list):
+                FeatureNew.single_use('multiple install_dir for custom_target', '0.40.0', self.subproject)
+            # If an item in this list is False, the output corresponding to
+            # the list index of that item will not be installed
+            self.install_dir = typeslistify(kwargs['install_dir'], (str, bool))
+            self.install_mode = kwargs.get('install_mode', None)
+            # If only one tag is provided, assume all outputs have the same tag.
+            # Otherwise, we must have as much tags as outputs.
+            install_tag: T.List[T.Union[str, bool, None]] = typeslistify(kwargs.get('install_tag', []), (str, bool, type(None)))
+            if not install_tag:
+                self.install_tag = [None] * len(self.outputs)
+            elif len(install_tag) == 1:
+                self.install_tag = install_tag * len(self.outputs)
+            elif install_tag and len(install_tag) != len(self.outputs):
+                m = f'Target {self.name!r} has {len(self.outputs)} outputs but {len(install_tag)} "install_tag"s were found.'
+                raise InvalidArguments(m)
+            else:
+                self.install_tag = install_tag
         else:
             self.install = False
-            self.install_dir = [None]
+            self.install_dir = []
             self.install_mode = None
             self.install_tag = []
-        if 'build_always' in kwargs and 'build_always_stale' in kwargs:
+        if kwargs.get('build_always') is not None and kwargs.get('build_always_stale') is not None:
             raise InvalidArguments('build_always and build_always_stale are mutually exclusive. Combine build_by_default and build_always_stale.')
-        elif 'build_always' in kwargs:
-            if 'build_by_default' not in kwargs:
+        elif kwargs.get('build_always') is not None:
+            if kwargs.get('build_by_default') is not None:
                 self.build_by_default = kwargs['build_always']
             self.build_always_stale = kwargs['build_always']
-        elif 'build_always_stale' in kwargs:
+        elif kwargs.get('build_always_stale') is not None:
             self.build_always_stale = kwargs['build_always_stale']
         if not isinstance(self.build_always_stale, bool):
             raise InvalidArguments('Argument build_always_stale must be a boolean.')
-        extra_deps, depend_files = [extract_as_list(kwargs, c, pop=False) for c in ['depends', 'depend_files']]
+        extra_deps, depend_files = (extract_as_list(kwargs, c, pop=False) for c in ['depends', 'depend_files'])
         for ed in extra_deps:
             if not isinstance(ed, (CustomTarget, BuildTarget)):
                 raise InvalidArguments('Can only depend on toplevel targets: custom_target or build_target '
@@ -2444,7 +2491,7 @@ class CustomTarget(Target, CommandBase):
     def should_install(self) -> bool:
         return self.install
 
-    def get_custom_install_dir(self):
+    def get_custom_install_dir(self) -> T.List[T.Union[str, bool]]:
         return self.install_dir
 
     def get_custom_install_mode(self) -> T.Optional['FileMode']:
@@ -2528,8 +2575,13 @@ class CustomTarget(Target, CommandBase):
         return len(self.outputs)
 
 class RunTarget(Target, CommandBase):
-    def __init__(self, name: str, command, dependencies,
-                 subdir: str, subproject: str, env: T.Optional['EnvironmentVariables'] = None):
+
+    def __init__(self, name: str,
+                 command: T.Sequence[T.Union[str, File, BuildTarget, 'CustomTarget', 'CustomTargetIndex', programs.ExternalProgram]],
+                 dependencies: T.Sequence[T.Union[BuildTarget, 'CustomTarget']],
+                 subdir: str,
+                 subproject: str,
+                 env: T.Optional['EnvironmentVariables'] = None):
         self.typename = 'run'
         # These don't produce output artifacts
         super().__init__(name, subdir, subproject, False, MachineChoice.BUILD)
@@ -2539,20 +2591,17 @@ class RunTarget(Target, CommandBase):
         self.absolute_paths = False
         self.env = env
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         repr_str = "<{0} {1}: {2}>"
         return repr_str.format(self.__class__.__name__, self.get_id(), self.command[0])
 
-    def process_kwargs(self, kwargs):
-        return self.process_kwargs_base(kwargs)
-
-    def get_dependencies(self):
+    def get_dependencies(self) -> T.List[T.Union[BuildTarget, 'CustomTarget']]:
         return self.dependencies
 
-    def get_generated_sources(self):
+    def get_generated_sources(self) -> T.List['GeneratedTypes']:
         return []
 
-    def get_sources(self):
+    def get_sources(self) -> T.List[File]:
         return []
 
     def should_install(self) -> bool:
@@ -2569,11 +2618,12 @@ class RunTarget(Target, CommandBase):
         else:
             raise RuntimeError('RunTarget: self.name is neither a list nor a string. This is a bug')
 
-    def type_suffix(self):
+    def type_suffix(self) -> str:
         return "@run"
 
 class AliasTarget(RunTarget):
-    def __init__(self, name, dependencies, subdir, subproject):
+    def __init__(self, name: str, dependencies: T.Sequence[T.Union[BuildTarget, 'CustomTarget']],
+                 subdir: str, subproject: str):
         super().__init__(name, [], dependencies, subdir, subproject)
 
     def __repr__(self):
@@ -2675,7 +2725,7 @@ class CustomTargetIndex(HoldableObject):
     def extract_all_objects_recurse(self) -> T.List[T.Union[str, 'ExtractedObjects']]:
         return self.target.extract_all_objects_recurse()
 
-    def get_custom_install_dir(self):
+    def get_custom_install_dir(self) -> T.List[T.Union[str, bool]]:
         return self.target.get_custom_install_dir()
 
 class ConfigurationData(HoldableObject):

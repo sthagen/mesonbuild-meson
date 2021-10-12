@@ -44,7 +44,7 @@ if T.TYPE_CHECKING:
     CompilerCheckCacheKey = T.Tuple[T.Tuple[str, ...], str, FileOrString, T.Tuple[str, ...], str]
 
 # Check major_versions_differ() if changing versioning scheme.
-version = '0.59.99'
+version = '0.60.0.rc1'
 backendlist = ['ninja', 'vs', 'vs2010', 'vs2012', 'vs2013', 'vs2015', 'vs2017', 'vs2019', 'xcode']
 
 default_yielding = False
@@ -72,6 +72,10 @@ class UserOption(T.Generic[_T], HoldableObject):
         if not isinstance(yielding, bool):
             raise MesonException('Value of "yielding" must be a boolean.')
         self.yielding = yielding
+        self.deprecated: T.Union[bool, T.Dict[str, str], T.List[str]] = False
+
+    def listify(self, value: T.Any) -> T.List[T.Any]:
+        return [value]
 
     def printable_value(self) -> T.Union[str, int, bool, T.List[T.Union[str, int, bool]]]:
         assert isinstance(self.value, (str, int, bool, list))
@@ -205,7 +209,7 @@ class UserArrayOption(UserOption[T.List[str]]):
         self.allow_dups = allow_dups
         self.value = self.validate_value(value, user_input=user_input)
 
-    def validate_value(self, value: T.Union[str, T.List[str]], user_input: bool = True) -> T.List[str]:
+    def listify(self, value: T.Union[str, T.List[str]], user_input: bool = True) -> T.List[str]:
         # User input is for options defined on the command line (via -D
         # options). Users can put their input in as a comma separated
         # string, but for defining options in meson_options.txt the format
@@ -230,6 +234,10 @@ class UserArrayOption(UserOption[T.List[str]]):
             newvalue = value
         else:
             raise MesonException(f'"{newvalue}" should be a string array, but it is not')
+        return newvalue
+
+    def validate_value(self, value: T.Union[str, T.List[str]], user_input: bool = True) -> T.List[str]:
+        newvalue = self.listify(value, user_input)
 
         if not self.allow_dups and len(set(newvalue)) != len(newvalue):
             msg = 'Duplicated values in array option is deprecated. ' \
@@ -544,7 +552,7 @@ class CoreData:
         This way everyone can do f.ex, get_option('libdir') and be sure to get
         the library directory relative to prefix.
 
-        .as_posix() keeps the posix-like file seperators Meson uses.
+        .as_posix() keeps the posix-like file separators Meson uses.
         '''
         try:
             value = PurePath(value)
@@ -629,9 +637,27 @@ class CoreData:
                 value = self.sanitize_dir_option_value(prefix, key, value)
 
         try:
-            self.options[key].set_value(value)
+            opt = self.options[key]
         except KeyError:
             raise MesonException(f'Tried to set unknown builtin option {str(key)}')
+
+        if opt.deprecated is True:
+            mlog.deprecation(f'Option {key.name!r} is deprecated')
+        elif isinstance(opt.deprecated, list):
+            for v in opt.listify(value):
+                if v in opt.deprecated:
+                    mlog.deprecation(f'Option {key.name!r} value {v!r} is deprecated')
+        elif isinstance(opt.deprecated, dict):
+            def replace(v):
+                newvalue = opt.deprecated.get(v)
+                if newvalue is not None:
+                    mlog.deprecation(f'Option {key.name!r} value {v!r} is replaced by {newvalue!r}')
+                    return newvalue
+                return v
+            newvalue = [replace(v) for v in opt.listify(value)]
+            value = ','.join(newvalue)
+
+        opt.set_value(value)
 
         if key.name == 'buildtype':
             self._set_others_from_buildtype(value)
@@ -737,7 +763,7 @@ class CoreData:
                 self.options[key] = value
                 try:
                     value.set_value(oldval.value)
-                except MesonException as e:
+                except MesonException:
                     mlog.warning(f'Old value(s) of {key} are no longer valid, resetting to default ({value.value}).')
 
     def is_cross_build(self, when_building_for: MachineChoice = MachineChoice.HOST) -> bool:
@@ -1188,6 +1214,12 @@ BUILTIN_CORE_OPTIONS: 'KeyedOptionDictType' = OrderedDict([
     (OptionKey('werror'),          BuiltinOption(UserBooleanOption, 'Treat warnings as errors', False, yielding=False)),
     (OptionKey('wrap_mode'),       BuiltinOption(UserComboOption, 'Wrap mode', 'default', choices=['default', 'nofallback', 'nodownload', 'forcefallback', 'nopromote'])),
     (OptionKey('force_fallback_for'), BuiltinOption(UserArrayOption, 'Force fallback for those subprojects', [])),
+
+    # Python module
+    (OptionKey('platlibdir', module='python'),
+     BuiltinOption(UserStringOption, 'Directory for site-specific, platform-specific files.', '')),
+    (OptionKey('purelibdir', module='python'),
+     BuiltinOption(UserStringOption, 'Directory for site-specific, non-platform-specific files.', '')),
 ])
 
 BUILTIN_OPTIONS = OrderedDict(chain(BUILTIN_DIR_OPTIONS.items(), BUILTIN_CORE_OPTIONS.items()))
@@ -1203,6 +1235,8 @@ BULITIN_DIR_NOPREFIX_OPTIONS: T.Dict[OptionKey, T.Dict[str, str]] = {
     OptionKey('sysconfdir'):     {'/usr': '/etc'},
     OptionKey('localstatedir'):  {'/usr': '/var',     '/usr/local': '/var/local'},
     OptionKey('sharedstatedir'): {'/usr': '/var/lib', '/usr/local': '/var/local/lib'},
+    OptionKey('platlibdir', module='python'): {},
+    OptionKey('purelibdir', module='python'): {},
 }
 
 FORBIDDEN_TARGET_NAMES = {'clean': None,

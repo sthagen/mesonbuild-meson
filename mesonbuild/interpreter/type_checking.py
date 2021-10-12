@@ -6,11 +6,12 @@
 import typing as T
 
 from .. import compilers
-from ..build import EnvironmentVariables
+from ..build import EnvironmentVariables, CustomTarget, BuildTarget, CustomTargetIndex, ExtractedObjects, GeneratedList
 from ..coredata import UserFeatureOption
 from ..interpreterbase import TYPE_var
 from ..interpreterbase.decorators import KwargInfo, ContainerTypeInfo
-from ..mesonlib import FileMode, MachineChoice, listify
+from ..mesonlib import File, FileMode, MachineChoice, listify, has_path_sep, OptionKey
+from ..programs import ExternalProgram
 
 # Helper definition for type checks that are `Optional[T]`
 NoneType: T.Type[None] = type(None)
@@ -43,54 +44,53 @@ def _install_mode_validator(mode: T.List[T.Union[str, bool, int]]) -> T.Optional
 
     This is a rather odd thing, it's a scalar, or an array of 3 values in the form:
     [(str | False), (str | int | False) = False, (str | int | False) = False]
-    Where the second and third arguments are not required, and are considered to
-    default to False.
+    where the second and third components are not required and default to False.
     """
     if not mode:
         return None
     if True in mode:
-        return 'can only be a string or false, not true'
+        return 'components can only be permission strings, numbers, or False'
     if len(mode) > 3:
         return 'may have at most 3 elements'
 
     perms = mode[0]
     if not isinstance(perms, (str, bool)):
-        return 'permissions part must be a string or false'
+        return 'first component must be a permissions string or False'
 
     if isinstance(perms, str):
         if not len(perms) == 9:
-            return (f'permissions string must be exactly 9 characters, got "{len(perms)}" '
-                   'in the form rwxr-xr-x')
+            return ('permissions string must be exactly 9 characters in the form rwxr-xr-x,'
+                    f' got {len(perms)}')
         for i in [0, 3, 6]:
             if perms[i] not in {'-', 'r'}:
-                return f'bit {i} must be "-" or "r", not {perms[i]}'
+                return f'permissions character {i+1} must be "-" or "r", not {perms[i]}'
         for i in [1, 4, 7]:
             if perms[i] not in {'-', 'w'}:
-                return f'bit {i} must be "-" or "w", not {perms[i]}'
+                return f'permissions character {i+1} must be "-" or "w", not {perms[i]}'
         for i in [2, 5]:
             if perms[i] not in {'-', 'x', 's', 'S'}:
-                return f'bit {i} must be "-", "s", "S", or "x", not {perms[i]}'
+                return f'permissions character {i+1} must be "-", "s", "S", or "x", not {perms[i]}'
         if perms[8] not in {'-', 'x', 't', 'T'}:
-            return f'bit 8 must be "-", "t", "T", or "x", not {perms[8]}'
+            return f'permission character 9 must be "-", "t", "T", or "x", not {perms[8]}'
 
         if len(mode) >= 2 and not isinstance(mode[1], (int, str, bool)):
-            return 'second componenent must be a string, number, or False if provided'
+            return 'second componenent can only be a string, number, or False'
         if len(mode) >= 3 and not isinstance(mode[2], (int, str, bool)):
-            return 'third componenent must be a string, number, or False if provided'
+            return 'third componenent can only be a string, number, or False'
 
     return None
 
 
 def _install_mode_convertor(mode: T.Optional[T.List[T.Union[str, bool, int]]]) -> FileMode:
-    """Convert the DSL form of the `install_mode` keyword arugment to `FileMode`
+    """Convert the DSL form of the `install_mode` keyword argument to `FileMode`
 
     This is not required, and if not required returns None
 
     TODO: It's not clear to me why this needs to be None and not just return an
-    emtpy FileMode.
+    empty FileMode.
     """
     # this has already been validated by the validator
-    return FileMode(*[m if isinstance(m, str) else None for m in mode])
+    return FileMode(*(m if isinstance(m, str) else None for m in mode))
 
 
 def _lower_strlist(input: T.List[str]) -> T.List[str]:
@@ -157,13 +157,20 @@ def _env_validator(value: T.Union[EnvironmentVariables, T.List['TYPE_var'], T.Di
     return None
 
 
-def _env_convertor(value: T.Union[EnvironmentVariables, T.List[str], T.Dict[str, str], str, None]) -> EnvironmentVariables:
-    def splitter(input: str) -> T.Tuple[str, str]:
-        a, b = input.split('=', 1)
-        return (a.strip(), b.strip())
+def split_equal_string(input: str) -> T.Tuple[str, str]:
+    """Split a string in the form `x=y`
 
-    if isinstance(value, (str, list)):
-        return EnvironmentVariables(dict(splitter(v) for v in listify(value)))
+    This assumes that the string has already been validated to split properly.
+    """
+    a, b = input.split('=', 1)
+    return (a, b)
+
+
+def _env_convertor(value: T.Union[EnvironmentVariables, T.List[str], T.List[T.List[str]], T.Dict[str, str], str, None]) -> EnvironmentVariables:
+    if isinstance(value, str):
+        return EnvironmentVariables(dict([split_equal_string(value)]))
+    elif isinstance(value, list):
+        return EnvironmentVariables(dict(split_equal_string(v) for v in listify(value)))
     elif isinstance(value, dict):
         return EnvironmentVariables(value)
     elif value is None:
@@ -177,3 +184,97 @@ ENV_KW: KwargInfo[T.Union[EnvironmentVariables, T.List, T.Dict, str, None]] = Kw
     validator=_env_validator,
     convertor=_env_convertor,
 )
+
+DEPFILE_KW: KwargInfo[T.Optional[str]] = KwargInfo(
+    'depfile',
+    (str, type(None)),
+    validator=lambda x: 'Depfile must be a plain filename with a subdirectory' if has_path_sep(x) else None
+)
+
+DEPENDS_KW: KwargInfo[T.List[T.Union[BuildTarget, CustomTarget]]] = KwargInfo(
+    'depends',
+    ContainerTypeInfo(list, (BuildTarget, CustomTarget)),
+    listify=True,
+    default=[],
+)
+
+DEPEND_FILES_KW: KwargInfo[T.List[T.Union[str, File]]] = KwargInfo(
+    'depend_files',
+    ContainerTypeInfo(list, (File, str)),
+    listify=True,
+    default=[],
+)
+
+COMMAND_KW: KwargInfo[T.List[T.Union[str, BuildTarget, CustomTarget, CustomTargetIndex, ExternalProgram, File]]] = KwargInfo(
+    'command',
+    # TODO: should accept CustomTargetIndex as well?
+    ContainerTypeInfo(list, (str, BuildTarget, CustomTarget, CustomTargetIndex, ExternalProgram, File), allow_empty=False),
+    required=True,
+    listify=True,
+    default=[],
+)
+
+def _override_options_convertor(raw: T.List[str]) -> T.Dict[OptionKey, str]:
+    output: T.Dict[OptionKey, str] = {}
+    for each in raw:
+        k, v = split_equal_string(each)
+        output[OptionKey.from_string(k)] = v
+    return output
+
+
+OVERRIDE_OPTIONS_KW: KwargInfo[T.List[str]] = KwargInfo(
+    'override_options',
+    ContainerTypeInfo(list, str),
+    listify=True,
+    default=[],
+    # Reusing the env validator is a littl overkill, but nicer than duplicating the code
+    validator=_env_validator,
+    convertor=_override_options_convertor,
+)
+
+
+def _output_validator(outputs: T.List[str]) -> T.Optional[str]:
+    for i in outputs:
+        if i == '':
+            return 'Output must not be empty.'
+        elif i.strip() == '':
+            return 'Output must not consist only of whitespace.'
+        elif has_path_sep(i):
+            return f'Output {i!r} must not contain a path segment.'
+
+    return None
+
+CT_OUTPUT_KW: KwargInfo[T.List[str]] = KwargInfo(
+    'output',
+    ContainerTypeInfo(list, str, allow_empty=False),
+    listify=True,
+    required=True,
+    default=[],
+    validator=_output_validator,
+)
+
+CT_INPUT_KW: KwargInfo[T.List[T.Union[str, File, ExternalProgram, BuildTarget, CustomTarget, CustomTargetIndex, ExtractedObjects, GeneratedList]]] = KwargInfo(
+    'input',
+    ContainerTypeInfo(list, (str, File, ExternalProgram, BuildTarget, CustomTarget, CustomTargetIndex, ExtractedObjects, GeneratedList)),
+    listify=True,
+    default=[],
+)
+
+CT_INSTALL_TAG_KW: KwargInfo[T.List[T.Union[str, bool]]] = KwargInfo(
+    'install_tag',
+    ContainerTypeInfo(list, (str, bool)),
+    listify=True,
+    default=[],
+    since='0.60.0',
+)
+
+INSTALL_KW = KwargInfo('install', bool, default=False)
+
+CT_INSTALL_DIR_KW: KwargInfo[T.List[T.Union[str, bool]]] = KwargInfo(
+    'install_dir',
+    ContainerTypeInfo(list, (str, bool)),
+    listify=True,
+    default=[],
+)
+
+CT_BUILD_BY_DEFAULT: KwargInfo[T.Optional[bool]] = KwargInfo('build_by_default', (bool, type(None)), since='0.40.0')
