@@ -147,8 +147,8 @@ class RustCompiler(Compiler):
         key = OptionKey('std', machine=self.for_machine, lang=self.language)
         return {
             key: coredata.UserComboOption(
-                'Rust Eddition to use',
-                ['none', '2015', '2018'],
+                'Rust edition to use',
+                ['none', '2015', '2018', '2021'],
                 'none',
             ),
         }
