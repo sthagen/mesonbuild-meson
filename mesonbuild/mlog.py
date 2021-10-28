@@ -22,9 +22,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 if T.TYPE_CHECKING:
-    # T.Union is not handled by flake8 to detect quoted annotation use (StringProtocol)
-    # see https://github.com/PyCQA/pyflakes/pull/632
-    from ._typing import StringProtocol, SizedStringProtocol # noqa: F401
+    from ._typing import StringProtocol, SizedStringProtocol
 
 """This is (mostly) a standalone module used to write logging
 information about Meson runs. Some output goes to screen,
@@ -251,12 +249,13 @@ def cmd_ci_include(file: str) -> None:
 def log(*args: TV_Loggable, is_error: bool = False,
         once: bool = False, **kwargs: T.Any) -> None:
     if once:
-        return log_once(*args, is_error=is_error, **kwargs)
-    return _log(*args, is_error=is_error, **kwargs)
+        log_once(*args, is_error=is_error, **kwargs)
+    else:
+        _log(*args, is_error=is_error, **kwargs)
 
 
 def _log(*args: TV_Loggable, is_error: bool = False,
-        **kwargs: T.Any) -> None:
+         **kwargs: T.Any) -> None:
     nested = kwargs.pop('nested', True)
     arr = process_markup(args, False)
     if log_file is not None:

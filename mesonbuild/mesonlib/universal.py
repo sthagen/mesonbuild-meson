@@ -28,6 +28,7 @@ from tempfile import TemporaryDirectory
 import typing as T
 import uuid
 import textwrap
+import copy
 
 from mesonbuild import mlog
 
@@ -61,7 +62,6 @@ __all__ = [
     'OptionKey',
     'dump_conf_header',
     'OptionOverrideProxy',
-    'OptionProxy',
     'OptionType',
     'OrderedSet',
     'PerMachine',
@@ -83,7 +83,6 @@ __all__ = [
     'detect_vcs',
     'do_conf_file',
     'do_conf_str',
-    'do_define',
     'do_replacement',
     'exe_exists',
     'expand_arguments',
@@ -1132,7 +1131,7 @@ def do_replacement(regex: T.Pattern[str], line: str, variable_format: str,
 def do_define(regex: T.Pattern[str], line: str, confdata: 'ConfigurationData', variable_format: str) -> str:
     def get_cmake_define(line: str, confdata: 'ConfigurationData') -> str:
         arr = line.split()
-        define_value=[]
+        define_value = []
         for token in arr[2:]:
             try:
                 (v, desc) = confdata.get(token)
@@ -1179,13 +1178,13 @@ def get_variable_regex(variable_format: str = 'meson') -> T.Pattern[str]:
         raise MesonException(f'Format "{variable_format}" not handled')
     return regex
 
-def do_conf_str (src: str, data: list, confdata: 'ConfigurationData', variable_format: str,
-                 encoding: str = 'utf-8') -> T.Tuple[T.List[str],T.Set[str], bool]:
-    def line_is_valid(line : str, variable_format: str) -> bool:
+def do_conf_str(src: str, data: list, confdata: 'ConfigurationData', variable_format: str,
+                encoding: str = 'utf-8') -> T.Tuple[T.List[str], T.Set[str], bool]:
+    def line_is_valid(line: str, variable_format: str) -> bool:
         if variable_format == 'meson':
             if '#cmakedefine' in line:
                 return False
-        else: #cmake format
+        else: # cmake format
             if '#mesondefine' in line:
                 return False
         return True
@@ -1206,7 +1205,7 @@ def do_conf_str (src: str, data: list, confdata: 'ConfigurationData', variable_f
             confdata_useless = False
             line = do_define(regex, line, confdata, variable_format)
         else:
-            if not line_is_valid(line,variable_format):
+            if not line_is_valid(line, variable_format):
                 raise MesonException(f'Format error in {src}: saw "{line.strip()}" when format set to "{variable_format}"')
             line, missing = do_replacement(regex, line, variable_format, confdata)
             missing_variables.update(missing)
@@ -1919,16 +1918,6 @@ def run_once(func: T.Callable[..., _T]) -> T.Callable[..., _T]:
     return wrapper
 
 
-class OptionProxy(T.Generic[_T]):
-    def __init__(self, value: _T, choices: T.Optional[T.List[str]] = None):
-        self.value = value
-        self.choices = choices
-
-    def set_value(self, v: _T) -> None:
-        # XXX: should this be an error
-        self.value = v
-
-
 class OptionOverrideProxy(collections.abc.MutableMapping):
 
     '''Mimic an option list but transparently override selected option
@@ -1944,15 +1933,16 @@ class OptionOverrideProxy(collections.abc.MutableMapping):
         for o in options:
             self.options.update(o)
 
-    def __getitem__(self, key: 'OptionKey') -> T.Union['UserOption', OptionProxy]:
+    def __getitem__(self, key: 'OptionKey') -> T.Union['UserOption']:
         if key in self.options:
             opt = self.options[key]
             if key in self.overrides:
-                return OptionProxy(opt.validate_value(self.overrides[key]), getattr(opt, 'choices', None))
+                opt = copy.copy(opt)
+                opt.set_value(self.overrides[key])
             return opt
         raise KeyError('Option not found', key)
 
-    def __setitem__(self, key: 'OptionKey', value: T.Union['UserOption', OptionProxy]) -> None:
+    def __setitem__(self, key: 'OptionKey', value: T.Union['UserOption']) -> None:
         self.overrides[key] = value.value
 
     def __delitem__(self, key: 'OptionKey') -> None:

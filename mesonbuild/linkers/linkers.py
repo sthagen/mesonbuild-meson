@@ -893,7 +893,7 @@ class Xc16DynamicLinker(DynamicLinker):
 
     def __init__(self, for_machine: mesonlib.MachineChoice,
                  *, version: str = 'unknown version'):
-        super().__init__(['xc16-gcc.exe'], for_machine, '', [],
+        super().__init__(['xc16-gcc'], for_machine, '', [],
                          version=version)
 
     def get_link_whole_for(self, args: T.List[str]) -> T.List[str]:
@@ -914,7 +914,7 @@ class Xc16DynamicLinker(DynamicLinker):
         return [f'-o{outputname}']
 
     def get_search_args(self, dirname: str) -> 'T.NoReturn':
-        raise OSError('xc16-gcc.exe does not have a search dir argument')
+        raise OSError('xc16-gcc does not have a search dir argument')
 
     def get_allow_undefined_args(self) -> T.List[str]:
         return []
@@ -1380,7 +1380,7 @@ class AIXDynamicLinker(PosixDynamicLinkerMixin, DynamicLinker):
         if len(sys_path) == 0:
             # get_compiler_system_dirs doesn't support our compiler.
             # Use the default system library path
-            all_paths.update(['/usr/lib','/lib'])
+            all_paths.update(['/usr/lib', '/lib'])
         else:
             # Include the compiler's default library paths, but filter out paths that don't exist
             for p in sys_path:

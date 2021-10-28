@@ -585,10 +585,10 @@ class AllPlatformTests(BasePlatformTests):
                           self._run, self.mtest_command + ['--setup=valgrind'])
         with open(os.path.join(self.logdir, 'testlog-valgrind.txt'), encoding='utf-8') as f:
             vg_log = f.read()
-        self.assertFalse('TEST_ENV is set' in basic_log)
-        self.assertFalse('Memcheck' in basic_log)
-        self.assertTrue('TEST_ENV is set' in vg_log)
-        self.assertTrue('Memcheck' in vg_log)
+        self.assertNotIn('TEST_ENV is set', basic_log)
+        self.assertNotIn('Memcheck', basic_log)
+        self.assertIn('TEST_ENV is set', vg_log)
+        self.assertIn('Memcheck', vg_log)
         # Run buggy test with setup without env that will pass
         self._run(self.mtest_command + ['--setup=wrapper'])
         # Setup with no properties works
@@ -605,12 +605,12 @@ class AllPlatformTests(BasePlatformTests):
         self._run(self.mtest_command + ['--setup=good'])
         with open(os.path.join(self.logdir, 'testlog-good.txt'), encoding='utf-8') as f:
             exclude_suites_log = f.read()
-        self.assertFalse('buggy' in exclude_suites_log)
+        self.assertNotIn('buggy', exclude_suites_log)
         # --suite overrides add_test_setup(xclude_suites)
         self._run(self.mtest_command + ['--setup=good', '--suite', 'buggy'])
         with open(os.path.join(self.logdir, 'testlog-good.txt'), encoding='utf-8') as f:
             include_suites_log = f.read()
-        self.assertTrue('buggy' in include_suites_log)
+        self.assertIn('buggy', include_suites_log)
 
     def test_testsetup_selection(self):
         testdir = os.path.join(self.unit_test_dir, '14 testsetup selection')
@@ -657,17 +657,17 @@ class AllPlatformTests(BasePlatformTests):
         with open(os.path.join(self.logdir, 'testlog-other.txt'), encoding='utf-8') as f:
             other_log = f.read()
 
-        self.assertTrue('ENV_A is 1' in default_log)
-        self.assertTrue('ENV_B is 2' in default_log)
-        self.assertTrue('ENV_C is 2' in default_log)
+        self.assertIn('ENV_A is 1', default_log)
+        self.assertIn('ENV_B is 2', default_log)
+        self.assertIn('ENV_C is 2', default_log)
 
-        self.assertTrue('ENV_A is 1' in mydefault_log)
-        self.assertTrue('ENV_B is 2' in mydefault_log)
-        self.assertTrue('ENV_C is 2' in mydefault_log)
+        self.assertIn('ENV_A is 1', mydefault_log)
+        self.assertIn('ENV_B is 2', mydefault_log)
+        self.assertIn('ENV_C is 2', mydefault_log)
 
-        self.assertTrue('ENV_A is 1' in other_log)
-        self.assertTrue('ENV_B is 3' in other_log)
-        self.assertTrue('ENV_C is 2' in other_log)
+        self.assertIn('ENV_A is 1', other_log)
+        self.assertIn('ENV_B is 3', other_log)
+        self.assertIn('ENV_C is 2', other_log)
 
     def assertFailedTestCount(self, failure_count, command):
         try:
@@ -919,7 +919,7 @@ class AllPlatformTests(BasePlatformTests):
             wcc = compiler_from_language(env, lang, MachineChoice.HOST)
             wlinker = detect_static_linker(env, wcc)
             # Pop it so we don't use it for the next detection
-            evalue = os.environ.pop('AR')
+            os.environ.pop('AR')
             # Must be the same type since it's a wrapper around the same exelist
             self.assertIs(type(cc), type(wcc))
             self.assertIs(type(linker), type(wlinker))
@@ -1372,7 +1372,7 @@ class AllPlatformTests(BasePlatformTests):
                 self.assertTrue(rpath.startswith('/usr/lib/gcc'))
                 self.assertEqual(len(rpath.split(':')), 1)
             else:
-                self.assertTrue(rpath is None)
+                self.assertIsNone(rpath)
 
     def test_dash_d_dedup(self):
         testdir = os.path.join(self.unit_test_dir, '9 d dedup')
@@ -1441,10 +1441,6 @@ class AllPlatformTests(BasePlatformTests):
     def build_static_lib(self, compiler, linker, source, objectfile, outfile, extra_args=None):
         if extra_args is None:
             extra_args = []
-        if compiler.get_argument_syntax() == 'msvc':
-            link_cmd = ['lib', '/NOLOGO', '/OUT:' + outfile, objectfile]
-        else:
-            link_cmd = ['ar', 'csr', outfile, objectfile]
         link_cmd = linker.get_exelist()
         link_cmd += linker.get_always_args()
         link_cmd += linker.get_std_link_args(False)
@@ -2536,6 +2532,14 @@ class AllPlatformTests(BasePlatformTests):
         if self.backend is not Backend.ninja:
             raise SkipTest(f'Clang-format is for now only supported on Ninja, not {self.backend.name}')
         testdir = os.path.join(self.unit_test_dir, '54 clang-format')
+
+        # Ensure that test project is in git even when running meson from tarball.
+        srcdir = os.path.join(self.builddir, 'src')
+        shutil.copytree(testdir, srcdir)
+        _git_init(srcdir)
+        testdir = srcdir
+        self.new_builddir()
+
         testfile = os.path.join(testdir, 'prog.c')
         badfile = os.path.join(testdir, 'prog_orig_c')
         goodfile = os.path.join(testdir, 'prog_expected_c')
@@ -2622,7 +2626,7 @@ class AllPlatformTests(BasePlatformTests):
 
     def test_introspect_json_flat(self):
         testdir = os.path.join(self.unit_test_dir, '57 introspection')
-        out = self.init(testdir, extra_args=['-Dlayout=flat'])
+        self.init(testdir, extra_args=['-Dlayout=flat'])
         infodir = os.path.join(self.builddir, 'meson-info')
         self.assertPathExists(infodir)
 
@@ -3602,7 +3606,7 @@ class AllPlatformTests(BasePlatformTests):
                 filename = foo/real.wrap
                 '''))
         with self.assertRaisesRegex(WrapException, 'wrap-redirect filename must be in the form foo/subprojects/bar.wrap'):
-            wrap = PackageDefinition(redirect_wrap)
+            PackageDefinition(redirect_wrap)
 
         # Correct redirect
         with open(redirect_wrap, 'w', encoding='utf-8') as f:
@@ -3892,17 +3896,19 @@ class AllPlatformTests(BasePlatformTests):
             Path(installpath, 'usr/share/out2.txt'),
         }
 
-        def do_install(tags=None):
-            extra_args = ['--tags', tags] if tags else []
-            self._run(self.meson_command + ['install', '--dry-run', '--destdir', self.installdir] + extra_args, workdir=self.builddir)
+        def do_install(tags, expected_files, expected_scripts):
+            cmd = self.meson_command + ['install', '--dry-run', '--destdir', self.installdir]
+            cmd += ['--tags', tags] if tags else []
+            stdout = self._run(cmd, workdir=self.builddir)
             installed = self.read_install_logs()
-            return sorted(installed)
+            self.assertEqual(sorted(expected_files), sorted(installed))
+            self.assertEqual(expected_scripts, stdout.count('Running custom install script'))
 
-        self.assertEqual(sorted(expected_devel), do_install('devel'))
-        self.assertEqual(sorted(expected_runtime), do_install('runtime'))
-        self.assertEqual(sorted(expected_custom), do_install('custom'))
-        self.assertEqual(sorted(expected_runtime_custom), do_install('runtime,custom'))
-        self.assertEqual(sorted(expected_all), do_install())
+        do_install('devel', expected_devel, 0)
+        do_install('runtime', expected_runtime, 0)
+        do_install('custom', expected_custom, 1)
+        do_install('runtime,custom', expected_runtime_custom, 1)
+        do_install(None, expected_all, 2)
 
     def test_introspect_install_plan(self):
         testdir = os.path.join(self.unit_test_dir, '98 install all targets')

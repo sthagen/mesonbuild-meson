@@ -103,12 +103,12 @@ def stringifyUserArguments(args, quote=False):
     elif isinstance(args, dict):
         return '{%s}' % ', '.join(['{} : {}'.format(stringifyUserArguments(k, True), stringifyUserArguments(v, True)) for k, v in args.items()])
     elif isinstance(args, bool):
-        pass # bools are a type of int, make this fallthrough to the error case
+        return 'true' if args else 'false'
     elif isinstance(args, int):
         return str(args)
     elif isinstance(args, str):
         return f"'{args}'" if quote else args
-    raise InvalidArguments('Function accepts only strings, integers, lists, dictionaries and lists thereof.')
+    raise InvalidArguments('Function accepts only strings, integers, bools, lists, dictionaries and lists thereof.')
 
 class Summary:
     def __init__(self, project_name, project_version):
@@ -619,7 +619,7 @@ class Interpreter(InterpreterBase, HoldableObject):
     @FeatureNewKwargs('declare_dependency', '0.54.0', ['variables'])
     @permittedKwargs({'include_directories', 'link_with', 'sources', 'dependencies',
                       'compile_args', 'link_args', 'link_whole', 'version',
-                      'variables' })
+                      'variables'})
     @noPosargs
     def func_declare_dependency(self, node, args, kwargs):
         version = kwargs.get('version', self.project_version)
@@ -815,7 +815,7 @@ external dependencies (including libraries) must go to "dependencies".''')
         m = ['\nExecuting subproject', mlog.bold(stack)]
         if method != 'meson':
             m += ['method', mlog.bold(method)]
-        mlog.log(*m,'\n', nested=False)
+        mlog.log(*m, '\n', nested=False)
 
         try:
             if method == 'meson':
@@ -1459,7 +1459,7 @@ external dependencies (including libraries) must go to "dependencies".''')
     def find_program_fallback(self, fallback, args, required, extra_info):
         mlog.log('Fallback to subproject', mlog.bold(fallback), 'which provides program',
                  mlog.bold(' '.join(args)))
-        sp_kwargs = { 'required': required }
+        sp_kwargs = {'required': required}
         self.do_subproject(fallback, 'meson', sp_kwargs)
         return self.program_from_overrides(args, extra_info)
 

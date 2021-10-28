@@ -338,7 +338,7 @@ if T.TYPE_CHECKING:
         link_libpython: bool
         paths: T.Dict[str, str]
         platform: str
-        suffix : str
+        suffix: str
         variables: T.Dict[str, str]
         version: str
 
@@ -494,18 +494,17 @@ class PythonInstallation(ExternalProgramHolder):
     @noPosargs
     def dependency_method(self, args: T.List['TYPE_var'], kwargs: 'TYPE_kwargs') -> 'Dependency':
         disabled, required, feature = extract_required_kwarg(kwargs, self.subproject)
-
         # it's theoretically (though not practically) possible for the else clse
         # to not bind dep, let's ensure it is.
-        dep: 'Dependency' = NotFoundDependency(self.interpreter.environment)
+        dep: 'Dependency' = NotFoundDependency('python', self.interpreter.environment)
         if disabled:
             mlog.log('Dependency', mlog.bold('python'), 'skipped: feature', mlog.bold(feature), 'disabled')
         else:
             for d in python_factory(self.interpreter.environment,
-                                      MachineChoice.BUILD if kwargs.get('native', False) else MachineChoice.HOST,
-                                      kwargs,
-                                      process_method_kw({DependencyMethods.PKGCONFIG, DependencyMethods.SYSTEM}, kwargs),
-                                      self):
+                                    MachineChoice.BUILD if kwargs.get('native', False) else MachineChoice.HOST,
+                                    kwargs,
+                                    process_method_kw({DependencyMethods.PKGCONFIG, DependencyMethods.SYSTEM}, kwargs),
+                                    self):
                 dep = d()
                 if dep.found():
                     break
