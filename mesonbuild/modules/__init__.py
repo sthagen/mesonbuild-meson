@@ -72,18 +72,9 @@ class ModuleState:
         for dirs in include_dirs:
             if isinstance(dirs, str):
                 dirs_str += [f'{prefix}{dirs}']
-                continue
-
-            # Should be build.IncludeDirs object.
-            basedir = dirs.get_curdir()
-            for d in dirs.get_incdirs():
-                expdir = os.path.join(basedir, d)
-                srctreedir = os.path.join(srcdir, expdir)
-                buildtreedir = os.path.join(builddir, expdir)
-                dirs_str += [f'{prefix}{buildtreedir}',
-                             f'{prefix}{srctreedir}']
-            for d in dirs.get_extra_build_dirs():
-                dirs_str += [f'{prefix}{d}']
+            else:
+                dirs_str.extend([f'{prefix}{i}' for i in dirs.to_string_list(srcdir, builddir)])
+                dirs_str.extend([f'{prefix}{i}' for i in dirs.get_extra_build_dirs()])
 
         return dirs_str
 
@@ -192,27 +183,23 @@ def is_module_library(fname):
 
 
 class ModuleReturnValue:
-    def __init__(self, return_value: T.Optional['TYPE_var'], new_objects: T.Sequence['TYPE_var']) -> None:
+    def __init__(self, return_value: T.Optional['TYPE_var'],
+                 new_objects: T.Sequence[T.Union['TYPE_var', 'build.ExecutableSerialisation']]) -> None:
         self.return_value = return_value
         assert isinstance(new_objects, list)
-        self.new_objects = new_objects
+        self.new_objects: T.List[T.Union['TYPE_var', 'build.ExecutableSerialisation']] = new_objects
 
 class GResourceTarget(build.CustomTarget):
-    def __init__(self, name, subdir, subproject, kwargs):
-        super().__init__(name, subdir, subproject, kwargs)
+    pass
 
 class GResourceHeaderTarget(build.CustomTarget):
-    def __init__(self, name, subdir, subproject, kwargs):
-        super().__init__(name, subdir, subproject, kwargs)
+    pass
 
 class GirTarget(build.CustomTarget):
-    def __init__(self, name, subdir, subproject, kwargs):
-        super().__init__(name, subdir, subproject, kwargs)
+    pass
 
 class TypelibTarget(build.CustomTarget):
-    def __init__(self, name, subdir, subproject, kwargs):
-        super().__init__(name, subdir, subproject, kwargs)
+    pass
 
 class VapiTarget(build.CustomTarget):
-    def __init__(self, name, subdir, subproject, kwargs):
-        super().__init__(name, subdir, subproject, kwargs)
+    pass

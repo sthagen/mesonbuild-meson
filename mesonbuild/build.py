@@ -385,11 +385,19 @@ class IncludeDirs(HoldableObject):
     def get_extra_build_dirs(self) -> T.List[str]:
         return self.extra_build_dirs
 
-    def to_string_list(self, sourcedir: str) -> T.List[str]:
-        """Convert IncludeDirs object to a list of strings."""
+    def to_string_list(self, sourcedir: str, builddir: T.Optional[str] = None) -> T.List[str]:
+        """Convert IncludeDirs object to a list of strings.
+
+        :param sourcedir: The absolute source directory
+        :param builddir: The absolute build directory, option, buid dir will not
+            be added if this is unset
+        :returns: A list of strings (without compiler argument)
+        """
         strlist: T.List[str] = []
         for idir in self.incdirs:
             strlist.append(os.path.join(sourcedir, self.curdir, idir))
+            if builddir:
+                strlist.append(os.path.join(builddir, self.curdir, idir))
         return strlist
 
 class ExtractedObjects(HoldableObject):
@@ -467,6 +475,14 @@ class EnvironmentVariables(HoldableObject):
     def __repr__(self) -> str:
         repr_str = "<{0}: {1}>"
         return repr_str.format(self.__class__.__name__, self.envvars)
+
+    def hash(self, hasher: T.Any):
+        myenv = self.get_env({})
+        for key in sorted(myenv.keys()):
+            hasher.update(bytes(key, encoding='utf-8'))
+            hasher.update(b',')
+            hasher.update(bytes(myenv[key], encoding='utf-8'))
+            hasher.update(b';')
 
     def has_name(self, name: str) -> bool:
         return name in self.varnames
@@ -677,7 +693,7 @@ class BuildTarget(Target):
         self.compilers = OrderedDict() # type: OrderedDict[str, Compiler]
         self.objects: T.List[T.Union[str, 'File', 'ExtractedObjects']] = []
         self.external_deps: T.List[dependencies.Dependency] = []
-        self.include_dirs = []
+        self.include_dirs: T.List['IncludeDirs'] = []
         self.link_language = kwargs.get('link_language')
         self.link_targets: T.List[BuildTarget] = []
         self.link_whole_targets = []
@@ -987,7 +1003,7 @@ class BuildTarget(Target):
         return ExtractedObjects(self, self.sources, self.generated, self.objects,
                                 recursive)
 
-    def get_all_link_deps(self):
+    def get_all_link_deps(self) -> 'ImmutableListProtocol[Target]':
         return self.get_transitive_link_deps()
 
     @lru_cache(maxsize=None)
@@ -1268,7 +1284,7 @@ class BuildTarget(Target):
     def get_pch(self, language: str) -> T.List[str]:
         return self.pch.get(language, [])
 
-    def get_include_dirs(self):
+    def get_include_dirs(self) -> T.List['IncludeDirs']:
         return self.include_dirs
 
     def add_deps(self, deps):
@@ -1415,8 +1431,8 @@ You probably should put it in link_with instead.''')
                 raise MesonException(f'File {f} does not exist.')
         self.pch[language] = pchlist
 
-    def add_include_dirs(self, args, set_is_system: T.Optional[str] = None):
-        ids = []
+    def add_include_dirs(self, args: T.Sequence['IncludeDirs'], set_is_system: T.Optional[str] = None) -> None:
+        ids: T.List['IncludeDirs'] = []
         for a in args:
             if not isinstance(a, IncludeDirs):
                 raise InvalidArguments('Include directory to be added is not an include directory object.')
@@ -1840,6 +1856,13 @@ class Executable(BuildTarget):
 
     def is_linkable_target(self):
         return self.is_linkwithable
+
+    def get_command(self) -> 'ImmutableListProtocol[str]':
+        """Provides compatibility with ExternalProgram.
+
+        Since you can override ExternalProgram instances with Executables.
+        """
+        return self.outputs
 
 class StaticLibrary(BuildTarget):
     known_kwargs = known_stlib_kwargs
@@ -2324,7 +2347,7 @@ class CustomTarget(Target, CommandBase):
         # TODO expose keyword arg to make MachineChoice.HOST configurable
         super().__init__(name, subdir, subproject, False, MachineChoice.HOST)
         self.dependencies: T.List[T.Union[CustomTarget, BuildTarget]] = []
-        self.extra_depends = []
+        self.extra_depends: T.List[T.Union[CustomTarget, BuildTarget]] = []
         self.depend_files = [] # Files that this target depends on but are not on the command line.
         self.depfile = None
         self.process_kwargs(kwargs, backend)
@@ -2344,7 +2367,7 @@ class CustomTarget(Target, CommandBase):
         repr_str = "<{0} {1}: {2}>"
         return repr_str.format(self.__class__.__name__, self.get_id(), self.command)
 
-    def get_target_dependencies(self):
+    def get_target_dependencies(self) -> T.List[T.Union['BuildTarget', 'CustomTarget']]:
         deps = self.dependencies[:]
         deps += self.extra_depends
         for c in self.sources:
@@ -2434,7 +2457,7 @@ class CustomTarget(Target, CommandBase):
             if not isinstance(self.install, bool):
                 raise InvalidArguments('"install" must be boolean.')
             if self.install:
-                if 'install_dir' not in kwargs:
+                if not kwargs.get('install_dir', False):
                     raise InvalidArguments('"install_dir" must be specified '
                                            'when installing a target')
 
@@ -2700,7 +2723,7 @@ class CustomTargetIndex(HoldableObject):
     def get_filename(self) -> str:
         return self.output
 
-    def get_id(self):
+    def get_id(self) -> str:
         return self.target.get_id()
 
     def get_all_link_deps(self):
