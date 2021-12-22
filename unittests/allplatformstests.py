@@ -1499,19 +1499,45 @@ class AllPlatformTests(BasePlatformTests):
         else:
             shlibfile = os.path.join(tdir, 'libalexandria.' + shared_suffix)
         self.build_shared_lib(cc, source, objectfile, shlibfile, impfile)
+
+        if is_windows():
+            def cleanup() -> None:
+                """Clean up all the garbage MSVC writes in the source tree."""
+
+                for fname in glob(os.path.join(tdir, 'alexandria.*')):
+                    if os.path.splitext(fname)[1] not in {'.c', '.h'}:
+                        os.unlink(fname)
+            self.addCleanup(cleanup)
+        else:
+            self.addCleanup(os.unlink, shlibfile)
+
         # Run the test
-        try:
-            self.init(tdir)
+        self.init(tdir)
+        self.build()
+        self.run_tests()
+
+    def test_prebuilt_shared_lib_rpath(self) -> None:
+        (cc, _, object_suffix, shared_suffix) = self.detect_prebuild_env()
+        tdir = os.path.join(self.unit_test_dir, '17 prebuilt shared')
+        with tempfile.TemporaryDirectory() as d:
+            source = os.path.join(tdir, 'alexandria.c')
+            objectfile = os.path.join(d, 'alexandria.' + object_suffix)
+            impfile = os.path.join(d, 'alexandria.lib')
+            if cc.get_argument_syntax() == 'msvc':
+                shlibfile = os.path.join(d, 'alexandria.' + shared_suffix)
+            elif is_cygwin():
+                shlibfile = os.path.join(d, 'cygalexandria.' + shared_suffix)
+            else:
+                shlibfile = os.path.join(d, 'libalexandria.' + shared_suffix)
+            # Ensure MSVC extra files end up in the directory that gets deleted
+            # at the end
+            with chdir(d):
+                self.build_shared_lib(cc, source, objectfile, shlibfile, impfile)
+
+            # Run the test
+            self.init(tdir, extra_args=[f'-Dsearch_dir={d}'])
             self.build()
             self.run_tests()
-        finally:
-            os.unlink(shlibfile)
-            if is_windows():
-                # Clean up all the garbage MSVC writes in the
-                # source tree.
-                for fname in glob(os.path.join(tdir, 'alexandria.*')):
-                    if os.path.splitext(fname)[1] not in ['.c', '.h']:
-                        os.unlink(fname)
 
     @skipIfNoPkgconfig
     def test_pkgconfig_static(self):
@@ -1566,10 +1592,10 @@ class AllPlatformTests(BasePlatformTests):
         os.environ['PKG_CONFIG_LIBDIR'] = self.privatedir
         env = get_fake_env(testdir, self.builddir, self.prefix)
         kwargs = {'required': True, 'silent': True}
-        foo_dep = PkgConfigDependency('libfoo', env, kwargs)
+        foo_dep = PkgConfigDependency('libanswer', env, kwargs)
         # Ensure link_args are properly quoted
         libdir = PurePath(prefix) / PurePath(libdir)
-        link_args = ['-L' + libdir.as_posix(), '-lfoo']
+        link_args = ['-L' + libdir.as_posix(), '-lanswer']
         self.assertEqual(foo_dep.get_link_args(), link_args)
         # Ensure include args are properly quoted
         incdir = PurePath(prefix) / PurePath('include')
@@ -1920,8 +1946,10 @@ class AllPlatformTests(BasePlatformTests):
         """
         tdir = os.path.join(self.unit_test_dir, '30 shared_mod linking')
         out = self.init(tdir)
-        msg = ('WARNING: target links against shared modules. This is not '
-               'recommended as it is not supported on some platforms')
+        msg = ('''DEPRECATION: target prog links against shared module mymod, which is incorrect.
+             This will be an error in the future, so please use shared_library() for mymod instead.
+             If shared_module() was used for mymod because it has references to undefined symbols,
+             use shared_libary() with `override_options: ['b_lundef=false']` instead.''')
         self.assertIn(msg, out)
 
     def test_mixed_language_linker_check(self):
@@ -1937,6 +1965,13 @@ class AllPlatformTests(BasePlatformTests):
         # cxx.links with C source
         self.assertEqual(cmds[3][0], cc)
         self.assertEqual(cmds[4][0], cxx)
+        if self.backend is Backend.ninja:
+            # updating the file to check causes a reconfigure
+            #
+            # only the ninja backend is competent enough to detect reconfigured
+            # no-op builds without build targets
+            self.utime(os.path.join(testdir, 'test.c'))
+            self.assertReconfiguredBuildIsNoop()
 
     def test_ndebug_if_release_disabled(self):
         testdir = os.path.join(self.unit_test_dir, '28 ndebug if-release')
@@ -2241,8 +2276,8 @@ class AllPlatformTests(BasePlatformTests):
         # Parent project warns correctly
         self.assertRegex(out, "WARNING: Project targeting '>=0.45'.*'0.47.0': dict")
         # Subprojects warn correctly
-        self.assertRegex(out, r"\| WARNING: Project targeting '>=0.40'.*'0.44.0': disabler")
-        self.assertRegex(out, r"\| WARNING: Project targeting '!=0.40'.*'0.44.0': disabler")
+        self.assertRegex(out, r"foo\| .*WARNING: Project targeting '>=0.40'.*'0.44.0': disabler")
+        self.assertRegex(out, r"baz\| .*WARNING: Project targeting '!=0.40'.*'0.44.0': disabler")
         # Subproject has a new-enough meson_version, no warning
         self.assertNotRegex(out, "WARNING: Project targeting.*Python")
         # Ensure a summary is printed in the subproject and the outer project
@@ -3539,6 +3574,12 @@ class AllPlatformTests(BasePlatformTests):
             self.init(srcdir)
             self.build()
             self.run_tests()
+
+    def test_extract_objects_custom_target_no_warning(self):
+        testdir = os.path.join(self.common_test_dir, '22 object extraction')
+
+        out = self.init(testdir)
+        self.assertNotRegex(out, "WARNING:.*can't be converted to File object")
 
     def test_multi_output_custom_target_no_warning(self):
         testdir = os.path.join(self.common_test_dir, '228 custom_target source')

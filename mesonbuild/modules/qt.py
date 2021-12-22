@@ -98,6 +98,7 @@ if T.TYPE_CHECKING:
 class QtBaseModule(ExtensionModule):
     _tools_detected = False
     _rcc_supports_depfiles = False
+    _moc_supports_depfiles = False
 
     def __init__(self, interpreter: 'Interpreter', qt_version: int = 5):
         ExtensionModule.__init__(self, interpreter)
@@ -169,6 +170,10 @@ class QtBaseModule(ExtensionModule):
         if qt.found():
             # Get all tools and then make sure that they are the right version
             self.compilers_detect(state, qt)
+            if version_compare(qt.version, '>=5.15.0'):
+                self._moc_supports_depfiles = True
+            else:
+                mlog.warning('moc dependencies will not work properly until you move to Qt >= 5.15', fatal=False)
             if version_compare(qt.version, '>=5.14.0'):
                 self._rcc_supports_depfiles = True
             else:
@@ -272,7 +277,7 @@ class QtBaseModule(ExtensionModule):
     @noPosargs
     @typed_kwargs(
         'qt.compile_resources',
-        KwargInfo('name', str),
+        KwargInfo('name', (str, NoneType)),
         KwargInfo(
             'sources',
             ContainerTypeInfo(list, (File, str, build.CustomTarget, build.CustomTargetIndex, build.GeneratedList), allow_empty=False),
@@ -288,7 +293,8 @@ class QtBaseModule(ExtensionModule):
         Uses CustomTargets to generate .cpp files from .qrc files.
         """
         if any(isinstance(s, (build.CustomTarget, build.CustomTargetIndex, build.GeneratedList)) for s in kwargs['sources']):
-            FeatureNew.single_use('qt.compile_resources: custom_target or generator for "sources" keyword argument', '0.60.0', state.subproject)
+            FeatureNew.single_use('qt.compile_resources: custom_target or generator for "sources" keyword argument',
+                                  '0.60.0', state.subproject, location=state.current_node)
         out = self._compile_resources_impl(state, kwargs)
         return ModuleReturnValue(out, [out])
 
@@ -367,7 +373,8 @@ class QtBaseModule(ExtensionModule):
     def compile_ui(self, state: 'ModuleState', args: T.Tuple, kwargs: 'UICompilerKwArgs') -> ModuleReturnValue:
         """Compile UI resources into cpp headers."""
         if any(isinstance(s, (build.CustomTarget, build.CustomTargetIndex, build.GeneratedList)) for s in kwargs['sources']):
-            FeatureNew.single_use('qt.compile_ui: custom_target or generator for "sources" keyword argument', '0.60.0', state.subproject)
+            FeatureNew.single_use('qt.compile_ui: custom_target or generator for "sources" keyword argument',
+                                  '0.60.0', state.subproject, location=state.current_node)
         out = self._compile_ui_impl(state, kwargs)
         return ModuleReturnValue(out, [out])
 
@@ -410,9 +417,11 @@ class QtBaseModule(ExtensionModule):
     )
     def compile_moc(self, state: 'ModuleState', args: T.Tuple, kwargs: 'MocCompilerKwArgs') -> ModuleReturnValue:
         if any(isinstance(s, (build.CustomTarget, build.CustomTargetIndex, build.GeneratedList)) for s in kwargs['headers']):
-            FeatureNew.single_use('qt.compile_moc: custom_target or generator for "headers" keyword argument', '0.60.0', state.subproject)
+            FeatureNew.single_use('qt.compile_moc: custom_target or generator for "headers" keyword argument',
+                                  '0.60.0', state.subproject, location=state.current_node)
         if any(isinstance(s, (build.CustomTarget, build.CustomTargetIndex, build.GeneratedList)) for s in kwargs['sources']):
-            FeatureNew.single_use('qt.compile_moc: custom_target or generator for "sources" keyword argument', '0.60.0', state.subproject)
+            FeatureNew.single_use('qt.compile_moc: custom_target or generator for "sources" keyword argument',
+                                  '0.60.0', state.subproject, location=state.current_node)
         out = self._compile_moc_impl(state, kwargs)
         return ModuleReturnValue(out, [out])
 
@@ -434,15 +443,20 @@ class QtBaseModule(ExtensionModule):
 
         output: T.List[build.GeneratedList] = []
 
-        arguments = kwargs['extra_args'] + inc + compile_args + ['@INPUT@', '-o', '@OUTPUT@']
+        # depfile arguments (defaults to <output-name>.d)
+        DEPFILE_ARGS: T.List[str] = ['--output-dep-file'] if self._moc_supports_depfiles else []
+
+        arguments = kwargs['extra_args'] + DEPFILE_ARGS + inc + compile_args + ['@INPUT@', '-o', '@OUTPUT@']
         if kwargs['headers']:
             moc_gen = build.Generator(
                 self.tools['moc'], arguments, ['moc_@BASENAME@.cpp'],
+                depfile='moc_@BASENAME@.cpp.d',
                 name=f'Qt{self.qt_version} moc header')
             output.append(moc_gen.process_files(kwargs['headers'], state))
         if kwargs['sources']:
             moc_gen = build.Generator(
                 self.tools['moc'], arguments, ['@BASENAME@.moc'],
+                depfile='@BASENAME.moc.d@',
                 name=f'Qt{self.qt_version} moc source')
             output.append(moc_gen.process_files(kwargs['sources'], state))
 
@@ -466,7 +480,7 @@ class QtBaseModule(ExtensionModule):
     def preprocess(self, state: 'ModuleState', args: T.List[T.Union[str, File]], kwargs: 'PreprocessKwArgs') -> ModuleReturnValue:
         _sources = args[1:]
         if _sources:
-            FeatureDeprecated.single_use('qt.preprocess positional sources', '0.59', state.subproject)
+            FeatureDeprecated.single_use('qt.preprocess positional sources', '0.59', state.subproject, location=state.current_node)
         # List is invariant, os we have to cast...
         sources = T.cast(T.List[T.Union[str, File, build.GeneratedList, build.CustomTarget]],
                          _sources + kwargs['sources'])
@@ -517,7 +531,8 @@ class QtBaseModule(ExtensionModule):
     def compile_translations(self, state: 'ModuleState', args: T.Tuple, kwargs: 'CompileTranslationsKwArgs') -> ModuleReturnValue:
         ts_files = kwargs['ts_files']
         if any(isinstance(s, (build.CustomTarget, build.CustomTargetIndex, build.GeneratedList)) for s in ts_files):
-            FeatureNew.single_use('qt.compile_translations: custom_target or generator for "ts_files" keyword argument', '0.60.0', state.subproject)
+            FeatureNew.single_use('qt.compile_translations: custom_target or generator for "ts_files" keyword argument',
+                                  '0.60.0', state.subproject, location=state.current_node)
         install_dir = kwargs['install_dir']
         qresource = kwargs['qresource']
         if qresource:

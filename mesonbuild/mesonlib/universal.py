@@ -87,6 +87,7 @@ __all__ = [
     'exe_exists',
     'expand_arguments',
     'extract_as_list',
+    'generate_list',
     'get_compiler_for_source',
     'get_filenames_templates_dict',
     'get_library_dirs',
@@ -154,7 +155,7 @@ if os.path.basename(sys.executable) == 'meson.exe':
     python_command = [sys.executable, 'runpython']
 else:
     python_command = [sys.executable]
-_meson_command = None
+_meson_command: T.Optional['ImmutableListProtocol[str]'] = None
 
 class MesonException(Exception):
     '''Exceptions thrown by Meson'''
@@ -229,7 +230,7 @@ def set_meson_command(mainfile: str) -> None:
         mlog.log(f'meson_command is {_meson_command!r}')
 
 
-def get_meson_command() -> T.Optional[T.List[str]]:
+def get_meson_command() -> T.Optional['ImmutableListProtocol[str]']:
     return _meson_command
 
 
@@ -1670,7 +1671,7 @@ class TemporaryDirectoryWinProof(TemporaryDirectory):
 
 
 def detect_subprojects(spdir_name: str, current_dir: str = '',
-                       result: T.Optional[T.Dict[str, T.List[str]]] = None) -> T.Optional[T.Dict[str, T.List[str]]]:
+                       result: T.Optional[T.Dict[str, T.List[str]]] = None) -> T.Dict[str, T.List[str]]:
     if result is None:
         result = {}
     spdir = os.path.join(current_dir, spdir_name)
@@ -1730,9 +1731,7 @@ class OrderedSet(T.MutableSet[_T]):
         return 'OrderedSet()'
 
     def __reversed__(self) -> T.Iterator[_T]:
-        # Mypy is complaining that sets can't be reversed, which is true for
-        # unordered sets, but this is an ordered, set so reverse() makes sense.
-        return reversed(self.__container.keys())  # type: ignore
+        return reversed(self.__container.keys())
 
     def add(self, value: _T) -> None:
         self.__container[value] = None
@@ -1756,6 +1755,10 @@ class OrderedSet(T.MutableSet[_T]):
 
     def difference(self, set_: T.Union[T.Set[_T], 'OrderedSet[_T]']) -> 'OrderedSet[_T]':
         return type(self)(e for e in self if e not in set_)
+
+    def difference_update(self, iterable: T.Iterable[_T]) -> None:
+        for item in iterable:
+            self.discard(item)
 
 def relpath(path: str, start: str) -> str:
     # On Windows a relative path can't be evaluated for paths on two different
@@ -1914,6 +1917,14 @@ def run_once(func: T.Callable[..., _T]) -> T.Callable[..., _T]:
         val = func(*args, **kwargs)
         ret.append(val)
         return val
+
+    return wrapper
+
+
+def generate_list(func: T.Callable[..., T.Generator[_T, None, None]]) -> T.Callable[..., T.List[_T]]:
+    @wraps(func)
+    def wrapper(*args: T.Any, **kwargs: T.Any) -> T.List[_T]:
+        return list(func(*args, **kwargs))
 
     return wrapper
 
@@ -2116,7 +2127,7 @@ class OptionKey:
         return out
 
     def __repr__(self) -> str:
-        return f'OptionKey({repr(self.name)}, {repr(self.subproject)}, {repr(self.machine)}, {repr(self.lang)})'
+        return f'OptionKey({self.name!r}, {self.subproject!r}, {self.machine!r}, {self.lang!r}, {self.module!r}, {self.type!r})'
 
     @classmethod
     def from_string(cls, raw: str) -> 'OptionKey':

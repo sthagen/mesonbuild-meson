@@ -31,6 +31,7 @@ from ..mesonlib import (
 )
 from ..environment import Environment, build_filename
 
+
 def autodetect_vs_version(build: T.Optional[build.Build], interpreter: T.Optional[Interpreter]) -> backends.Backend:
     vs_version = os.getenv('VisualStudioVersion', None)
     vs_install_dir = os.getenv('VSINSTALLDIR', None)
@@ -56,10 +57,15 @@ def autodetect_vs_version(build: T.Optional[build.Build], interpreter: T.Optiona
        'Visual Studio\\2019' in vs_install_dir:
         from mesonbuild.backend.vs2019backend import Vs2019Backend
         return Vs2019Backend(build, interpreter)
+    if vs_version == '17.0' or 'Visual Studio 22' in vs_install_dir or \
+       'Visual Studio\\2022' in vs_install_dir:
+        from mesonbuild.backend.vs2022backend import Vs2022Backend
+        return Vs2022Backend(build, interpreter)
     if 'Visual Studio 10.0' in vs_install_dir:
         return Vs2010Backend(build, interpreter)
     raise MesonException('Could not detect Visual Studio using VisualStudioVersion: {!r} or VSINSTALLDIR: {!r}!\n'
                          'Please specify the exact backend to use.'.format(vs_version, vs_install_dir))
+
 
 def split_o_flags_args(args):
     """
@@ -82,14 +88,18 @@ def split_o_flags_args(args):
             o_flags += ['/O' + f for f in flags]
     return o_flags
 
+
 def generate_guid_from_path(path, path_type):
     return str(uuid.uuid5(uuid.NAMESPACE_URL, 'meson-vs-' + path_type + ':' + str(path))).upper()
+
 
 class Vs2010Backend(backends.Backend):
     def __init__(self, build: T.Optional[build.Build], interpreter: T.Optional[Interpreter]):
         super().__init__(build, interpreter)
         self.name = 'vs2010'
         self.project_file_version = '10.0.30319.1'
+        self.sln_file_version = '11.00'
+        self.sln_version_comment = '2010'
         self.platform_toolset = None
         self.vs_version = '2010'
         self.windows_target_platform_version = None
@@ -340,10 +350,11 @@ class Vs2010Backend(backends.Backend):
     def generate_solution(self, sln_filename, projlist):
         default_projlist = self.get_build_by_default_targets()
         sln_filename_tmp = sln_filename + '~'
-        with open(sln_filename_tmp, 'w', encoding='utf-8') as ofile:
-            ofile.write('Microsoft Visual Studio Solution File, Format '
-                        'Version 11.00\n')
-            ofile.write('# Visual Studio ' + self.vs_version + '\n')
+        # Note using the utf-8 BOM requires the blank line, otherwise Visual Studio Version Selector fails.
+        # Without the BOM, VSVS fails if there is a blank line.
+        with open(sln_filename_tmp, 'w', encoding='utf-8-sig') as ofile:
+            ofile.write('\nMicrosoft Visual Studio Solution File, Format Version %s\n' % self.sln_file_version)
+            ofile.write('# Visual Studio %s\n' % self.sln_version_comment)
             prj_templ = 'Project("{%s}") = "%s", "%s", "{%s}"\n'
             for prj in projlist:
                 coredata = self.environment.coredata
@@ -459,7 +470,7 @@ class Vs2010Backend(backends.Backend):
 
         # Put the startup project first in the project list
         if startup_idx:
-            projlist = [projlist[startup_idx]] + projlist[0:startup_idx] + projlist[startup_idx + 1:-1]
+            projlist.insert(0, projlist.pop(startup_idx))
 
         return projlist
 
@@ -519,19 +530,22 @@ class Vs2010Backend(backends.Backend):
     def create_basic_project(self, target_name, *,
                              temp_dir,
                              guid,
-                             conftype = 'Utility',
-                             target_ext = None):
+                             conftype='Utility',
+                             target_ext=None,
+                             target_platform=None):
         root = ET.Element('Project', {'DefaultTargets': "Build",
                                       'ToolsVersion': '4.0',
                                       'xmlns': 'http://schemas.microsoft.com/developer/msbuild/2003'})
 
         confitems = ET.SubElement(root, 'ItemGroup', {'Label': 'ProjectConfigurations'})
+        if not target_platform:
+            target_platform = self.platform
         prjconf = ET.SubElement(confitems, 'ProjectConfiguration',
-                                {'Include': self.buildtype + '|' + self.platform})
+                                {'Include': self.buildtype + '|' + target_platform})
         p = ET.SubElement(prjconf, 'Configuration')
         p.text = self.buildtype
         pl = ET.SubElement(prjconf, 'Platform')
-        pl.text = self.platform
+        pl.text = target_platform
 
         # Globals
         globalgroup = ET.SubElement(root, 'PropertyGroup', Label='Globals')
@@ -544,7 +558,7 @@ class Vs2010Backend(backends.Backend):
         ns.text = target_name
 
         p = ET.SubElement(globalgroup, 'Platform')
-        p.text = self.platform
+        p.text = target_platform
         pname = ET.SubElement(globalgroup, 'ProjectName')
         pname.text = target_name
         if self.windows_target_platform_version:
@@ -584,8 +598,8 @@ class Vs2010Backend(backends.Backend):
 
     def gen_run_target_vcxproj(self, target, ofname, guid):
         (root, type_config) = self.create_basic_project(target.name,
-                                                        temp_dir = target.get_id(),
-                                                        guid = guid)
+                                                        temp_dir=target.get_id(),
+                                                        guid=guid)
         depend_files = self.get_custom_target_depend_files(target)
 
         if not target.command:
@@ -613,9 +627,14 @@ class Vs2010Backend(backends.Backend):
         self._prettyprint_vcxproj_xml(ET.ElementTree(root), ofname)
 
     def gen_custom_target_vcxproj(self, target, ofname, guid):
+        if target.for_machine is MachineChoice.BUILD:
+            platform = self.build_platform
+        else:
+            platform = self.platform
         (root, type_config) = self.create_basic_project(target.name,
-                                                        temp_dir = target.get_id(),
-                                                        guid = guid)
+                                                        temp_dir=target.get_id(),
+                                                        guid=guid,
+                                                        target_platform=platform)
         # We need to always use absolute paths because our invocation is always
         # from the target dir, not the build root.
         target.absolute_paths = True
@@ -866,10 +885,11 @@ class Vs2010Backend(backends.Backend):
         tfilename = os.path.splitext(target.get_filename())
 
         (root, type_config) = self.create_basic_project(tfilename[0],
-                                                        temp_dir = target.get_id(),
-                                                        guid = guid,
-                                                        conftype = conftype,
-                                                        target_ext = tfilename[1])
+                                                        temp_dir=target.get_id(),
+                                                        guid=guid,
+                                                        conftype=conftype,
+                                                        target_ext=tfilename[1],
+                                                        target_platform=platform)
 
         # FIXME: Should these just be set in create_basic_project(), even if
         # irrelevant for current target?
@@ -943,9 +963,10 @@ class Vs2010Backend(backends.Backend):
                 ET.SubElement(clconf, 'ExceptionHandling').text = 'SyncCThrow'
             elif eh.value == 'none':
                 ET.SubElement(clconf, 'ExceptionHandling').text = 'false'
-            else: # 'sc' or 'default'
+            else:  # 'sc' or 'default'
                 ET.SubElement(clconf, 'ExceptionHandling').text = 'Sync'
-        generated_files, custom_target_output_files, generated_files_include_dirs = self.generate_custom_generator_commands(target, root)
+        generated_files, custom_target_output_files, generated_files_include_dirs = self.generate_custom_generator_commands(
+            target, root)
         (gen_src, gen_hdrs, gen_objs, gen_langs) = self.split_sources(generated_files)
         (custom_src, custom_hdrs, custom_objs, custom_langs) = self.split_sources(custom_target_output_files)
         gen_src += custom_src
@@ -1011,8 +1032,8 @@ class Vs2010Backend(backends.Backend):
                 # reversed is used to keep order of includes
                 for i in reversed(d.get_incdirs()):
                     curdir = os.path.join(d.get_curdir(), i)
-                    args.append('-I' + self.relpath(curdir, target.subdir)) # build dir
-                    args.append('-I' + os.path.join(proj_to_src_root, curdir)) # src dir
+                    args.append('-I' + self.relpath(curdir, target.subdir))  # build dir
+                    args.append('-I' + os.path.join(proj_to_src_root, curdir))  # src dir
                 for i in d.get_extra_build_dirs():
                     curdir = os.path.join(d.get_curdir(), i)
                     args.append('-I' + self.relpath(curdir, target.subdir))  # build dir
@@ -1167,7 +1188,8 @@ class Vs2010Backend(backends.Backend):
             # Link args added from the env: LDFLAGS, or the cross file. We want
             # these to override all the defaults but not the per-target link
             # args.
-            extra_link_args += self.environment.coredata.get_external_link_args(target.for_machine, compiler.get_language())
+            extra_link_args += self.environment.coredata.get_external_link_args(
+                target.for_machine, compiler.get_language())
             # Only non-static built targets need link args and link dependencies
             extra_link_args += target.link_args
             # External deps must be last because target link libraries may depend on them.
@@ -1345,7 +1367,8 @@ class Vs2010Backend(backends.Backend):
                     self.add_additional_options(lang, inc_cl, file_args)
                     self.add_preprocessor_defines(lang, inc_cl, file_defines)
                     self.add_include_dirs(lang, inc_cl, file_inc_dirs)
-                    ET.SubElement(inc_cl, 'ObjectFileName').text = "$(IntDir)" + self.object_filename_from_source(target, s)
+                    ET.SubElement(inc_cl, 'ObjectFileName').text = "$(IntDir)" + \
+                        self.object_filename_from_source(target, s)
             for s in gen_src:
                 if path_normalize_add(s, previous_sources):
                     inc_cl = ET.SubElement(inc_src, 'CLCompile', Include=s)
@@ -1355,7 +1378,8 @@ class Vs2010Backend(backends.Backend):
                     self.add_preprocessor_defines(lang, inc_cl, file_defines)
                     self.add_include_dirs(lang, inc_cl, file_inc_dirs)
                     s = File.from_built_file(target.get_subdir(), s)
-                    ET.SubElement(inc_cl, 'ObjectFileName').text = "$(IntDir)" + self.object_filename_from_source(target, s)
+                    ET.SubElement(inc_cl, 'ObjectFileName').text = "$(IntDir)" + \
+                        self.object_filename_from_source(target, s)
             for lang in pch_sources:
                 impl = pch_sources[lang][1]
                 if impl and path_normalize_add(impl, previous_sources):
@@ -1370,7 +1394,7 @@ class Vs2010Backend(backends.Backend):
                     else:
                         inc_dirs = file_inc_dirs
                     self.add_include_dirs(lang, inc_cl, inc_dirs)
-                    #XXX: Do we need to set the object file name name here too?
+                    # XXX: Do we need to set the object file name name here too?
 
         previous_objects = []
         if self.has_objects(objects, additional_objects, gen_objs):
@@ -1392,8 +1416,8 @@ class Vs2010Backend(backends.Backend):
     def gen_regenproj(self, project_name, ofname):
         guid = self.environment.coredata.regen_guid
         (root, type_config) = self.create_basic_project(project_name,
-                                                        temp_dir = 'regen-temp',
-                                                        guid = guid)
+                                                        temp_dir='regen-temp',
+                                                        guid=guid)
 
         action = ET.SubElement(root, 'ItemDefinitionGroup')
         midl = ET.SubElement(action, 'Midl')
@@ -1418,8 +1442,8 @@ class Vs2010Backend(backends.Backend):
     def gen_testproj(self, target_name, ofname):
         guid = self.environment.coredata.test_guid
         (root, type_config) = self.create_basic_project(target_name,
-                                                        temp_dir = 'test-temp',
-                                                        guid = guid)
+                                                        temp_dir='test-temp',
+                                                        guid=guid)
 
         action = ET.SubElement(root, 'ItemDefinitionGroup')
         midl = ET.SubElement(action, 'Midl')
@@ -1446,8 +1470,8 @@ class Vs2010Backend(backends.Backend):
 
         guid = self.environment.coredata.install_guid
         (root, type_config) = self.create_basic_project(target_name,
-                                                        temp_dir = 'install-temp',
-                                                        guid = guid)
+                                                        temp_dir='install-temp',
+                                                        guid=guid)
 
         action = ET.SubElement(root, 'ItemDefinitionGroup')
         midl = ET.SubElement(action, 'Midl')

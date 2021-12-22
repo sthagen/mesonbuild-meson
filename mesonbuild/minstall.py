@@ -18,6 +18,7 @@ import argparse
 import errno
 import os
 import pickle
+import platform
 import shlex
 import shutil
 import subprocess
@@ -25,7 +26,10 @@ import sys
 import typing as T
 
 from . import environment
-from .backend.backends import InstallData, InstallDataBase, InstallEmptyDir, TargetInstallData, ExecutableSerialisation
+from .backend.backends import (
+    InstallData, InstallDataBase, InstallEmptyDir, InstallSymlinkData,
+    TargetInstallData, ExecutableSerialisation
+)
 from .coredata import major_versions_differ, MesonVersionMismatchException
 from .coredata import version as coredata_version
 from .mesonlib import Popen_safe, RealPathAction, is_windows
@@ -243,12 +247,22 @@ def restore_selinux_contexts() -> None:
               'Standard output:', out,
               'Standard error:', err, sep='\n')
 
-def apply_ldconfig(dm: DirMaker) -> None:
+def apply_ldconfig(dm: DirMaker, libdir: str) -> None:
     '''
     Apply ldconfig to update the ld.so.cache.
     '''
     if not shutil.which('ldconfig'):
         # If we don't have ldconfig, failure is ignored quietly.
+        return
+
+    platlower = platform.system().lower()
+    if platlower == 'dragonfly' or 'bsd' in platlower:
+        if libdir in dm.all_dirs:
+            proc, out, err = Popen_safe(['ldconfig', '-m', libdir])
+            if proc.returncode != 0:
+                print('Failed to apply ldconfig ...',
+                      'Standard output:', out,
+                      'Standard error:', err, sep='\n')
         return
 
     # Try to update ld cache, it could fail if we don't have permission.
@@ -306,6 +320,7 @@ class Installer:
 
     def __init__(self, options: 'ArgumentType', lf: T.TextIO):
         self.did_install_something = False
+        self.printed_symlink_error = False
         self.options = options
         self.lf = lf
         self.preserved_file_count = 0
@@ -368,9 +383,10 @@ class Installer:
         if not self.dry_run and not destdir:
             restore_selinux_contexts()
 
-    def apply_ldconfig(self, dm: DirMaker, destdir: str) -> None:
-        if not self.dry_run and not destdir:
-            apply_ldconfig(dm)
+    def apply_ldconfig(self, dm: DirMaker, destdir: str, is_cross_build: bool, libdir: str) -> None:
+        if any([self.dry_run, destdir, is_cross_build]):
+            return
+        apply_ldconfig(dm, libdir)
 
     def Popen_safe(self, *args: T.Any, **kwargs: T.Any) -> T.Tuple[int, str, str]:
         if not self.dry_run:
@@ -383,7 +399,9 @@ class Installer:
             return run_exe(*args, **kwargs)
         return 0
 
-    def should_install(self, d: T.Union[TargetInstallData, InstallEmptyDir,  InstallDataBase, ExecutableSerialisation]) -> bool:
+    def should_install(self, d: T.Union[TargetInstallData, InstallEmptyDir,
+                                        InstallDataBase, InstallSymlinkData,
+                                        ExecutableSerialisation]) -> bool:
         if d.subproject and (d.subproject in self.skip_subprojects or '*' in self.skip_subprojects):
             return False
         if self.tags and d.tag not in self.tags:
@@ -439,6 +457,29 @@ class Installer:
             self.copy2(from_file, to_file)
         selinux_updates.append(to_file)
         append_to_log(self.lf, to_file)
+        return True
+
+    def do_symlink(self, target: str, link: str, full_dst_dir: str) -> bool:
+        abs_target = target
+        if not os.path.isabs(target):
+            abs_target = os.path.join(full_dst_dir, target)
+        if not os.path.exists(abs_target):
+            raise RuntimeError(f'Tried to install symlink to missing file {abs_target}')
+        if os.path.exists(link):
+            if not os.path.islink(link):
+                raise RuntimeError(f'Destination {link!r} already exists and is not a symlink')
+            self.remove(link)
+        if not self.printed_symlink_error:
+            self.log(f'Installing symlink pointing to {target} to {link}')
+        try:
+            self.symlink(target, link, target_is_directory=os.path.isdir(abs_target))
+        except (NotImplementedError, OSError):
+            if not self.printed_symlink_error:
+                print("Symlink creation does not work on this platform. "
+                      "Skipping all symlinking.")
+                self.printed_symlink_error = True
+            return False
+        append_to_log(self.lf, link)
         return True
 
     def do_copydir(self, data: InstallData, src_dir: str, dst_dir: str,
@@ -532,6 +573,7 @@ class Installer:
             os.environ['DESTDIR'] = destdir
         destdir = destdir or ''
         fullprefix = destdir_join(destdir, d.prefix)
+        libdir = os.path.join(d.prefix, d.libdir)
 
         if d.install_umask != 'preserve':
             assert isinstance(d.install_umask, int)
@@ -546,8 +588,9 @@ class Installer:
                 self.install_man(d, dm, destdir, fullprefix)
                 self.install_emptydir(d, dm, destdir, fullprefix)
                 self.install_data(d, dm, destdir, fullprefix)
+                self.install_symlinks(d, dm, destdir, fullprefix)
                 self.restore_selinux_contexts(destdir)
-                self.apply_ldconfig(dm, destdir)
+                self.apply_ldconfig(dm, destdir, d.is_cross_build, libdir)
                 self.run_install_script(d, destdir, fullprefix)
                 if not self.did_install_something:
                     self.log('Nothing to install.')
@@ -583,6 +626,16 @@ class Installer:
             if self.do_copyfile(fullfilename, outfilename, makedirs=(dm, outdir)):
                 self.did_install_something = True
             self.set_mode(outfilename, i.install_mode, d.install_umask)
+
+    def install_symlinks(self, d: InstallData, dm: DirMaker, destdir: str, fullprefix: str) -> None:
+        for s in d.symlinks:
+            if not self.should_install(s):
+                continue
+            full_dst_dir = get_destdir_path(destdir, fullprefix, s.install_path)
+            full_link_name = get_destdir_path(destdir, fullprefix, s.name)
+            dm.makedirs(full_dst_dir, exist_ok=True)
+            if self.do_symlink(s.target, full_link_name, full_dst_dir):
+                self.did_install_something = True
 
     def install_man(self, d: InstallData, dm: DirMaker, destdir: str, fullprefix: str) -> None:
         for m in d.man:
@@ -700,21 +753,9 @@ class Installer:
                 self.do_copydir(d, fname, outname, None, install_mode, dm)
             else:
                 raise RuntimeError(f'Unknown file type for {fname!r}')
-            printed_symlink_error = False
-            for alias, to in aliases.items():
-                try:
-                    symlinkfilename = os.path.join(outdir, alias)
-                    try:
-                        self.remove(symlinkfilename)
-                    except FileNotFoundError:
-                        pass
-                    self.symlink(to, symlinkfilename)
-                    append_to_log(self.lf, symlinkfilename)
-                except (NotImplementedError, OSError):
-                    if not printed_symlink_error:
-                        print("Symlink creation does not work on this platform. "
-                              "Skipping all symlinking.")
-                        printed_symlink_error = True
+            for alias, target in aliases.items():
+                symlinkfilename = os.path.join(outdir, alias)
+                self.do_symlink(target, symlinkfilename, outdir)
             if file_copied:
                 self.did_install_something = True
                 try:

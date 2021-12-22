@@ -107,14 +107,16 @@ class CleanTrees:
         self.trees = trees
 
 class InstallData:
-    def __init__(self, source_dir: str, build_dir: str, prefix: str,
+    def __init__(self, source_dir: str, build_dir: str, prefix: str, libdir: str,
                  strip_bin: T.List[str], install_umask: T.Union[str, int],
-                 mesonintrospect: T.List[str], version: str):
+                 mesonintrospect: T.List[str], version: str,
+                 is_cross_build: bool):
         # TODO: in python 3.8 or with typing_Extensions install_umask could be:
         # `T.Union[T.Literal['preserve'], int]`, which would be more accurate.
         self.source_dir = source_dir
         self.build_dir = build_dir
         self.prefix = prefix
+        self.libdir = libdir
         self.strip_bin = strip_bin
         self.install_umask = install_umask
         self.targets: T.List[TargetInstallData] = []
@@ -122,10 +124,12 @@ class InstallData:
         self.man: T.List[InstallDataBase] = []
         self.emptydir: T.List[InstallEmptyDir] = []
         self.data: T.List[InstallDataBase] = []
+        self.symlinks: T.List[InstallSymlinkData] = []
         self.install_scripts: T.List[ExecutableSerialisation] = []
         self.install_subdirs: T.List[SubdirInstallData] = []
         self.mesonintrospect = mesonintrospect
         self.version = version
+        self.is_cross_build = is_cross_build
 
 class TargetInstallData:
 
@@ -167,6 +171,15 @@ class InstallDataBase:
         self.tag = tag
         self.data_type = data_type
 
+class InstallSymlinkData:
+    def __init__(self, target: str, name: str, install_path: str,
+                 subproject: str, tag: T.Optional[str] = None):
+        self.target = target
+        self.name = name
+        self.install_path = install_path
+        self.subproject = subproject
+        self.tag = tag
+
 class SubdirInstallData(InstallDataBase):
     def __init__(self, path: str, install_path: str, install_path_name: str,
                  install_mode: 'FileMode', exclude: T.Tuple[T.Set[str], T.Set[str]],
@@ -192,7 +205,7 @@ class ExecutableSerialisation:
         self.env = env
         if exe_wrapper is not None:
             assert isinstance(exe_wrapper, programs.ExternalProgram)
-        self.exe_runner = exe_wrapper
+        self.exe_wrapper = exe_wrapper
         self.workdir = workdir
         self.extra_paths = extra_paths
         self.capture = capture
@@ -218,7 +231,7 @@ class TestSerialisation:
         self.is_cross_built = is_cross_built
         if exe_wrapper is not None:
             assert isinstance(exe_wrapper, programs.ExternalProgram)
-        self.exe_runner = exe_wrapper
+        self.exe_wrapper = exe_wrapper
         self.is_parallel = is_parallel
         self.cmd_args = cmd_args
         self.env = env
@@ -259,6 +272,9 @@ def get_backend_from_name(backend: str, build: T.Optional[build.Build] = None, i
     elif backend == 'vs2019':
         from . import vs2019backend
         return vs2019backend.Vs2019Backend(build, interpreter)
+    elif backend == 'vs2022':
+        from . import vs2022backend
+        return vs2022backend.Vs2022Backend(build, interpreter)
     elif backend == 'xcode':
         from . import xcodebackend
         return xcodebackend.XCodeBackend(build, interpreter)
@@ -392,15 +408,15 @@ class Backend:
             return os.path.join(self.build_to_src, target_dir)
         return self.build_to_src
 
-    def get_target_private_dir(self, target: build.Target) -> str:
+    def get_target_private_dir(self, target: T.Union[build.BuildTarget, build.CustomTarget, build.CustomTargetIndex]) -> str:
         return os.path.join(self.get_target_filename(target, warn_multi_output=False) + '.p')
 
-    def get_target_private_dir_abs(self, target: build.Target) -> str:
+    def get_target_private_dir_abs(self, target: T.Union[build.BuildTarget, build.CustomTarget, build.CustomTargetIndex]) -> str:
         return os.path.join(self.environment.get_build_dir(), self.get_target_private_dir(target))
 
     @lru_cache(maxsize=None)
     def get_target_generated_dir(
-            self, target: build.Target,
+            self, target: T.Union[build.BuildTarget, build.CustomTarget, build.CustomTargetIndex],
             gensrc: T.Union[build.CustomTarget, build.CustomTargetIndex, build.GeneratedList],
             src: str) -> str:
         """
@@ -415,7 +431,8 @@ class Backend:
         # target that the GeneratedList is used in
         return os.path.join(self.get_target_private_dir(target), src)
 
-    def get_unity_source_file(self, target: build.Target, suffix: str, number: int) -> mesonlib.File:
+    def get_unity_source_file(self, target: T.Union[build.BuildTarget, build.CustomTarget, build.CustomTargetIndex],
+                              suffix: str, number: int) -> mesonlib.File:
         # There is a potential conflict here, but it is unlikely that
         # anyone both enables unity builds and has a file called foo-unity.cpp.
         osrc = f'{target.name}-unity{number}.{suffix}'
@@ -602,7 +619,7 @@ class Backend:
         if es.extra_paths:
             reasons.append('to set PATH')
 
-        if es.exe_runner:
+        if es.exe_wrapper:
             reasons.append('to use exe_wrapper')
 
         if workdir:
@@ -691,7 +708,6 @@ class Backend:
         return False
 
     def get_external_rpath_dirs(self, target: build.BuildTarget) -> T.Set[str]:
-        dirs: T.Set[str] = set()
         args: T.List[str] = []
         for lang in LANGUAGES_USING_LDFLAGS:
             try:
@@ -702,6 +718,11 @@ class Backend:
                     args.extend(e)
             except Exception:
                 pass
+        return self.get_rpath_dirs_from_link_args(args)
+
+    @staticmethod
+    def get_rpath_dirs_from_link_args(args: T.List[str]) -> T.Set[str]:
+        dirs: T.Set[str] = set()
         # Match rpath formats:
         # -Wl,-rpath=
         # -Wl,-rpath,
@@ -733,45 +754,53 @@ class Backend:
                         raise MesonException(f'Invalid arg for --just-symbols, {dir} is a directory.')
         return dirs
 
-    def rpaths_for_bundled_shared_libraries(self, target: build.BuildTarget, exclude_system: bool = True) -> T.List[str]:
-        paths: T.List[str] = []
+    @lru_cache(maxsize=None)
+    def rpaths_for_non_system_absolute_shared_libraries(self, target: build.BuildTarget, exclude_system: bool = True) -> 'ImmutableListProtocol[str]':
+        paths: OrderedSet[str] = OrderedSet()
         for dep in target.external_deps:
             if not isinstance(dep, (dependencies.ExternalLibrary, dependencies.PkgConfigDependency)):
                 continue
-            la = dep.link_args
-            if len(la) != 1 or not os.path.isabs(la[0]):
-                continue
-            # The only link argument is an absolute path to a library file.
-            libpath = la[0]
-            libdir = os.path.dirname(libpath)
-            if exclude_system and self._libdir_is_system(libdir, target.compilers, self.environment):
-                # No point in adding system paths.
-                continue
-            # Don't remove rpaths specified in LDFLAGS.
-            if libdir in self.get_external_rpath_dirs(target):
-                continue
-            # Windows doesn't support rpaths, but we use this function to
-            # emulate rpaths by setting PATH, so also accept DLLs here
-            if os.path.splitext(libpath)[1] not in ['.dll', '.lib', '.so', '.dylib']:
-                continue
-            if libdir.startswith(self.environment.get_source_dir()):
-                rel_to_src = libdir[len(self.environment.get_source_dir()) + 1:]
-                assert not os.path.isabs(rel_to_src), f'rel_to_src: {rel_to_src} is absolute'
-                paths.append(os.path.join(self.build_to_src, rel_to_src))
-            else:
-                paths.append(libdir)
-        return paths
+            for libpath in dep.link_args:
+                # For all link args that are absolute paths to a library file, add RPATH args
+                if not os.path.isabs(libpath):
+                    continue
+                libdir = os.path.dirname(libpath)
+                if exclude_system and self._libdir_is_system(libdir, target.compilers, self.environment):
+                    # No point in adding system paths.
+                    continue
+                # Don't remove rpaths specified in LDFLAGS.
+                if libdir in self.get_external_rpath_dirs(target):
+                    continue
+                # Windows doesn't support rpaths, but we use this function to
+                # emulate rpaths by setting PATH, so also accept DLLs here
+                if os.path.splitext(libpath)[1] not in ['.dll', '.lib', '.so', '.dylib']:
+                    continue
+                if libdir.startswith(self.environment.get_source_dir()):
+                    rel_to_src = libdir[len(self.environment.get_source_dir()) + 1:]
+                    assert not os.path.isabs(rel_to_src), f'rel_to_src: {rel_to_src} is absolute'
+                    paths.add(os.path.join(self.build_to_src, rel_to_src))
+                else:
+                    paths.add(libdir)
+            # Don't remove rpaths specified by the dependency
+            paths.difference_update(self.get_rpath_dirs_from_link_args(dep.link_args))
+        for i in chain(target.link_targets, target.link_whole_targets):
+            if isinstance(i, build.BuildTarget):
+                paths.update(self.rpaths_for_non_system_absolute_shared_libraries(i, exclude_system))
+        return list(paths)
 
-    def determine_rpath_dirs(self, target: build.BuildTarget) -> T.Tuple[str, ...]:
+    # This may take other types
+    def determine_rpath_dirs(self, target: T.Union[build.BuildTarget, build.CustomTarget, build.CustomTargetIndex]
+                             ) -> T.Tuple[str, ...]:
         result: OrderedSet[str]
         if self.environment.coredata.get_option(OptionKey('layout')) == 'mirror':
-            # NEed a copy here
+            # Need a copy here
             result = OrderedSet(target.get_link_dep_subdirs())
         else:
             result = OrderedSet()
             result.add('meson-out')
-        result.update(self.rpaths_for_bundled_shared_libraries(target))
-        target.rpath_dirs_to_remove.update([d.encode('utf-8') for d in result])
+        if isinstance(target, build.BuildTarget):
+            result.update(self.rpaths_for_non_system_absolute_shared_libraries(target))
+            target.rpath_dirs_to_remove.update([d.encode('utf-8') for d in result])
         return tuple(result)
 
     @staticmethod
@@ -1048,7 +1077,7 @@ class Backend:
         if isinstance(target, build.BuildTarget):
             prospectives.update(target.get_transitive_link_deps())
             # External deps
-            for deppath in self.rpaths_for_bundled_shared_libraries(target, exclude_system=False):
+            for deppath in self.rpaths_for_non_system_absolute_shared_libraries(target, exclude_system=False):
                 result.add(os.path.normpath(os.path.join(self.environment.get_build_dir(), deppath)))
         for bdep in extra_bdeps:
             prospectives.add(bdep)
@@ -1113,6 +1142,8 @@ class Backend:
             for a in t.cmd_args:
                 if isinstance(a, build.Target):
                     depends.add(a)
+                elif isinstance(a, build.CustomTargetIndex):
+                    depends.add(a.target)
                 if isinstance(a, build.BuildTarget):
                     extra_paths += self.determine_windows_extra_paths(a, [])
 
@@ -1121,13 +1152,8 @@ class Backend:
                     cmd_args.append(a)
                 elif isinstance(a, str):
                     cmd_args.append(a)
-                elif isinstance(a, build.Executable):
-                    p = self.construct_target_rel_path(a, t.workdir)
-                    if p == a.get_filename():
-                        p = './' + p
-                    cmd_args.append(p)
-                elif isinstance(a, build.Target):
-                    cmd_args.append(self.construct_target_rel_path(a, t.workdir))
+                elif isinstance(a, (build.Target, build.CustomTargetIndex)):
+                    cmd_args.extend(self.construct_target_rel_paths(a, t.workdir))
                 else:
                     raise MesonException('Bad object in test command.')
             ts = TestSerialisation(t.get_name(), t.project_name, t.suite, cmd, is_cross,
@@ -1144,12 +1170,24 @@ class Backend:
     def write_test_serialisation(self, tests: T.List['Test'], datafile: T.BinaryIO) -> None:
         pickle.dump(self.create_test_serialisation(tests), datafile)
 
-    def construct_target_rel_path(self, a: build.Target, workdir: T.Optional[str]) -> str:
-        if workdir is None:
-            return self.get_target_filename(a)
-        assert os.path.isabs(workdir)
-        abs_path = self.get_target_filename_abs(a)
-        return os.path.relpath(abs_path, workdir)
+    def construct_target_rel_paths(self, t: T.Union[build.Target, build.CustomTargetIndex], workdir: T.Optional[str]) -> T.List[str]:
+        target_dir = self.get_target_dir(t)
+        # ensure that test executables can be run when passed as arguments
+        if isinstance(t, build.Executable) and workdir is None:
+            target_dir = target_dir or '.'
+
+        if isinstance(t, build.BuildTarget):
+            outputs = [t.get_filename()]
+        else:
+            assert isinstance(t, (build.CustomTarget, build.CustomTargetIndex))
+            outputs = t.get_outputs()
+
+        outputs = [os.path.join(target_dir, x) for x in outputs]
+        if workdir is not None:
+            assert os.path.isabs(workdir)
+            outputs = [os.path.join(self.environment.get_build_dir(), x) for x in outputs]
+            outputs = [os.path.relpath(x, workdir) for x in outputs]
+        return outputs
 
     def generate_depmf_install(self, d: InstallData) -> None:
         if self.build.dep_manifest_name is None:
@@ -1475,16 +1513,19 @@ class Backend:
         d = InstallData(self.environment.get_source_dir(),
                         self.environment.get_build_dir(),
                         self.environment.get_prefix(),
+                        self.environment.get_libdir(),
                         strip_bin,
                         umask,
                         self.environment.get_build_command() + ['introspect'],
-                        self.environment.coredata.version)
+                        self.environment.coredata.version,
+                        self.environment.is_cross_build())
         self.generate_depmf_install(d)
         self.generate_target_install(d)
         self.generate_header_install(d)
         self.generate_man_install(d)
         self.generate_emptydir_install(d)
         self.generate_data_install(d)
+        self.generate_symlink_install(d)
         self.generate_custom_install_script(d)
         self.generate_subdir_install(d)
         return d
@@ -1704,6 +1745,15 @@ class Backend:
                 i = InstallDataBase(src_file.absolute_path(srcdir, builddir), dst_abs, dstdir_name,
                                     de.install_mode, de.subproject, tag=tag, data_type=de.data_type)
                 d.data.append(i)
+
+    def generate_symlink_install(self, d: InstallData) -> None:
+        links: T.List[build.SymlinkData] = self.build.get_symlinks()
+        for l in links:
+            assert isinstance(l, build.SymlinkData)
+            install_dir = l.install_dir
+            name_abs = os.path.join(install_dir, l.name)
+            s = InstallSymlinkData(l.target, name_abs, install_dir, l.subproject, l.install_tag)
+            d.symlinks.append(s)
 
     def generate_subdir_install(self, d: InstallData) -> None:
         for sd in self.build.get_install_subdirs():

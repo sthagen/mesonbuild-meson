@@ -41,6 +41,14 @@ if T.TYPE_CHECKING:
         include_directories: T.List[T.Union[str, build.IncludeDirs]]
         args: T.List[str]
 
+    class RcKwargs(TypedDict):
+        output: str
+        input: T.List[T.Union[mesonlib.FileOrString, build.CustomTargetIndex]]
+        depfile: T.Optional[str]
+        depend_files: T.List[mesonlib.FileOrString]
+        depends: T.List[T.Union[build.BuildTarget, build.CustomTarget]]
+        command: T.List[T.Union[str, ExternalProgram]]
+
 class ResourceCompilerType(enum.Enum):
     windres = 1
     rc = 2
@@ -150,14 +158,16 @@ class WindowsModule(ExtensionModule):
                 elif isinstance(src, mesonlib.File):
                     yield src.relative_name(), src.fname, src
                 elif isinstance(src, build.CustomTargetIndex):
-                    FeatureNew.single_use('windows.compile_resource CustomTargetIndex in positional arguments', '0.61.0', state.subproject)
+                    FeatureNew.single_use('windows.compile_resource CustomTargetIndex in positional arguments', '0.61.0',
+                                          state.subproject, location=state.current_node)
                     # This dance avoids a case where two indexs of the same
                     # target are given as separate arguments.
                     yield (f'{src.get_id()}_{src.target.get_outputs().index(src.output)}',
                            f'windows_compile_resources_{src.get_filename()}', src)
                 else:
                     if len(src.get_outputs()) > 1:
-                        FeatureNew.single_use('windows.compile_resource CustomTarget with multiple outputs in positional arguments', '0.61.0', state.subproject)
+                        FeatureNew.single_use('windows.compile_resource CustomTarget with multiple outputs in positional arguments',
+                                              '0.61.0', state.subproject, location=state.current_node)
                     for i, out in enumerate(src.get_outputs()):
                         # Chances are that src.get_filename() is already the name of that
                         # target, add a prefix to avoid name clash.
@@ -172,11 +182,13 @@ class WindowsModule(ExtensionModule):
             command.append(rescomp)
             command.extend(res_args)
 
-            res_kwargs = {
+            res_kwargs: 'RcKwargs' = {
                 'output': output,
                 'input': [src],
+                'depfile': None,
                 'depend_files': wrc_depend_files,
                 'depends': wrc_depends,
+                'command': [],
             }
 
             # instruct binutils windres to generate a preprocessor depfile

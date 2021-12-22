@@ -451,8 +451,9 @@ class CursesSystemDependency(SystemDependency):
 class IconvBuiltinDependency(BuiltinDependency):
     def __init__(self, name: str, env: 'Environment', kwargs: T.Dict[str, T.Any]):
         super().__init__(name, env, kwargs)
+        code = '''#include <iconv.h>\n\nint main() {\n    iconv_open("","");\n}''' # [ignore encoding] this is C, not python, Mr. Lint
 
-        if self.clib_compiler.has_function('iconv_open', '', env)[0]:
+        if self.clib_compiler.links(code, env)[0]:
             self.is_found = True
 
 
@@ -486,7 +487,7 @@ class IntlSystemDependency(SystemDependency):
             self.is_found = True
 
             if self.static:
-                if not self._add_sub_dependency(iconv_factory(env, self.for_machine, {})):
+                if not self._add_sub_dependency(iconv_factory(env, self.for_machine, {'static': True})):
                     self.is_found = False
                     return
 

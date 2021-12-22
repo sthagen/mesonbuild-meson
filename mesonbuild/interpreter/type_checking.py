@@ -129,6 +129,8 @@ REQUIRED_KW: KwargInfo[T.Union[bool, UserFeatureOption]] = KwargInfo(
     # TODO: extract_required_kwarg could be converted to a convertor
 )
 
+DISABLER_KW: KwargInfo[bool] = KwargInfo('disabler', bool, default=False)
+
 def _env_validator(value: T.Union[EnvironmentVariables, T.List['TYPE_var'], T.Dict[str, 'TYPE_var'], str, None]) -> T.Optional[str]:
     def _splitter(v: str) -> T.Optional[str]:
         split = v.split('=', 1)
@@ -191,6 +193,7 @@ DEPFILE_KW: KwargInfo[T.Optional[str]] = KwargInfo(
     validator=lambda x: 'Depfile must be a plain filename with a subdirectory' if has_path_sep(x) else None
 )
 
+# TODO: CustomTargetIndex should be supported here as well
 DEPENDS_KW: KwargInfo[T.List[T.Union[BuildTarget, CustomTarget]]] = KwargInfo(
     'depends',
     ContainerTypeInfo(list, (BuildTarget, CustomTarget)),
@@ -279,9 +282,23 @@ CT_INSTALL_DIR_KW: KwargInfo[T.List[T.Union[str, bool]]] = KwargInfo(
 
 CT_BUILD_BY_DEFAULT: KwargInfo[T.Optional[bool]] = KwargInfo('build_by_default', (bool, type(None)), since='0.40.0')
 
+CT_BUILD_ALWAYS: KwargInfo[T.Optional[bool]] = KwargInfo('build_always', (bool, NoneType))
+
+CT_BUILD_ALWAYS_STALE: KwargInfo[T.Optional[bool]] = KwargInfo(
+    'build_always_stale', (bool, NoneType))
+
 INCLUDE_DIRECTORIES: KwargInfo[T.List[T.Union[str, IncludeDirs]]] = KwargInfo(
     'include_dirs',
     ContainerTypeInfo(list, (str, IncludeDirs)),
     listify=True,
     default=[],
+)
+
+# for cases like default_options and override_options
+DEFAULT_OPTIONS: KwargInfo[T.List[str]] = KwargInfo(
+    'default_options',
+    ContainerTypeInfo(list, (str, IncludeDirs)),
+    listify=True,
+    default=[],
+    validator=_env_validator,
 )

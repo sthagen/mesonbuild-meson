@@ -44,7 +44,7 @@ from . import mlog
 from .coredata import major_versions_differ, MesonVersionMismatchException
 from .coredata import version as coredata_version
 from .mesonlib import (MesonException, OrderedSet, RealPathAction,
-                       get_wine_shortpath, join_args, split_args)
+                       get_wine_shortpath, join_args, split_args, setup_vsenv)
 from .mintro import get_infodir, load_info_file
 from .programs import ExternalProgram
 from .backend.backends import TestProtocol, TestSerialisation
@@ -477,8 +477,9 @@ class TestFileLogger(TestLogger):
 
 
 class ConsoleLogger(TestLogger):
-    SPINNER = "\U0001f311\U0001f312\U0001f313\U0001f314" + \
-              "\U0001f315\U0001f316\U0001f317\U0001f318"
+    ASCII_SPINNER = ['..', ':.', '.:']
+    SPINNER = ["\U0001f311", "\U0001f312", "\U0001f313", "\U0001f314",
+               "\U0001f315", "\U0001f316", "\U0001f317", "\U0001f318"]
 
     SCISSORS = "\u2700 "
     HLINE = "\u2015"
@@ -506,12 +507,14 @@ class ConsoleLogger(TestLogger):
         self.output_start = dashes(self.SCISSORS, self.HLINE, self.cols - 2)
         self.output_end = dashes('', self.HLINE, self.cols - 2)
         self.sub = self.RTRI
+        self.spinner = self.SPINNER
         try:
             self.output_start.encode(sys.stdout.encoding or 'ascii')
         except UnicodeEncodeError:
             self.output_start = dashes('8<', '-', self.cols - 2)
             self.output_end = dashes('', '-', self.cols - 2)
             self.sub = '| '
+            self.spinner = self.ASCII_SPINNER
 
     def flush(self) -> None:
         if self.should_erase_line:
@@ -536,8 +539,8 @@ class ConsoleLogger(TestLogger):
             count = '{}-{}/{}'.format(self.started_tests - len(self.running_tests) + 1,
                                       self.started_tests, self.test_count)
 
-        left = '[{}] {} '.format(count, self.SPINNER[self.spinner_index])
-        self.spinner_index = (self.spinner_index + 1) % len(self.SPINNER)
+        left = '[{}] {} '.format(count, self.spinner[self.spinner_index])
+        self.spinner_index = (self.spinner_index + 1) % len(self.spinner)
 
         right = '{spaces} {dur:{durlen}}'.format(
             spaces=' ' * TestResult.maxlen(),
@@ -1347,18 +1350,18 @@ class SingleTestRunner:
         elif not self.test.is_cross_built and run_with_mono(self.test.fname[0]):
             return ['mono'] + self.test.fname
         elif self.test.cmd_is_built and self.test.is_cross_built and self.test.needs_exe_wrapper:
-            if self.test.exe_runner is None:
+            if self.test.exe_wrapper is None:
                 # Can not run test on cross compiled executable
                 # because there is no execute wrapper.
                 return None
             elif self.test.cmd_is_built:
                 # If the command is not built (ie, its a python script),
                 # then we don't check for the exe-wrapper
-                if not self.test.exe_runner.found():
+                if not self.test.exe_wrapper.found():
                     msg = ('The exe_wrapper defined in the cross file {!r} was not '
                            'found. Please check the command and/or add it to PATH.')
-                    raise TestException(msg.format(self.test.exe_runner.name))
-                return self.test.exe_runner.get_command() + self.test.fname
+                    raise TestException(msg.format(self.test.exe_wrapper.name))
+                return self.test.exe_wrapper.get_command() + self.test.fname
         return self.test.fname
 
     def _get_cmd(self) -> T.Optional[T.List[str]]:
@@ -1572,8 +1575,8 @@ class TestHarness:
         test_env = test.env.get_env(env)
         env.update(test_env)
         if (test.is_cross_built and test.needs_exe_wrapper and
-                test.exe_runner and test.exe_runner.found()):
-            env['MESON_EXE_WRAPPER'] = join_args(test.exe_runner.get_command())
+                test.exe_wrapper and test.exe_wrapper.found()):
+            env['MESON_EXE_WRAPPER'] = join_args(test.exe_wrapper.get_command())
         return SingleTestRunner(test, env, name, options)
 
     def process_test_result(self, result: TestRun) -> None:
@@ -1997,6 +2000,9 @@ def run(options: argparse.Namespace) -> int:
         if not exe.found():
             print(f'Could not find requested program: {check_bin!r}')
             return 1
+
+    b = build.load(options.wd)
+    setup_vsenv(b.need_vsenv)
 
     with TestHarness(options) as th:
         try:

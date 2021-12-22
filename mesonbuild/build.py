@@ -40,7 +40,7 @@ from .compilers import (
     is_known_suffix, detect_static_linker, detect_compiler_for
 )
 from .linkers import StaticLinker
-from .interpreterbase import FeatureNew
+from .interpreterbase import FeatureNew, FeatureDeprecated
 
 if T.TYPE_CHECKING:
     from ._typing import ImmutableListProtocol, ImmutableSetProtocol
@@ -139,12 +139,12 @@ class DependencyOverride(HoldableObject):
 class Headers(HoldableObject):
 
     def __init__(self, sources: T.List[File], install_subdir: T.Optional[str],
-                 install_dir: T.Optional[str], install_mode: 'FileMode',
+                 custom_install_dir: T.Optional[str], custom_install_mode: 'FileMode',
                  subproject: str):
         self.sources = sources
         self.install_subdir = install_subdir
-        self.custom_install_dir = install_dir
-        self.custom_install_mode = install_mode
+        self.custom_install_dir = custom_install_dir
+        self.custom_install_mode = custom_install_mode
         self.subproject = subproject
 
     # TODO: we really don't need any of these methods, but they're preserved to
@@ -168,12 +168,12 @@ class Headers(HoldableObject):
 
 class Man(HoldableObject):
 
-    def __init__(self, sources: T.List[File], install_dir: T.Optional[str],
-                 install_mode: 'FileMode', subproject: str,
+    def __init__(self, sources: T.List[File], custom_install_dir: T.Optional[str],
+                 custom_install_mode: 'FileMode', subproject: str,
                  locale: T.Optional[str]):
         self.sources = sources
-        self.custom_install_dir = install_dir
-        self.custom_install_mode = install_mode
+        self.custom_install_dir = custom_install_dir
+        self.custom_install_mode = custom_install_mode
         self.subproject = subproject
         self.locale = locale
 
@@ -199,14 +199,14 @@ class EmptyDir(HoldableObject):
 
 class InstallDir(HoldableObject):
 
-    def __init__(self, src_subdir: str, inst_subdir: str, install_dir: str,
+    def __init__(self, source_subdir: str, installable_subdir: str, install_dir: str,
                  install_mode: 'FileMode',
                  exclude: T.Tuple[T.Set[str], T.Set[str]],
                  strip_directory: bool, subproject: str,
                  from_source_dir: bool = True,
                  install_tag: T.Optional[str] = None):
-        self.source_subdir = src_subdir
-        self.installable_subdir = inst_subdir
+        self.source_subdir = source_subdir
+        self.installable_subdir = installable_subdir
         self.install_dir = install_dir
         self.install_mode = install_mode
         self.exclude = exclude
@@ -251,6 +251,7 @@ class Build:
         self.man: T.List[Man] = []
         self.emptydir: T.List[EmptyDir] = []
         self.data: T.List[Data] = []
+        self.symlinks: T.List[SymlinkData] = []
         self.static_linker: PerMachine[StaticLinker] = PerMachine(None, None)
         self.subprojects = {}
         self.subproject_dir = ''
@@ -329,6 +330,9 @@ class Build:
     def get_data(self) -> T.List['Data']:
         return self.data
 
+    def get_symlinks(self) -> T.List['SymlinkData']:
+        return self.symlinks
+
     def get_emptydir(self) -> T.List['EmptyDir']:
         return self.emptydir
 
@@ -363,9 +367,9 @@ class IncludeDirs(HoldableObject):
 
     """Internal representation of an include_directories call."""
 
-    def __init__(self, curdir: str, dirs: T.List[str], is_system: bool, extra_build_dirs: T.Optional[T.List[str]] = None):
+    def __init__(self, curdir: str, incdirs: T.List[str], is_system: bool, extra_build_dirs: T.Optional[T.List[str]] = None):
         self.curdir = curdir
-        self.incdirs = dirs
+        self.incdirs = incdirs
         self.is_system = is_system
 
         # Interpreter has validated that all given directories
@@ -695,7 +699,7 @@ class BuildTarget(Target):
         self.external_deps: T.List[dependencies.Dependency] = []
         self.include_dirs: T.List['IncludeDirs'] = []
         self.link_language = kwargs.get('link_language')
-        self.link_targets: T.List[BuildTarget] = []
+        self.link_targets: T.List[T.Union['BuildTarget', 'CustomTarget', 'CustomTargetIndex']] = []
         self.link_whole_targets = []
         self.link_depends = []
         self.added_deps = set()
@@ -983,21 +987,30 @@ class BuildTarget(Target):
             if t in self.kwargs:
                 self.kwargs[t] = listify(self.kwargs[t], flatten=True)
 
-    def extract_objects(self, srclist: T.List['FileOrString']) -> ExtractedObjects:
-        obj_src: T.List['File'] = []
+    def extract_objects(self, srclist: T.List[T.Union['FileOrString', 'GeneratedTypes']]) -> ExtractedObjects:
         sources_set = set(self.sources)
+        generated_set = set(self.generated)
+
+        obj_src: T.List['File'] = []
+        obj_gen: T.List['GeneratedTypes'] = []
         for src in srclist:
-            if isinstance(src, str):
-                src = File(False, self.subdir, src)
-            elif isinstance(src, File):
-                FeatureNew.single_use('File argument for extract_objects', '0.50.0', self.subproject)
+            if isinstance(src, (str, File)):
+                if isinstance(src, str):
+                    src = File(False, self.subdir, src)
+                else:
+                    FeatureNew.single_use('File argument for extract_objects', '0.50.0', self.subproject)
+                if src not in sources_set:
+                    raise MesonException(f'Tried to extract unknown source {src}.')
+                obj_src.append(src)
+            elif isinstance(src, (CustomTarget, CustomTargetIndex, GeneratedList)):
+                FeatureNew.single_use('Generated sources for extract_objects', '0.61.0', self.subproject)
+                target = src.target if isinstance(src, CustomTargetIndex) else src
+                if src not in generated_set and target not in generated_set:
+                    raise MesonException(f'Tried to extract unknown source {target.get_basename()}.')
+                obj_gen.append(src)
             else:
-                raise MesonException(f'Object extraction arguments must be strings or Files (got {type(src).__name__}).')
-            # FIXME: It could be a generated source
-            if src not in sources_set:
-                raise MesonException(f'Tried to extract unknown source {src}.')
-            obj_src.append(src)
-        return ExtractedObjects(self, obj_src)
+                raise MesonException(f'Object extraction arguments must be strings, Files or targets (got {type(src).__name__}).')
+        return ExtractedObjects(self, obj_src, obj_gen)
 
     def extract_all_objects(self, recursive: bool = True) -> ExtractedObjects:
         return ExtractedObjects(self, self.sources, self.generated, self.objects,
@@ -1421,7 +1434,8 @@ You probably should put it in link_with instead.''')
             if os.path.dirname(pchlist[0]) != os.path.dirname(pchlist[1]):
                 raise InvalidArguments('PCH files must be stored in the same folder.')
 
-            mlog.warning('PCH source files are deprecated, only a single header file should be used.')
+            FeatureDeprecated.single_use('PCH source files', '0.50.0', self.subproject,
+                                         'Only a single header file should be used.')
         elif len(pchlist) > 2:
             raise InvalidArguments('PCH definition may have a maximum of 2 files.')
         for f in pchlist:
@@ -1587,15 +1601,19 @@ You probably should put it in link_with instead.''')
         Warn if shared modules are linked with target: (link_with) #2865
         '''
         for link_target in self.link_targets:
-            if isinstance(link_target, SharedModule):
+            if isinstance(link_target, SharedModule) and not link_target.backwards_compat_want_soname:
                 if self.environment.machines[self.for_machine].is_darwin():
                     raise MesonException(
-                        'target links against shared modules. This is not permitted on OSX')
+                        f'target {self.name} links against shared module {link_target.name}. This is not permitted on OSX')
                 else:
-                    mlog.warning('target links against shared modules. This '
-                                 'is not recommended as it is not supported on some '
-                                 'platforms')
-                return
+                    mlog.deprecation(f'target {self.name} links against shared module {link_target.name}, which is incorrect.'
+                            '\n             '
+                            f'This will be an error in the future, so please use shared_library() for {link_target.name} instead.'
+                            '\n             '
+                            f'If shared_module() was used for {link_target.name} because it has references to undefined symbols,'
+                            '\n             '
+                            'use shared_libary() with `override_options: [\'b_lundef=false\']` instead.')
+                    link_target.backwards_compat_want_soname = True
 
 class Generator(HoldableObject):
     def __init__(self, exe: T.Union['Executable', programs.ExternalProgram],
@@ -2258,6 +2276,9 @@ class SharedModule(SharedLibrary):
             raise MesonException('Shared modules must not specify the soversion kwarg.')
         super().__init__(name, subdir, subproject, for_machine, sources, objects, environment, kwargs)
         self.typename = 'shared module'
+        # We need to set the soname in cases where build files link the module
+        # to build targets, see: https://github.com/mesonbuild/meson/issues/9492
+        self.backwards_compat_want_soname = False
 
     def get_default_install_dir(self, environment) -> T.Tuple[str, str]:
         return environment.get_shared_module_dir(), '{moduledir_shared}'
@@ -2341,7 +2362,7 @@ class CustomTarget(Target, CommandBase):
 
     install_dir: T.List[T.Union[str, bool]]
 
-    def __init__(self, name: str, subdir: str, subproject: str, kwargs: T.Dict[str, T.Any],
+    def __init__(self, name: str, subdir: str, subproject: str, kwargs: T.Mapping[str, T.Any],
                  absolute_paths: bool = False, backend: T.Optional['Backend'] = None):
         self.typename = 'custom'
         # TODO expose keyword arg to make MachineChoice.HOST configurable
@@ -2567,13 +2588,12 @@ class CustomTarget(Target, CommandBase):
         return []
 
     def is_internal(self) -> bool:
-        if not self.should_install():
-            return True
-        for out in self.get_outputs():
-            # Can't check if this is a static library, so try to guess
-            if not out.endswith(('.a', '.lib')):
-                return False
-        return True
+        '''
+        Returns True iif this is a not installed static library.
+        '''
+        if len(self.outputs) != 1:
+            return False
+        return CustomTargetIndex(self, self.outputs[0]).is_internal()
 
     def extract_all_objects_recurse(self) -> T.List[T.Union[str, 'ExtractedObjects']]:
         return self.get_outputs()
@@ -2743,7 +2763,11 @@ class CustomTargetIndex(HoldableObject):
         return self.target.should_install()
 
     def is_internal(self) -> bool:
-        return self.target.is_internal()
+        '''
+        Returns True iif this is a not installed static library
+        '''
+        suf = os.path.splitext(self.output)[-1]
+        return suf in {'.a', '.lib'} and not self.should_install()
 
     def extract_all_objects_recurse(self) -> T.List[T.Union[str, 'ExtractedObjects']]:
         return self.target.extract_all_objects_recurse()
@@ -2794,8 +2818,20 @@ class Data(HoldableObject):
         self.subproject = subproject
         self.data_type = data_type
 
+class SymlinkData(HoldableObject):
+    def __init__(self, target: str, name: str, install_dir: str,
+                 subproject: str, install_tag: T.Optional[str] = None):
+        self.target = target
+        if name != os.path.basename(name):
+            raise InvalidArguments(f'Link name is "{name}", but link names cannot contain path separators. '
+                                   'The dir part should be in install_dir.')
+        self.name = name
+        self.install_dir = install_dir
+        self.subproject = subproject
+        self.install_tag = install_tag
+
 class TestSetup:
-    def __init__(self, exe_wrapper: T.Optional[T.List[str]], gdb: bool,
+    def __init__(self, exe_wrapper: T.List[str], gdb: bool,
                  timeout_multiplier: int, env: EnvironmentVariables,
                  exclude_suites: T.List[str]):
         self.exe_wrapper = exe_wrapper

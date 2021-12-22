@@ -1402,7 +1402,7 @@ class NinjaBackend(backends.Backend):
             for i in dep.sources:
                 if hasattr(i, 'fname'):
                     i = i.fname
-                if i.endswith('vala'):
+                if i.split('.')[-1] in compilers.lang_suffixes['vala']:
                     vapiname = dep.vala_vapi
                     fullname = os.path.join(self.get_target_dir(dep), vapiname)
                     result.add(fullname)
@@ -2785,7 +2785,7 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
                 commands += linker.get_std_shared_lib_link_args()
             # All shared libraries are PIC
             commands += linker.get_pic_args()
-            if not isinstance(target, build.SharedModule):
+            if not isinstance(target, build.SharedModule) or target.backwards_compat_want_soname:
                 # Add -Wl,-soname arguments on Linux, -install_name on OS X
                 commands += linker.get_soname_args(
                     self.environment, target.prefix, target.name, target.suffix,

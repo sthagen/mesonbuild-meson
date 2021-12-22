@@ -139,7 +139,8 @@ class FeatureOptionHolder(ObjectHolder[coredata.UserFeatureOption]):
         assert isinstance(error_message, str)
         if self.value == 'enabled':
             prefix = f'Feature {self.held_object.name} cannot be enabled'
-            prefix = prefix + ': ' if error_message else ''
+            if error_message:
+                prefix += ': '
             raise InterpreterException(prefix + error_message)
         return self.as_disabled()
 
@@ -259,7 +260,7 @@ class EnvironmentVariablesHolder(ObjectHolder[build.EnvironmentVariables], Mutab
         # Multiple append/prepend operations was not supported until 0.58.0.
         if self.held_object.has_name(name):
             m = f'Overriding previous value of environment variable {name!r} with a new one'
-            FeatureNew('0.58.0', m).use(self.subproject)
+            FeatureNew(m, '0.58.0', location=self.current_node).use(self.subproject)
 
     @typed_pos_args('environment.set', str, varargs=str, min_varargs=1)
     @typed_kwargs('environment.set', _ENV_SEPARATOR_KW)
@@ -504,7 +505,7 @@ class DependencyHolder(ObjectHolder[Dependency]):
     def variable_method(self, args: T.Tuple[T.Optional[str]], kwargs: T.Dict[str, T.Any]) -> T.Union[str, T.List[str]]:
         default_varname = args[0]
         if default_varname is not None:
-            FeatureNew('0.58.0', 'Positional argument to dep.get_variable()').use(self.subproject)
+            FeatureNew('Positional argument to dep.get_variable()', '0.58.0', location=self.current_node).use(self.subproject)
             for k in ['cmake', 'pkgconfig', 'configtool', 'internal']:
                 kwargs.setdefault(k, default_varname)
         return self.held_object.get_variable(**kwargs)
@@ -638,6 +639,9 @@ class HeadersHolder(ObjectHolder[build.Headers]):
     pass
 
 class DataHolder(ObjectHolder[build.Data]):
+    pass
+
+class SymlinkDataHolder(ObjectHolder[build.SymlinkData]):
     pass
 
 class InstallDirHolder(ObjectHolder[build.InstallDir]):
@@ -783,6 +787,7 @@ class BuildTargetHolder(ObjectHolder[_BuildTarget]):
     def __repr__(self) -> str:
         r = '<{} {}: {}>'
         h = self.held_object
+        assert isinstance(h, build.BuildTarget)
         return r.format(self.__class__.__name__, h.get_id(), h.filename)
 
     @property
@@ -824,8 +829,8 @@ class BuildTargetHolder(ObjectHolder[_BuildTarget]):
         return self.interpreter.backend.get_target_dir(self._target_object)
 
     @noKwargs
-    @typed_pos_args('extract_objects', varargs=(mesonlib.File, str))
-    def extract_objects_method(self, args: T.Tuple[T.List[mesonlib.FileOrString]], kwargs: TYPE_nkwargs) -> build.ExtractedObjects:
+    @typed_pos_args('extract_objects', varargs=(mesonlib.File, str, build.CustomTarget, build.CustomTargetIndex, build.GeneratedList))
+    def extract_objects_method(self, args: T.Tuple[T.List[T.Union[mesonlib.FileOrString, 'build.GeneratedTypes']]], kwargs: TYPE_nkwargs) -> build.ExtractedObjects:
         return self._target_object.extract_objects(args[0])
 
     @noPosargs
@@ -967,7 +972,7 @@ class GeneratorHolder(ObjectHolder[build.Generator]):
         KwargInfo('extra_args', ContainerTypeInfo(list, str), listify=True, default=[]),
     )
     def process_method(self,
-                       args: T.Tuple[T.List[T.Union[str, mesonlib.File, build.CustomTarget, build.CustomTargetIndex, build.GeneratedList]]],
+                       args: T.Tuple[T.List[T.Union[str, mesonlib.File, 'build.GeneratedTypes']]],
                        kwargs: 'kwargs.GeneratorProcess') -> build.GeneratedList:
         preserve_path_from = kwargs['preserve_path_from']
         if preserve_path_from is not None:

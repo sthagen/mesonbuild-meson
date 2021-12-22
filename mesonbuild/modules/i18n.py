@@ -138,7 +138,7 @@ class I18nModule(ExtensionModule):
         CT_OUTPUT_KW,
         INSTALL_KW,
         _ARGS.evolve(since='0.51.0'),
-        _DATA_DIRS,
+        _DATA_DIRS.evolve(since='0.41.0'),
         KwargInfo('po_dir', str, required=True),
         KwargInfo('type', str, default='xml', validator=in_set_validator({'xml', 'desktop'})),
     )
@@ -179,27 +179,7 @@ class I18nModule(ExtensionModule):
             'install_tag': kwargs['install_tag'],
         }
 
-        # We only use this input file to create a name of the custom target.
-        # Thus we can ignore the other entries.
-        inputfile = kwargs['input'][0]
-        if isinstance(inputfile, str):
-            inputfile = mesonlib.File.from_source_file(state.environment.source_dir,
-                                                       state.subdir, inputfile)
-        if isinstance(inputfile, mesonlib.File):
-            # output could be '@BASENAME@' in which case we need to do substitutions
-            # to get a unique target name.
-            outputs = kwargs['output']
-            ifile_abs = inputfile.absolute_path(state.environment.source_dir,
-                                                state.environment.build_dir)
-            values = mesonlib.get_filenames_templates_dict([ifile_abs], None)
-            outputs = mesonlib.substitute_values(outputs, values)
-            output = outputs[0]
-            ct = build.CustomTarget(
-                output + '_' + state.subdir.replace('/', '@').replace('\\', '@') + '_merge',
-                state.subdir, state.subproject, T.cast(T.Dict[str, T.Any], real_kwargs))
-        else:
-            ct = build.CustomTarget(
-                kwargs['output'][0] + '_merge', state.subdir, state.subproject,
+        ct = build.CustomTarget('', state.subdir, state.subproject,
                 T.cast(T.Dict[str, T.Any], real_kwargs))
 
         return ModuleReturnValue(ct, [ct])
@@ -208,7 +188,7 @@ class I18nModule(ExtensionModule):
     @typed_kwargs(
         'i18n.gettext',
         _ARGS,
-        _DATA_DIRS,
+        _DATA_DIRS.evolve(since='0.36.0'),
         INSTALL_KW.evolve(default=True),
         KwargInfo('install_dir', (str, NoneType), since='0.50.0'),
         KwargInfo('languages', ContainerTypeInfo(list, str), default=[], listify=True),
