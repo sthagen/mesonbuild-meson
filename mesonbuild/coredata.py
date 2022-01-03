@@ -44,7 +44,10 @@ if T.TYPE_CHECKING:
     CompilerCheckCacheKey = T.Tuple[T.Tuple[str, ...], str, FileOrString, T.Tuple[str, ...], str]
 
 # Check major_versions_differ() if changing versioning scheme.
-version = '0.60.99'
+#
+# Pip requires that RCs are named like this: '0.1.0.rc1'
+# But the corresponding Git tag needs to be '0.1.0rc1'
+version = '0.61.0.rc1'
 
 backendlist = ['ninja', 'vs', 'vs2010', 'vs2012', 'vs2013', 'vs2015', 'vs2017', 'vs2019', 'vs2022', 'xcode']
 
@@ -234,7 +237,7 @@ class UserArrayOption(UserOption[T.List[str]]):
         elif isinstance(value, list):
             newvalue = value
         else:
-            raise MesonException(f'"{newvalue}" should be a string array, but it is not')
+            raise MesonException(f'"{value}" should be a string array, but it is not')
         return newvalue
 
     def validate_value(self, value: T.Union[str, T.List[str]], user_input: bool = True) -> T.List[str]:
