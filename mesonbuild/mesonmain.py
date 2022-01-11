@@ -117,6 +117,7 @@ class CommandLineParser:
         return 0
 
     def run(self, args):
+        pending_python_deprecation_notice = False
         # If first arg is not a known command, assume user wants to run the setup
         # command.
         known_commands = list(self.commands.keys()) + ['-h', '--help']
@@ -130,9 +131,19 @@ class CommandLineParser:
             args = args[1:]
         else:
             parser = self.parser
+            command = None
 
         args = mesonlib.expand_arguments(args)
         options = parser.parse_args(args)
+
+        if command is None:
+            command = options.command
+
+        # Bump the version here in order to add a pre-exit warning that we are phasing out
+        # support for old python. If this is already the oldest supported version, then
+        # this can never be true and does nothing.
+        if command in ('setup', 'compile', 'test', 'install') and sys.version_info < (3, 7):
+            pending_python_deprecation_notice = True
 
         try:
             return options.run_func(options)
@@ -156,6 +167,9 @@ class CommandLineParser:
             mlog.exception(e)
             return 2
         finally:
+            if pending_python_deprecation_notice:
+                mlog.notice('You are using Python 3.6 which is EOL. Starting with v0.62.0, '
+                            'Meson will require Python 3.7 or newer', fatal=False)
             mlog.shutdown()
 
 def run_script_command(script_name, script_args):
@@ -193,8 +207,8 @@ def ensure_stdout_accepts_unicode():
                 sys.stdout.buffer = sys.stdout.raw if hasattr(sys.stdout, 'raw') else sys.stdout
 
 def run(original_args, mainfile):
-    if sys.version_info < (3, 6):
-        print('Meson works correctly only with python 3.6+.')
+    if sys.version_info < (3, 7):
+        print('Meson works correctly only with python 3.7+.')
         print(f'You have python {sys.version}.')
         print('Please update your environment')
         return 1

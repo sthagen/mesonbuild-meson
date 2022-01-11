@@ -183,6 +183,11 @@ class ClangCCompiler(_ClangCStds, ClangCompiler, CCompiler):
         return []
 
 
+class ArmLtdClangCCompiler(ClangCCompiler):
+
+    id = 'armltdclang'
+
+
 class AppleClangCCompiler(ClangCCompiler):
 
     """Handle the differences between Apple Clang and Vanilla Clang.
@@ -197,6 +202,9 @@ class AppleClangCCompiler(ClangCCompiler):
 
 
 class EmscriptenCCompiler(EmscriptenMixin, ClangCCompiler):
+
+    id = 'emscripten'
+
     def __init__(self, exelist: T.List[str], version: str, for_machine: MachineChoice, is_cross: bool,
                  info: 'MachineInfo', exe_wrapper: T.Optional['ExternalProgram'] = None,
                  linker: T.Optional['DynamicLinker'] = None,
@@ -207,10 +215,13 @@ class EmscriptenCCompiler(EmscriptenMixin, ClangCCompiler):
         ClangCCompiler.__init__(self, exelist, version, for_machine, is_cross,
                                 info, exe_wrapper=exe_wrapper, linker=linker,
                                 defines=defines, full_version=full_version)
-        self.id = 'emscripten'
 
 
 class ArmclangCCompiler(ArmclangCompiler, CCompiler):
+    '''
+    Keil armclang
+    '''
+
     def __init__(self, exelist: T.List[str], version: str, for_machine: MachineChoice, is_cross: bool,
                  info: 'MachineInfo', exe_wrapper: T.Optional['ExternalProgram'] = None,
                  linker: T.Optional['DynamicLinker'] = None,
@@ -315,6 +326,9 @@ class PGICCompiler(PGICompiler, CCompiler):
 
 
 class NvidiaHPC_CCompiler(PGICompiler, CCompiler):
+
+    id = 'nvidia_hpc'
+
     def __init__(self, exelist: T.List[str], version: str, for_machine: MachineChoice, is_cross: bool,
                  info: 'MachineInfo', exe_wrapper: T.Optional['ExternalProgram'] = None,
                  linker: T.Optional['DynamicLinker'] = None,
@@ -322,7 +336,6 @@ class NvidiaHPC_CCompiler(PGICompiler, CCompiler):
         CCompiler.__init__(self, exelist, version, for_machine, is_cross,
                            info, exe_wrapper, linker=linker, full_version=full_version)
         PGICompiler.__init__(self)
-        self.id = 'nvidia_hpc'
 
 
 class ElbrusCCompiler(ElbrusCompiler, CCompiler):
