@@ -1001,11 +1001,11 @@ class BuildTarget(Target):
         return ExtractedObjects(self, self.sources, self.generated, self.objects,
                                 recursive)
 
-    def get_all_link_deps(self) -> 'ImmutableListProtocol[Target]':
+    def get_all_link_deps(self) -> 'ImmutableListProtocol[T.Union[BuildTarget, CustomTarget, CustomTargetIndex]]':
         return self.get_transitive_link_deps()
 
     @lru_cache(maxsize=None)
-    def get_transitive_link_deps(self) -> 'ImmutableListProtocol[Target]':
+    def get_transitive_link_deps(self) -> 'ImmutableListProtocol[T.Union[BuildTarget, CustomTarget, CustomTargetIndex]]':
         result: T.List[Target] = []
         for i in self.link_targets:
             result += i.get_all_link_deps()
@@ -2610,7 +2610,7 @@ class RunTarget(Target, CommandBase):
 
     def __init__(self, name: str,
                  command: T.Sequence[T.Union[str, File, BuildTarget, 'CustomTarget', 'CustomTargetIndex', programs.ExternalProgram]],
-                 dependencies: T.Sequence[T.Union[BuildTarget, 'CustomTarget']],
+                 dependencies: T.Sequence[Target],
                  subdir: str,
                  subproject: str,
                  env: T.Optional['EnvironmentVariables'] = None):
@@ -2654,7 +2654,7 @@ class RunTarget(Target, CommandBase):
         return "@run"
 
 class AliasTarget(RunTarget):
-    def __init__(self, name: str, dependencies: T.Sequence[T.Union[BuildTarget, 'CustomTarget']],
+    def __init__(self, name: str, dependencies: T.Sequence['Target'],
                  subdir: str, subproject: str):
         super().__init__(name, [], dependencies, subdir, subproject)
 
@@ -2767,17 +2767,16 @@ class CustomTargetIndex(HoldableObject):
         return self.target.get_custom_install_dir()
 
 class ConfigurationData(HoldableObject):
-    def __init__(self) -> None:
+    def __init__(self, initial_values: T.Optional[T.Union[
+                T.Dict[str, T.Tuple[T.Union[str, int, bool], T.Optional[str]]],
+                T.Dict[str, T.Union[str, int, bool]]]
+            ] = None):
         super().__init__()
-        self.values: T.Dict[
-            str,
-            T.Tuple[
-                T.Union[str, int, bool],
-                T.Optional[str]
-            ]
-        ] = {}
+        self.values: T.Dict[str, T.Tuple[T.Union[str, int, bool], T.Optional[str]]] = \
+            {k: v if isinstance(v, tuple) else (v, None) for k, v in initial_values.items()} if initial_values else {}
+        self.used: bool = False
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return repr(self.values)
 
     def __contains__(self, value: str) -> bool:

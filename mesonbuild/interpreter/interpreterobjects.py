@@ -16,8 +16,8 @@ from ..backend.backends import TestProtocol
 from ..interpreterbase import (
                                ContainerTypeInfo, KwargInfo, MesonOperator,
                                InterpreterObject, MesonInterpreterObject, ObjectHolder, MutableInterpreterObject,
-                               FeatureCheckBase, FeatureNewKwargs, FeatureNew, FeatureDeprecated,
-                               typed_pos_args, typed_kwargs, typed_operator, permittedKwargs,
+                               FeatureCheckBase, FeatureNew, FeatureDeprecated,
+                               typed_pos_args, typed_kwargs, typed_operator,
                                noArgsFlattening, noPosargs, noKwargs, unholder_return, TYPE_var, TYPE_kwargs, TYPE_nvar, TYPE_nkwargs,
                                flatten, resolve_second_level_holders, InterpreterException, InvalidArguments, InvalidCode)
 from ..interpreter.type_checking import NoneType
@@ -124,32 +124,25 @@ class FeatureOptionHolder(ObjectHolder[coredata.UserFeatureOption]):
     def auto_method(self, args: T.List[TYPE_var], kwargs: TYPE_kwargs) -> bool:
         return self.value == 'auto'
 
-    @permittedKwargs({'error_message'})
-    def require_method(self, args: T.List[TYPE_var], kwargs: TYPE_kwargs) -> coredata.UserFeatureOption:
-        if len(args) != 1:
-            raise InvalidArguments(f'Expected 1 argument, got {len(args)}.')
-        if not isinstance(args[0], bool):
-            raise InvalidArguments('boolean argument expected.')
-        error_message = kwargs.pop('error_message', '')
-        if error_message and not isinstance(error_message, str):
-            raise InterpreterException("Error message must be a string.")
+    @typed_pos_args('feature_option.require', bool)
+    @typed_kwargs(
+        'feature_option.require',
+        KwargInfo('error_message', (str, NoneType))
+    )
+    def require_method(self, args: T.Tuple[bool], kwargs: 'kwargs.FeatureOptionRequire') -> coredata.UserFeatureOption:
         if args[0]:
             return copy.deepcopy(self.held_object)
 
-        assert isinstance(error_message, str)
         if self.value == 'enabled':
-            prefix = f'Feature {self.held_object.name} cannot be enabled'
-            if error_message:
-                prefix += ': '
-            raise InterpreterException(prefix + error_message)
+            err_msg = f'Feature {self.held_object.name} cannot be enabled'
+            if kwargs['error_message']:
+                err_msg += f': {kwargs["error_message"]}'
+            raise InterpreterException(err_msg)
         return self.as_disabled()
 
     @noKwargs
-    def disable_auto_if_method(self, args: T.List[TYPE_var], kwargs: TYPE_kwargs) -> coredata.UserFeatureOption:
-        if len(args) != 1:
-            raise InvalidArguments(f'Expected 1 argument, got {len(args)}.')
-        if not isinstance(args[0], bool):
-            raise InvalidArguments('boolean argument expected.')
+    @typed_pos_args('feature_option.disable_auto_if', bool)
+    def disable_auto_if_method(self, args: T.Tuple[bool], kwargs: TYPE_kwargs) -> coredata.UserFeatureOption:
         return copy.deepcopy(self.held_object) if self.value != 'auto' or not args[0] else self.as_disabled()
 
 
@@ -283,11 +276,13 @@ class EnvironmentVariablesHolder(ObjectHolder[build.EnvironmentVariables], Mutab
         self.held_object.prepend(name, values, kwargs['separator'])
 
 
-class ConfigurationDataObject(MutableInterpreterObject, MesonInterpreterObject):
-    def __init__(self, subproject: str, initial_values: T.Optional[T.Dict[str, T.Any]] = None) -> None:
-        self.used = False # These objects become immutable after use in configure_file.
-        super().__init__(subproject=subproject)
-        self.conf_data = build.ConfigurationData()
+_CONF_DATA_SET_KWS: KwargInfo[T.Optional[str]] = KwargInfo('description', (str, NoneType))
+
+
+class ConfigurationDataHolder(ObjectHolder[build.ConfigurationData], MutableInterpreterObject):
+
+    def __init__(self, obj: build.ConfigurationData, interpreter: 'Interpreter'):
+        super().__init__(obj, interpreter)
         self.methods.update({'set': self.set_method,
                              'set10': self.set10_method,
                              'set_quoted': self.set_quoted_method,
@@ -297,97 +292,70 @@ class ConfigurationDataObject(MutableInterpreterObject, MesonInterpreterObject):
                              'get_unquoted': self.get_unquoted_method,
                              'merge_from': self.merge_from_method,
                              })
-        if isinstance(initial_values, dict):
-            for k, v in initial_values.items():
-                self.set_method([k, v], {})
-        elif initial_values:
-            raise AssertionError('Unsupported ConfigurationDataObject initial_values')
+
+    def __deepcopy__(self, memo: T.Dict) -> 'ConfigurationDataHolder':
+        return ConfigurationDataHolder(copy.deepcopy(self.held_object), self.interpreter)
 
     def is_used(self) -> bool:
-        return self.used
+        return self.held_object.used
 
-    def mark_used(self) -> None:
-        self.used = True
-
-    def validate_args(self, args: T.List[TYPE_var], kwargs: TYPE_kwargs) -> T.Tuple[str, T.Union[str, int, bool], T.Optional[str]]:
-        if len(args) == 1 and isinstance(args[0], list) and len(args[0]) == 2:
-            mlog.deprecation('Passing a list as the single argument to '
-                             'configuration_data.set is deprecated. This will '
-                             'become a hard error in the future.',
-                             location=self.current_node)
-            args = args[0]
-
-        if len(args) != 2:
-            raise InterpreterException("Configuration set requires 2 arguments.")
-        if self.used:
+    def __check_used(self) -> None:
+        if self.is_used():
             raise InterpreterException("Can not set values on configuration object that has been used.")
-        name, val = args
-        if not isinstance(val, (int, str)):
-            msg = f'Setting a configuration data value to {val!r} is invalid, ' \
-                  'and will fail at configure_file(). If you are using it ' \
-                  'just to store some values, please use a dict instead.'
-            mlog.deprecation(msg, location=self.current_node)
-        desc = kwargs.get('description', None)
-        if not isinstance(name, str):
-            raise InterpreterException("First argument to set must be a string.")
-        if desc is not None and not isinstance(desc, str):
-            raise InterpreterException('Description must be a string.')
 
-        # TODO: Remove the cast once we get rid of the deprecation
-        return name, T.cast(T.Union[str, bool, int], val), desc
+    @typed_pos_args('configuration_data.set', str, (str, int, bool))
+    @typed_kwargs('configuration_data.set', _CONF_DATA_SET_KWS)
+    def set_method(self, args: T.Tuple[str, T.Union[str, int, bool]], kwargs: 'kwargs.ConfigurationDataSet') -> None:
+        self.__check_used()
+        self.held_object.values[args[0]] = (args[1], kwargs['description'])
 
-    @noArgsFlattening
-    def set_method(self, args: T.List[TYPE_var], kwargs: TYPE_kwargs) -> None:
-        (name, val, desc) = self.validate_args(args, kwargs)
-        self.conf_data.values[name] = (val, desc)
+    @typed_pos_args('configuration_data.set_quoted', str, str)
+    @typed_kwargs('configuration_data.set_quoted', _CONF_DATA_SET_KWS)
+    def set_quoted_method(self, args: T.Tuple[str, str], kwargs: 'kwargs.ConfigurationDataSet') -> None:
+        self.__check_used()
+        escaped_val = '\\"'.join(args[1].split('"'))
+        self.held_object.values[args[0]] = (f'"{escaped_val}"', kwargs['description'])
 
-    def set_quoted_method(self, args: T.List[TYPE_var], kwargs: TYPE_kwargs) -> None:
-        (name, val, desc) = self.validate_args(args, kwargs)
-        if not isinstance(val, str):
-            raise InterpreterException("Second argument to set_quoted must be a string.")
-        escaped_val = '\\"'.join(val.split('"'))
-        self.conf_data.values[name] = ('"' + escaped_val + '"', desc)
+    @typed_pos_args('configuration_data.set10', str, (int, bool))
+    @typed_kwargs('configuration_data.set10', _CONF_DATA_SET_KWS)
+    def set10_method(self, args: T.Tuple[str, T.Union[int, bool]], kwargs: 'kwargs.ConfigurationDataSet') -> None:
+        self.__check_used()
+        if isinstance(args[1], int):
+            mlog.deprecation('configuration_data.set10 with number. the `set10` '
+                             'method should only be used with booleans',
+                             location=self.interpreter.current_node)
+            if args[1] < 0:
+                mlog.warning('Passing a number that is less than 0 may not have the intended result, '
+                             'as meson will treat all non-zero values as true.',
+                             location=self.interpreter.current_node)
+        self.held_object.values[args[0]] = (int(args[1]), kwargs['description'])
 
-    def set10_method(self, args: T.List[TYPE_var], kwargs: TYPE_kwargs) -> None:
-        (name, val, desc) = self.validate_args(args, kwargs)
-        if val:
-            self.conf_data.values[name] = (1, desc)
-        else:
-            self.conf_data.values[name] = (0, desc)
-
-    def has_method(self, args: T.List[TYPE_var], kwargs: TYPE_kwargs) -> bool:
-        return args[0] in self.conf_data.values
+    @typed_pos_args('configuration_data.has', (str, int, bool))
+    @noKwargs
+    def has_method(self, args: T.Tuple[T.Union[str, int, bool]], kwargs: TYPE_kwargs) -> bool:
+        return args[0] in self.held_object.values
 
     @FeatureNew('configuration_data.get()', '0.38.0')
-    @noArgsFlattening
-    def get_method(self, args: T.List[TYPE_var], kwargs: TYPE_kwargs) -> T.Union[str, int, bool]:
-        if len(args) < 1 or len(args) > 2:
-            raise InterpreterException('Get method takes one or two arguments.')
-        if not isinstance(args[0], str):
-            raise InterpreterException('The variable name must be a string.')
+    @typed_pos_args('configuration_data.get', str, optargs=[(str, int, bool)])
+    @noKwargs
+    def get_method(self, args: T.Tuple[str, T.Optional[T.Union[str, int, bool]]],
+                   kwargs: TYPE_kwargs) -> T.Union[str, int, bool]:
         name = args[0]
-        if name in self.conf_data:
-            return self.conf_data.get(name)[0]
-        if len(args) > 1:
-            # Assertion does not work because setting other values is still
-            # supported, but deprecated. Use T.cast in the meantime (even though
-            # this is a lie).
-            # TODO: Fix this once the deprecation is removed
-            # assert isinstance(args[1], (int, str, bool))
-            return T.cast(T.Union[str, int, bool], args[1])
+        if name in self.held_object:
+            return self.held_object.get(name)[0]
+        elif args[1] is not None:
+            return args[1]
         raise InterpreterException(f'Entry {name} not in configuration data.')
 
     @FeatureNew('configuration_data.get_unquoted()', '0.44.0')
-    def get_unquoted_method(self, args: T.List[TYPE_var], kwargs: TYPE_kwargs) -> T.Union[str, int, bool]:
-        if len(args) < 1 or len(args) > 2:
-            raise InterpreterException('Get method takes one or two arguments.')
-        if not isinstance(args[0], str):
-            raise InterpreterException('The variable name must be a string.')
+    @typed_pos_args('configuration_data.get_unquoted', str, optargs=[(str, int, bool)])
+    @noKwargs
+    def get_unquoted_method(self, args: T.Tuple[str, T.Optional[T.Union[str, int, bool]]],
+                            kwargs: TYPE_kwargs) -> T.Union[str, int, bool]:
         name = args[0]
-        if name in self.conf_data:
-            val = self.conf_data.get(name)[0]
-        elif len(args) > 1:
-            assert isinstance(args[1], (str, int, bool))
+        if name in self.held_object:
+            val = self.held_object.get(name)[0]
+        elif args[1] is not None:
             val = args[1]
         else:
             raise InterpreterException(f'Entry {name} not in configuration data.')
@@ -396,25 +364,22 @@ class ConfigurationDataObject(MutableInterpreterObject, MesonInterpreterObject):
         return val
 
     def get(self, name: str) -> T.Tuple[T.Union[str, int, bool], T.Optional[str]]:
-        return self.conf_data.values[name]
+        return self.held_object.values[name]
 
     @FeatureNew('configuration_data.keys()', '0.57.0')
     @noPosargs
+    @noKwargs
     def keys_method(self, args: T.List[TYPE_var], kwargs: TYPE_kwargs) -> T.List[str]:
         return sorted(self.keys())
 
     def keys(self) -> T.List[str]:
-        return list(self.conf_data.values.keys())
+        return list(self.held_object.values.keys())
 
-    def merge_from_method(self, args: T.List[TYPE_var], kwargs: TYPE_kwargs) -> None:
-        if len(args) != 1:
-            raise InterpreterException('Merge_from takes one positional argument.')
-        from_object_holder = args[0]
-        if not isinstance(from_object_holder, ConfigurationDataObject):
-            raise InterpreterException('Merge_from argument must be a configuration data object.')
-        from_object = from_object_holder.conf_data
-        for k, v in from_object.values.items():
-            self.conf_data.values[k] = v
+    @typed_pos_args('configuration_data.merge_from', build.ConfigurationData)
+    @noKwargs
+    def merge_from_method(self, args: T.Tuple[build.ConfigurationData], kwargs: TYPE_kwargs) -> None:
+        from_object = args[0]
+        self.held_object.values.update(from_object.values)
 
 
 _PARTIAL_DEP_KWARGS = [
@@ -466,71 +431,75 @@ class DependencyHolder(ObjectHolder[Dependency]):
     def name_method(self, args: T.List[TYPE_var], kwargs: TYPE_kwargs) -> str:
         return self.held_object.get_name()
 
-    @FeatureDeprecated('Dependency.get_pkgconfig_variable', '0.56.0',
-                       'use Dependency.get_variable(pkgconfig : ...) instead')
-    @permittedKwargs({'define_variable', 'default'})
-    def pkgconfig_method(self, args: T.List[TYPE_var], kwargs: TYPE_kwargs) -> str:
-        args = listify(args)
-        if len(args) != 1:
-            raise InterpreterException('get_pkgconfig_variable takes exactly one argument.')
-        varname = args[0]
-        if not isinstance(varname, str):
-            raise InterpreterException('Variable name must be a string.')
-        return self.held_object.get_pkgconfig_variable(varname, kwargs)
+    @FeatureDeprecated('dependency.get_pkgconfig_variable', '0.56.0',
+                       'use dependency.get_variable(pkgconfig : ...) instead')
+    @typed_pos_args('dependency.get_pkgconfig_variable', str)
+    @typed_kwargs(
+        'dependency.get_pkgconfig_variable',
+        KwargInfo('default', (str, NoneType)),
+        KwargInfo(
+            'define_variable',
+            ContainerTypeInfo(list, str, pairs=True),
+            default=[],
+            listify=True,
+            validator=lambda x: 'must be of length 2 or empty' if len(x) not in {0, 2} else None,
+        ),
+    )
+    def pkgconfig_method(self, args: T.Tuple[str], kwargs: 'kwargs.DependencyPkgConfigVar') -> str:
+        return self.held_object.get_pkgconfig_variable(args[0], **kwargs)
 
-    @FeatureNew('dep.get_configtool_variable', '0.44.0')
-    @FeatureDeprecated('Dependency.get_configtool_variable', '0.56.0',
-                       'use Dependency.get_variable(configtool : ...) instead')
+    @FeatureNew('dependency.get_configtool_variable', '0.44.0')
+    @FeatureDeprecated('dependency.get_configtool_variable', '0.56.0',
+                       'use dependency.get_variable(configtool : ...) instead')
     @noKwargs
-    def configtool_method(self, args: T.List[TYPE_var], kwargs: TYPE_kwargs) -> str:
-        args = listify(args)
-        if len(args) != 1:
-            raise InterpreterException('get_configtool_variable takes exactly one argument.')
-        varname = args[0]
-        if not isinstance(varname, str):
-            raise InterpreterException('Variable name must be a string.')
-        return self.held_object.get_configtool_variable(varname)
+    @typed_pos_args('dependency.get_config_tool_variable', str)
+    def configtool_method(self, args: T.Tuple[str], kwargs: TYPE_kwargs) -> str:
+        return self.held_object.get_configtool_variable(args[0])
 
-    @FeatureNew('dep.partial_dependency', '0.46.0')
+    @FeatureNew('dependency.partial_dependency', '0.46.0')
     @noPosargs
-    @typed_kwargs('dep.partial_dependency', *_PARTIAL_DEP_KWARGS)
+    @typed_kwargs('dependency.partial_dependency', *_PARTIAL_DEP_KWARGS)
     def partial_dependency_method(self, args: T.List[TYPE_nvar], kwargs: 'kwargs.DependencyMethodPartialDependency') -> Dependency:
         pdep = self.held_object.get_partial_dependency(**kwargs)
         return pdep
 
-    @FeatureNew('dep.get_variable', '0.51.0')
-    @typed_pos_args('dep.get_variable', optargs=[str])
-    @permittedKwargs({'cmake', 'pkgconfig', 'configtool', 'internal', 'default_value', 'pkgconfig_define'})
-    @FeatureNewKwargs('dep.get_variable', '0.54.0', ['internal'])
-    def variable_method(self, args: T.Tuple[T.Optional[str]], kwargs: T.Dict[str, T.Any]) -> T.Union[str, T.List[str]]:
+    @FeatureNew('dependency.get_variable', '0.51.0')
+    @typed_pos_args('dependency.get_variable', optargs=[str])
+    @typed_kwargs(
+        'dependency.get_variable',
+        KwargInfo('cmake', (str, NoneType)),
+        KwargInfo('pkgconfig', (str, NoneType)),
+        KwargInfo('configtool', (str, NoneType)),
+        KwargInfo('internal', (str, NoneType), since='0.54.0'),
+        KwargInfo('default_value', (str, NoneType)),
+        KwargInfo('pkgconfig_define', ContainerTypeInfo(list, str, pairs=True), default=[], listify=True),
+    )
+    def variable_method(self, args: T.Tuple[T.Optional[str]], kwargs: 'kwargs.DependencyGetVariable') -> T.Union[str, T.List[str]]:
         default_varname = args[0]
         if default_varname is not None:
-            FeatureNew('Positional argument to dep.get_variable()', '0.58.0', location=self.current_node).use(self.subproject)
-            for k in ['cmake', 'pkgconfig', 'configtool', 'internal']:
-                kwargs.setdefault(k, default_varname)
-        return self.held_object.get_variable(**kwargs)
+            FeatureNew('Positional argument to dependency.get_variable()', '0.58.0', location=self.current_node).use(self.subproject)
+        return self.held_object.get_variable(
+            cmake=kwargs['cmake'] or default_varname,
+            pkgconfig=kwargs['pkgconfig'] or default_varname,
+            configtool=kwargs['configtool'] or default_varname,
+            internal=kwargs['internal'] or default_varname,
+            default_value=kwargs['default_value'],
+            pkgconfig_define=kwargs['pkgconfig_define'],
+        )
 
-    @FeatureNew('dep.include_type', '0.52.0')
+    @FeatureNew('dependency.include_type', '0.52.0')
     @noPosargs
     @noKwargs
     def include_type_method(self, args: T.List[TYPE_var], kwargs: TYPE_kwargs) -> str:
         return self.held_object.get_include_type()
 
-    @FeatureNew('dep.as_system', '0.52.0')
+    @FeatureNew('dependency.as_system', '0.52.0')
     @noKwargs
-    def as_system_method(self, args: T.List[TYPE_var], kwargs: TYPE_kwargs) -> Dependency:
-        args = listify(args)
-        new_is_system = 'system'
-        if len(args) > 1:
-            raise InterpreterException('as_system takes only one optional value')
-        if len(args) == 1:
-            if not isinstance(args[0], str):
-                raise InterpreterException('as_system takes exactly one string parameter')
-            new_is_system = args[0]
-        new_dep = self.held_object.generate_system_dependency(new_is_system)
-        return new_dep
+    @typed_pos_args('dependency.as_system', optargs=[str])
+    def as_system_method(self, args: T.Tuple[T.Optional[str]], kwargs: TYPE_kwargs) -> Dependency:
+        return self.held_object.generate_system_dependency(args[0] or 'system')
 
-    @FeatureNew('dep.as_link_whole', '0.56.0')
+    @FeatureNew('dependency.as_link_whole', '0.56.0')
     @noKwargs
     @noPosargs
     def as_link_whole_method(self, args: T.List[TYPE_var], kwargs: TYPE_kwargs) -> Dependency:
@@ -592,9 +561,9 @@ class ExternalLibraryHolder(ObjectHolder[ExternalLibrary]):
     def found_method(self, args: T.List[TYPE_var], kwargs: TYPE_kwargs) -> bool:
         return self.held_object.found()
 
-    @FeatureNew('dep.partial_dependency', '0.46.0')
+    @FeatureNew('dependency.partial_dependency', '0.46.0')
     @noPosargs
-    @typed_kwargs('dep.partial_dependency', *_PARTIAL_DEP_KWARGS)
+    @typed_kwargs('dependency.partial_dependency', *_PARTIAL_DEP_KWARGS)
     def partial_dependency_method(self, args: T.List[TYPE_nvar], kwargs: 'kwargs.DependencyMethodPartialDependency') -> Dependency:
         pdep = self.held_object.get_partial_dependency(**kwargs)
         return pdep

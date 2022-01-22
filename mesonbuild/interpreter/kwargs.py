@@ -239,3 +239,30 @@ class RunCommand(TypedDict):
     check: bool
     capture: T.Optional[bool]
     env: build.EnvironmentVariables
+
+
+class FeatureOptionRequire(TypedDict):
+
+    error_message: T.Optional[str]
+
+
+class DependencyPkgConfigVar(TypedDict):
+
+    default: T.Optional[str]
+    define_variable: T.List[str]
+
+
+
+class DependencyGetVariable(TypedDict):
+
+    cmake: T.Optional[str]
+    pkgconfig: T.Optional[str]
+    configtool: T.Optional[str]
+    internal: T.Optional[str]
+    default_value: T.Optional[str]
+    pkgconfig_define: T.List[str]
+
+
+class ConfigurationDataSet(TypedDict):
+
+    description: T.Optional[str]
