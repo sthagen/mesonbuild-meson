@@ -18,7 +18,6 @@ import argparse
 import errno
 import os
 import pickle
-import platform
 import shlex
 import shutil
 import subprocess
@@ -33,7 +32,7 @@ from .backend.backends import (
 )
 from .coredata import major_versions_differ, MesonVersionMismatchException
 from .coredata import version as coredata_version
-from .mesonlib import Popen_safe, RealPathAction, is_windows, setup_vsenv
+from .mesonlib import MesonException, Popen_safe, RealPathAction, is_windows, setup_vsenv
 from .scripts import depfixer, destdir_join
 from .scripts.meson_exe import run_exe
 try:
@@ -248,41 +247,6 @@ def restore_selinux_contexts() -> None:
               'Standard output:', out,
               'Standard error:', err, sep='\n')
 
-def apply_ldconfig(dm: DirMaker, libdir: str) -> None:
-    '''
-    Apply ldconfig to update the ld.so.cache.
-    '''
-    if not shutil.which('ldconfig'):
-        # If we don't have ldconfig, failure is ignored quietly.
-        return
-
-    platlower = platform.system().lower()
-    if platlower == 'dragonfly' or 'bsd' in platlower:
-        if libdir in dm.all_dirs:
-            proc, out, err = Popen_safe(['ldconfig', '-m', libdir])
-            if proc.returncode != 0:
-                print('Failed to apply ldconfig ...',
-                      'Standard output:', out,
-                      'Standard error:', err, sep='\n')
-        return
-
-    # Try to update ld cache, it could fail if we don't have permission.
-    proc, out, err = Popen_safe(['ldconfig', '-v'])
-    if proc.returncode == 0:
-        return
-
-    # ldconfig failed, print the error only if we actually installed files in
-    # any of the directories it lookup for libraries. Otherwise quietly ignore
-    # the error.
-    for l in out.splitlines():
-        # Lines that start with a \t are libraries, not directories.
-        if not l or l[0].isspace():
-            continue
-        # Example: `/usr/lib/i386-linux-gnu/i686: (hwcap: 0x0002000000000000)`
-        if l[:l.find(':')] in dm.all_dirs:
-            print(f'Failed to apply ldconfig:\n{err}')
-            break
-
 def get_destdir_path(destdir: str, fullprefix: str, path: str) -> str:
     if os.path.isabs(path):
         output = destdir_join(destdir, path)
@@ -384,11 +348,6 @@ class Installer:
         if not self.dry_run and not destdir:
             restore_selinux_contexts()
 
-    def apply_ldconfig(self, dm: DirMaker, destdir: str, is_cross_build: bool, libdir: str) -> None:
-        if any([self.dry_run, destdir, is_cross_build]):
-            return
-        apply_ldconfig(dm, libdir)
-
     def Popen_safe(self, *args: T.Any, **kwargs: T.Any) -> T.Tuple[int, str, str]:
         if not self.dry_run:
             p, o, e = Popen_safe(*args, **kwargs)
@@ -427,13 +386,13 @@ class Installer:
                     makedirs: T.Optional[T.Tuple[T.Any, str]] = None) -> bool:
         outdir = os.path.split(to_file)[0]
         if not os.path.isfile(from_file) and not os.path.islink(from_file):
-            raise RuntimeError(f'Tried to install something that isn\'t a file: {from_file!r}')
+            raise MesonException(f'Tried to install something that isn\'t a file: {from_file!r}')
         # copyfile fails if the target file already exists, so remove it to
         # allow overwriting a previous install. If the target is not a file, we
         # want to give a readable error.
         if os.path.exists(to_file):
             if not os.path.isfile(to_file):
-                raise RuntimeError(f'Destination {to_file!r} already exists and is not a file')
+                raise MesonException(f'Destination {to_file!r} already exists and is not a file')
             if self.should_preserve_existing_file(from_file, to_file):
                 append_to_log(self.lf, f'# Preserving old file {to_file}\n')
                 self.preserved_file_count += 1
@@ -465,10 +424,10 @@ class Installer:
         if not os.path.isabs(target):
             abs_target = os.path.join(full_dst_dir, target)
         if not os.path.exists(abs_target):
-            raise RuntimeError(f'Tried to install symlink to missing file {abs_target}')
+            raise MesonException(f'Tried to install symlink to missing file {abs_target}')
         if os.path.exists(link):
             if not os.path.islink(link):
-                raise RuntimeError(f'Destination {link!r} already exists and is not a symlink')
+                raise MesonException(f'Destination {link!r} already exists and is not a symlink')
             self.remove(link)
         if not self.printed_symlink_error:
             self.log(f'Installing symlink pointing to {target} to {link}')
@@ -574,7 +533,6 @@ class Installer:
             os.environ['DESTDIR'] = destdir
         destdir = destdir or ''
         fullprefix = destdir_join(destdir, d.prefix)
-        libdir = os.path.join(d.prefix, d.libdir)
 
         if d.install_umask != 'preserve':
             assert isinstance(d.install_umask, int)
@@ -591,7 +549,6 @@ class Installer:
                 self.install_data(d, dm, destdir, fullprefix)
                 self.install_symlinks(d, dm, destdir, fullprefix)
                 self.restore_selinux_contexts(destdir)
-                self.apply_ldconfig(dm, destdir, d.is_cross_build, libdir)
                 self.run_install_script(d, destdir, fullprefix)
                 if not self.did_install_something:
                     self.log('Nothing to install.')
@@ -713,7 +670,7 @@ class Installer:
                     self.log(f'File {t.fname!r} not found, skipping')
                     continue
                 else:
-                    raise RuntimeError(f'File {t.fname!r} could not be found')
+                    raise MesonException(f'File {t.fname!r} could not be found')
             file_copied = False # not set when a directory is copied
             fname = check_for_stampfile(t.fname)
             outdir = get_destdir_path(destdir, fullprefix, t.outdir)
@@ -725,7 +682,7 @@ class Installer:
             install_name_mappings = t.install_name_mappings
             install_mode = t.install_mode
             if not os.path.exists(fname):
-                raise RuntimeError(f'File {fname!r} could not be found')
+                raise MesonException(f'File {fname!r} could not be found')
             elif os.path.isfile(fname):
                 file_copied = self.do_copyfile(fname, outname, makedirs=(dm, outdir))
                 self.set_mode(outname, install_mode, d.install_umask)

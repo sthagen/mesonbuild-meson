@@ -167,8 +167,8 @@ class RunTarget(TypedDict):
 class CustomTarget(TypedDict):
 
     build_always: bool
-    build_always_stale: bool
-    build_by_default: bool
+    build_always_stale: T.Optional[bool]
+    build_by_default: T.Optional[bool]
     capture: bool
     command: T.List[T.Union[str, build.BuildTarget, build.CustomTarget,
                             build.CustomTargetIndex, ExternalProgram, File]]
@@ -183,7 +183,7 @@ class CustomTarget(TypedDict):
     install: bool
     install_dir: T.List[T.Union[str, bool]]
     install_mode: FileMode
-    install_tag: T.List[T.Union[str, bool]]
+    install_tag: T.List[T.Optional[str]]
     output: T.List[str]
     override_options: T.Dict[OptionKey, str]
 
@@ -266,3 +266,13 @@ class DependencyGetVariable(TypedDict):
 class ConfigurationDataSet(TypedDict):
 
     description: T.Optional[str]
+
+class VcsTag(TypedDict):
+
+    command: T.List[T.Union[str, build.BuildTarget, build.CustomTarget,
+                            build.CustomTargetIndex, ExternalProgram, File]]
+    fallback: T.Optional[str]
+    input: T.List[T.Union[str, build.BuildTarget, build.CustomTarget, build.CustomTargetIndex,
+                          build.ExtractedObjects, build.GeneratedList, ExternalProgram, File]]
+    output: T.List[str]
+    replace_string: str

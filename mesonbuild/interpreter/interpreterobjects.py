@@ -116,6 +116,7 @@ class FeatureOptionHolder(ObjectHolder[coredata.UserFeatureOption]):
 
     @noPosargs
     @noKwargs
+    @FeatureNew('feature_option.allowed()', '0.59.0')
     def allowed_method(self, args: T.List[TYPE_var], kwargs: TYPE_kwargs) -> bool:
         return self.value != 'disabled'
 
@@ -124,6 +125,7 @@ class FeatureOptionHolder(ObjectHolder[coredata.UserFeatureOption]):
     def auto_method(self, args: T.List[TYPE_var], kwargs: TYPE_kwargs) -> bool:
         return self.value == 'auto'
 
+    @FeatureNew('feature_option.require()', '0.59.0')
     @typed_pos_args('feature_option.require', bool)
     @typed_kwargs(
         'feature_option.require',
@@ -140,6 +142,7 @@ class FeatureOptionHolder(ObjectHolder[coredata.UserFeatureOption]):
             raise InterpreterException(err_msg)
         return self.as_disabled()
 
+    @FeatureNew('feature_option.disable_auto_if()', '0.59.0')
     @noKwargs
     @typed_pos_args('feature_option.disable_auto_if', bool)
     def disable_auto_if_method(self, args: T.Tuple[bool], kwargs: TYPE_kwargs) -> coredata.UserFeatureOption:
@@ -320,7 +323,10 @@ class ConfigurationDataHolder(ObjectHolder[build.ConfigurationData], MutableInte
     @typed_kwargs('configuration_data.set10', _CONF_DATA_SET_KWS)
     def set10_method(self, args: T.Tuple[str, T.Union[int, bool]], kwargs: 'kwargs.ConfigurationDataSet') -> None:
         self.__check_used()
-        if isinstance(args[1], int):
+        # bool is a subclass of int, so we need to check for bool excplicitly.
+        # We already have typed_pos_args checking that this is either a bool or
+        # an int.
+        if not isinstance(args[1], bool):
             mlog.deprecation('configuration_data.set10 with number. the `set10` '
                              'method should only be used with booleans',
                              location=self.interpreter.current_node)
@@ -633,7 +639,7 @@ class Test(MesonInterpreterObject):
                  cmd_args: T.List[T.Union[str, mesonlib.File, build.Target]],
                  env: build.EnvironmentVariables,
                  should_fail: bool, timeout: int, workdir: T.Optional[str], protocol: str,
-                 priority: int):
+                 priority: int, verbose: bool):
         super().__init__()
         self.name = name
         self.suite = listify(suite)
@@ -648,6 +654,7 @@ class Test(MesonInterpreterObject):
         self.workdir = workdir
         self.protocol = TestProtocol.from_str(protocol)
         self.priority = priority
+        self.verbose = verbose
 
     def get_exe(self) -> T.Union[ExternalProgram, build.Executable, build.CustomTarget]:
         return self.exe

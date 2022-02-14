@@ -735,6 +735,9 @@ class NinjaBackend(backends.Backend):
         self.introspection_data[name] = {}
         # Generate rules for all dependency targets
         self.process_target_dependencies(target)
+
+        self.generate_shlib_aliases(target, self.get_target_dir(target))
+
         # If target uses a language that cannot link to C objects,
         # just generate for that language and return.
         if isinstance(target, build.Jar):
@@ -899,7 +902,6 @@ class NinjaBackend(backends.Backend):
             final_obj_list = obj_list
         elem = self.generate_link(target, outname, final_obj_list, linker, pch_objects, stdlib_args=stdlib_args)
         self.generate_dependency_scan_target(target, compiled_sources, source2object, generated_source_files)
-        self.generate_shlib_aliases(target, self.get_target_dir(target))
         self.add_build(elem)
 
     def should_use_dyndeps_for_target(self, target: 'build.BuildTarget') -> bool:
@@ -1660,7 +1662,10 @@ class NinjaBackend(backends.Backend):
         self.generate_generator_list_rules(target)
 
         # dependencies need to cause a relink, they're not just for odering
-        deps = [os.path.join(t.subdir, t.get_filename()) for t in target.link_targets]
+        deps = [
+            os.path.join(t.subdir, t.get_filename())
+            for t in itertools.chain(target.link_targets, target.link_whole_targets)
+        ]
 
         orderdeps: T.List[str] = []
 
@@ -1704,14 +1709,15 @@ class NinjaBackend(backends.Backend):
             args.extend(rustc.get_linker_always_args())
 
         args += self.generate_basic_compiler_args(target, rustc, False)
-        args += ['--crate-name', target.name]
+        # This matches rustc's default behavior.
+        args += ['--crate-name', target.name.replace('-', '_')]
         depfile = os.path.join(target.subdir, target.name + '.d')
         args += ['--emit', f'dep-info={depfile}', '--emit', 'link']
         args += target.get_extra_args('rust')
         args += rustc.get_output_args(os.path.join(target.subdir, target.get_filename()))
         linkdirs = mesonlib.OrderedSet()
         external_deps = target.external_deps.copy()
-        for d in target.link_targets:
+        for d in itertools.chain(target.link_targets, target.link_whole_targets):
             linkdirs.add(d.subdir)
             if d.uses_rust():
                 # specify `extern CRATE_NAME=OUTPUT_FILE` for each Rust

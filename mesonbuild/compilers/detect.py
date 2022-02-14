@@ -33,6 +33,8 @@ from ..linkers import (
     CompCertDynamicLinker,
     C2000Linker,
     C2000DynamicLinker,
+    TILinker,
+    TIDynamicLinker,
     DLinker,
     NAGDynamicLinker,
     NvidiaHPC_DynamicLinker,
@@ -68,6 +70,7 @@ from .c import (
     Xc16CCompiler,
     CompCertCCompiler,
     C2000CCompiler,
+    TICCompiler,
     VisualStudioCCompiler,
 )
 from .cpp import (
@@ -87,6 +90,7 @@ from .cpp import (
     PGICPPCompiler,
     CcrxCPPCompiler,
     C2000CPPCompiler,
+    TICPPCompiler,
     VisualStudioCPPCompiler,
 )
 from .cs import MonoCompiler, VisualStudioCsCompiler
@@ -295,9 +299,11 @@ def detect_static_linker(env: 'Environment', compiler: Compiler) -> StaticLinker
             linkers = default_linkers
     popen_exceptions = {}
     for linker in linkers:
-        if not {'lib', 'lib.exe', 'llvm-lib', 'llvm-lib.exe', 'xilib', 'xilib.exe'}.isdisjoint(linker):
+        linker_name = os.path.basename(linker[0])
+
+        if any(os.path.basename(x) in {'lib', 'lib.exe', 'llvm-lib', 'llvm-lib.exe', 'xilib', 'xilib.exe'} for x in linker):
             arg = '/?'
-        elif not {'ar2000', 'ar2000.exe'}.isdisjoint(linker):
+        elif linker_name in {'ar2000', 'ar2000.exe', 'ar430', 'ar430.exe', 'armar', 'armar.exe'}:
             arg = '?'
         else:
             arg = '--version'
@@ -312,7 +318,7 @@ def detect_static_linker(env: 'Environment', compiler: Compiler) -> StaticLinker
             return VisualStudioLinker(linker, getattr(compiler, 'machine', None))
         if 'ar-Error-Unknown switch: --version' in err:
             return PGIStaticLinker(linker)
-        if p.returncode == 0 and ('armar' in linker or 'armar.exe' in linker):
+        if p.returncode == 0 and 'armar' in linker_name:
             return ArmarLinker(linker)
         if 'DMD32 D Compiler' in out or 'DMD64 D Compiler' in out:
             assert isinstance(compiler, DCompiler)
@@ -323,12 +329,15 @@ def detect_static_linker(env: 'Environment', compiler: Compiler) -> StaticLinker
         if 'GDC' in out and ' based on D ' in out:
             assert isinstance(compiler, DCompiler)
             return DLinker(linker, compiler.arch)
-        if err.startswith('Renesas') and ('rlink' in linker or 'rlink.exe' in linker):
+        if err.startswith('Renesas') and 'rlink' in linker_name:
             return CcrxLinker(linker)
-        if out.startswith('GNU ar') and ('xc16-ar' in linker or 'xc16-ar.exe' in linker):
+        if out.startswith('GNU ar') and 'xc16-ar' in linker_name:
             return Xc16Linker(linker)
-        if out.startswith('TMS320C2000') and ('ar2000' in linker or 'ar2000.exe' in linker):
-            return C2000Linker(linker)
+        if 'Texas Instruments Incorporated' in out:
+            if 'ar2000' in linker_name:
+                return C2000Linker(linker)
+            else:
+                return TILinker(linker)
         if out.startswith('The CompCert'):
             return CompCertLinker(linker)
         if p.returncode == 0:
@@ -381,9 +390,9 @@ def _detect_c_or_cpp_compiler(env: 'Environment', lang: str, for_machine: Machin
                     return os.path.normcase(os.path.abspath(p))
 
                 watcom_cls = [sanitize(os.path.join(os.environ['WATCOM'], 'BINNT', 'cl')),
-                                sanitize(os.path.join(os.environ['WATCOM'], 'BINNT', 'cl.exe')),
-                                sanitize(os.path.join(os.environ['WATCOM'], 'BINNT64', 'cl')),
-                                sanitize(os.path.join(os.environ['WATCOM'], 'BINNT64', 'cl.exe')),]
+                              sanitize(os.path.join(os.environ['WATCOM'], 'BINNT', 'cl.exe')),
+                              sanitize(os.path.join(os.environ['WATCOM'], 'BINNT64', 'cl')),
+                              sanitize(os.path.join(os.environ['WATCOM'], 'BINNT64', 'cl.exe')),]
                 found_cl = sanitize(shutil.which('cl'))
                 if found_cl in watcom_cls:
                     mlog.debug('Skipping unsupported cl.exe clone at:', found_cl)
@@ -397,7 +406,8 @@ def _detect_c_or_cpp_compiler(env: 'Environment', lang: str, for_machine: Machin
             arg = '--version'
         elif 'ccomp' in compiler_name:
             arg = '-version'
-        elif 'cl2000' in compiler_name:
+        elif compiler_name in {'cl2000', 'cl2000.exe', 'cl430', 'cl430.exe', 'armcl', 'armcl.exe'}:
+            # TI compiler
             arg = '-version'
         elif compiler_name in {'icl', 'icl.exe'}:
             # if you pass anything to icl you get stuck in a pager
@@ -466,7 +476,7 @@ def _detect_c_or_cpp_compiler(env: 'Environment', lang: str, for_machine: Machin
                 exe_wrap, linker=linker, full_version=full_version)
 
         if 'Arm C/C++/Fortran Compiler' in out:
-            arm_ver_match = re.search('version (\d+)\.(\d+) \(build number (\d+)\)', out)
+            arm_ver_match = re.search(r'version (\d+)\.(\d+) \(build number (\d+)\)', out)
             arm_ver_major = arm_ver_match.group(1)
             arm_ver_minor = arm_ver_match.group(2)
             arm_ver_build = arm_ver_match.group(3)
@@ -602,6 +612,20 @@ def _detect_c_or_cpp_compiler(env: 'Environment', lang: str, for_machine: Machin
             return cls(
                 ccache + compiler, version, for_machine, is_cross, info,
                 exe_wrap, full_version=full_version, linker=l)
+        if 'TMS320C2000 C/C++' in out or 'MSP430 C/C++' in out or 'TI ARM C/C++ Compiler' in out:
+            lnk : T.Union[T.Type[C2000DynamicLinker], T.Type[TIDynamicLinker]]
+            if 'TMS320C2000 C/C++' in out:
+                cls = C2000CCompiler if lang == 'c' else C2000CPPCompiler
+                lnk = C2000DynamicLinker
+            else:
+                cls = TICCompiler if lang == 'c' else TICPPCompiler
+                lnk = TIDynamicLinker
+
+            env.coredata.add_lang_args(cls.language, cls, for_machine, env)
+            linker = lnk(compiler, for_machine, version=version)
+            return cls(
+                ccache + compiler, version, for_machine, is_cross, info,
+                exe_wrap, full_version=full_version, linker=linker)
         if 'ARM' in out:
             cls = ArmCCompiler if lang == 'c' else ArmCPPCompiler
             env.coredata.add_lang_args(cls.language, cls, for_machine, env)
@@ -629,14 +653,6 @@ def _detect_c_or_cpp_compiler(env: 'Environment', lang: str, for_machine: Machin
             cls = CompCertCCompiler
             env.coredata.add_lang_args(cls.language, cls, for_machine, env)
             linker = CompCertDynamicLinker(for_machine, version=version)
-            return cls(
-                ccache + compiler, version, for_machine, is_cross, info,
-                exe_wrap, full_version=full_version, linker=linker)
-
-        if 'TMS320C2000 C/C++' in out:
-            cls = C2000CCompiler if lang == 'c' else C2000CPPCompiler
-            env.coredata.add_lang_args(cls.language, cls, for_machine, env)
-            linker = C2000DynamicLinker(compiler, for_machine, version=version)
             return cls(
                 ccache + compiler, version, for_machine, is_cross, info,
                 exe_wrap, full_version=full_version, linker=linker)
@@ -730,7 +746,7 @@ def detect_fortran_compiler(env: 'Environment', for_machine: MachineChoice) -> C
 
             if 'Arm C/C++/Fortran Compiler' in out:
                 cls = ArmLtdFlangFortranCompiler
-                arm_ver_match = re.search('version (\d+)\.(\d+) \(build number (\d+)\)', out)
+                arm_ver_match = re.search(r'version (\d+)\.(\d+) \(build number (\d+)\)', out)
                 arm_ver_major = arm_ver_match.group(1)
                 arm_ver_minor = arm_ver_match.group(2)
                 arm_ver_build = arm_ver_match.group(3)
@@ -779,7 +795,7 @@ def detect_fortran_compiler(env: 'Environment', for_machine: MachineChoice) -> C
                 cls = PGIFortranCompiler
                 env.coredata.add_lang_args(cls.language, cls, for_machine, env)
                 linker = PGIDynamicLinker(compiler, for_machine,
-                                            cls.LINKER_PREFIX, [], version=version)
+                                          cls.LINKER_PREFIX, [], version=version)
                 return cls(
                     compiler, version, for_machine, is_cross, info, exe_wrap,
                     full_version=full_version, linker=linker)
@@ -788,21 +804,21 @@ def detect_fortran_compiler(env: 'Environment', for_machine: MachineChoice) -> C
                 cls = NvidiaHPC_FortranCompiler
                 env.coredata.add_lang_args(cls.language, cls, for_machine, env)
                 linker = PGIDynamicLinker(compiler, for_machine,
-                                            cls.LINKER_PREFIX, [], version=version)
+                                          cls.LINKER_PREFIX, [], version=version)
                 return cls(
                     compiler, version, for_machine, is_cross, info, exe_wrap,
                     full_version=full_version, linker=linker)
 
             if 'flang' in out or 'clang' in out:
                 linker = guess_nix_linker(env,
-                    compiler, FlangFortranCompiler, for_machine)
+                                          compiler, FlangFortranCompiler, for_machine)
                 return FlangFortranCompiler(
                     compiler, version, for_machine, is_cross, info,
                     exe_wrap, full_version=full_version, linker=linker)
 
             if 'Open64 Compiler Suite' in err:
                 linker = guess_nix_linker(env,
-                    compiler, Open64FortranCompiler, for_machine)
+                                          compiler, Open64FortranCompiler, for_machine)
                 return Open64FortranCompiler(
                     compiler, version, for_machine, is_cross, info,
                     exe_wrap, full_version=full_version, linker=linker)
@@ -1036,14 +1052,14 @@ def detect_rust_compiler(env: 'Environment', for_machine: MachineChoice) -> Rust
                 # TODO rewrite this without type: ignore
                 if is_link_exe:
                     linker = type(cc.linker)(for_machine, always_args, exelist=cc.linker.exelist,   # type: ignore
-                                                version=cc.linker.version, **extra_args)            # type: ignore
+                                             version=cc.linker.version, **extra_args)               # type: ignore
                 else:
                     linker = type(cc.linker)(compiler, for_machine, cc.LINKER_PREFIX,
-                                                always_args=always_args, version=cc.linker.version,
-                                                **extra_args) # type: ignore
+                                             always_args=always_args, version=cc.linker.version,
+                                             **extra_args) # type: ignore
             elif 'link' in override[0]:
                 linker = guess_win_linker(env,
-                    override, cls, for_machine, use_linker_prefix=False)
+                                          override, cls, for_machine, use_linker_prefix=False)
                 # rustc takes linker arguments without a prefix, and
                 # inserts the correct prefix itself.
                 assert isinstance(linker, VisualStudioLikeLinkerMixin)
@@ -1118,17 +1134,17 @@ def detect_d_compiler(env: 'Environment', for_machine: MachineChoice) -> Compile
                 if info.is_windows() or info.is_cygwin():
                     objfile = os.path.basename(f)[:-1] + 'obj'
                     linker = guess_win_linker(env,
-                        exelist,
-                        LLVMDCompiler, for_machine,
-                        use_linker_prefix=True, invoked_directly=False,
-                        extra_args=[f])
+                                              exelist,
+                                              LLVMDCompiler, for_machine,
+                                              use_linker_prefix=True, invoked_directly=False,
+                                              extra_args=[f])
                 else:
                     # LDC writes an object file to the current working directory.
                     # Clean it up.
                     objfile = os.path.basename(f)[:-1] + 'o'
                     linker = guess_nix_linker(env,
-                        exelist, LLVMDCompiler, for_machine,
-                        extra_args=[f])
+                                              exelist, LLVMDCompiler, for_machine,
+                                              extra_args=[f])
             finally:
                 windows_proof_rm(f)
                 windows_proof_rm(objfile)
@@ -1157,13 +1173,13 @@ def detect_d_compiler(env: 'Environment', for_machine: MachineChoice) -> Compile
                 if info.is_windows() or info.is_cygwin():
                     objfile = os.path.basename(f)[:-1] + 'obj'
                     linker = guess_win_linker(env,
-                        exelist, DmdDCompiler, for_machine,
-                        invoked_directly=False, extra_args=[f, arch_arg])
+                                              exelist, DmdDCompiler, for_machine,
+                                              invoked_directly=False, extra_args=[f, arch_arg])
                 else:
                     objfile = os.path.basename(f)[:-1] + 'o'
                     linker = guess_nix_linker(env,
-                        exelist, DmdDCompiler, for_machine,
-                        extra_args=[f, arch_arg])
+                                              exelist, DmdDCompiler, for_machine,
+                                              extra_args=[f, arch_arg])
             finally:
                 windows_proof_rm(f)
                 windows_proof_rm(objfile)
@@ -1193,8 +1209,8 @@ def detect_swift_compiler(env: 'Environment', for_machine: MachineChoice) -> Com
         # As for 5.0.1 swiftc *requires* a file to check the linker:
         with tempfile.NamedTemporaryFile(suffix='.swift') as f:
             linker = guess_nix_linker(env,
-                exelist, SwiftCompiler, for_machine,
-                extra_args=[f.name])
+                                      exelist, SwiftCompiler, for_machine,
+                                      extra_args=[f.name])
         return SwiftCompiler(
             exelist, version, for_machine, is_cross, info, linker=linker)
 

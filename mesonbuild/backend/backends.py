@@ -119,7 +119,6 @@ class InstallData:
     install_umask: T.Union[str, int]
     mesonintrospect: T.List[str]
     version: str
-    is_cross_build: bool
 
     def __post_init__(self) -> None:
         self.targets: T.List[TargetInstallData] = []
@@ -226,6 +225,7 @@ class TestSerialisation:
     cmd_is_built: bool
     depends: T.List[str]
     version: str
+    verbose: bool
 
     def __post_init__(self) -> None:
         if self.exe_wrapper is not None:
@@ -1148,7 +1148,8 @@ class Backend:
                                    extra_paths, t.protocol, t.priority,
                                    isinstance(exe, build.Executable),
                                    [x.get_id() for x in depends],
-                                   self.environment.coredata.version)
+                                   self.environment.coredata.version,
+                                   t.verbose)
             arr.append(ts)
         return arr
 
@@ -1191,14 +1192,14 @@ class Backend:
     def get_regen_filelist(self) -> T.List[str]:
         '''List of all files whose alteration means that the build
         definition needs to be regenerated.'''
-        deps = [str(Path(self.build_to_src) / df)
-                for df in self.interpreter.get_build_def_files()]
+        deps = OrderedSet([str(Path(self.build_to_src) / df)
+                for df in self.interpreter.get_build_def_files()])
         if self.environment.is_cross_build():
-            deps.extend(self.environment.coredata.cross_files)
-        deps.extend(self.environment.coredata.config_files)
-        deps.append('meson-private/coredata.dat')
+            deps.update(self.environment.coredata.cross_files)
+        deps.update(self.environment.coredata.config_files)
+        deps.add('meson-private/coredata.dat')
         self.check_clock_skew(deps)
-        return deps
+        return list(deps)
 
     def generate_regen_info(self) -> None:
         deps = self.get_regen_filelist()
@@ -1210,7 +1211,7 @@ class Backend:
         with open(filename, 'wb') as f:
             pickle.dump(regeninfo, f)
 
-    def check_clock_skew(self, file_list: T.List[str]) -> None:
+    def check_clock_skew(self, file_list: T.Iterable[str]) -> None:
         # If a file that leads to reconfiguration has a time
         # stamp in the future, it will trigger an eternal reconfigure
         # loop.
@@ -1502,8 +1503,7 @@ class Backend:
                         strip_bin,
                         umask,
                         self.environment.get_build_command() + ['introspect'],
-                        self.environment.coredata.version,
-                        self.environment.is_cross_build())
+                        self.environment.coredata.version)
         self.generate_depmf_install(d)
         self.generate_target_install(d)
         self.generate_header_install(d)

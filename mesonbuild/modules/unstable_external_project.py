@@ -205,7 +205,7 @@ class ExternalProject(NewExtensionModule):
             output.flush()
         else:
             mlog.log(m)
-        p, *_ = Popen_safe(command, cwd=str(workdir), env=self.run_env,
+        p, *_ = Popen_safe(command, cwd=workdir, env=self.run_env,
                            stderr=subprocess.STDOUT,
                            stdout=output)
         if p.returncode != 0:
@@ -227,15 +227,16 @@ class ExternalProject(NewExtensionModule):
         if self.verbose:
             cmd.append('--verbose')
 
-        target_kwargs = {'output': f'{self.name}.stamp',
-                         'depfile': f'{self.name}.d',
-                         'command': cmd + ['@OUTPUT@', '@DEPFILE@'],
-                         'console': True,
-                         }
-        self.target = build.CustomTarget(self.name,
-                                         self.subdir.as_posix(),
-                                         self.subproject,
-                                         target_kwargs)
+        self.target = build.CustomTarget(
+            self.name,
+            self.subdir.as_posix(),
+            self.subproject,
+            cmd + ['@OUTPUT@', '@DEPFILE@'],
+            [],
+            [f'{self.name}.stamp'],
+            depfile=f'{self.name}.d',
+            console=True,
+        )
 
         idir = build.InstallDir(self.subdir.as_posix(),
                                 Path('dist', self.rel_prefix).as_posix(),

@@ -33,22 +33,27 @@ meson_root = Path(__file__).absolute().parents[2]
 
 def main() -> int:
     parser = argparse.ArgumentParser(description='Meson reference manual generator')
-    parser.add_argument('-l', '--loader', type=str, default='yaml', choices=['yaml', 'pickle'], help='Information loader backend')
+    parser.add_argument('-l', '--loader', type=str, default='yaml', choices=['yaml', 'fastyaml', 'pickle'], help='Information loader backend')
     parser.add_argument('-g', '--generator', type=str, choices=['print', 'pickle', 'md', 'json', 'man'], required=True, help='Generator backend')
     parser.add_argument('-s', '--sitemap', type=Path, default=meson_root / 'docs' / 'sitemap.txt', help='Path to the input sitemap.txt')
     parser.add_argument('-o', '--out', type=Path, required=True, help='Output directory for generated files')
     parser.add_argument('-i', '--input', type=Path, default=meson_root / 'docs' / 'yaml', help='Input path for the selected loader')
     parser.add_argument('--link-defs', type=Path, help='Output file for the MD generator link definition file')
     parser.add_argument('--depfile', type=Path, default=None, help='Set to generate a depfile')
+    parser.add_argument('-q', '--quiet', action='store_true', help='Suppress verbose output')
     parser.add_argument('--force-color', action='store_true', help='Force enable colors')
     parser.add_argument('--no-modules', action='store_true', help='Disable building modules')
     args = parser.parse_args()
+
+    if args.quiet:
+        mlog.set_quiet()
 
     if args.force_color:
         mlog.colorize_console = lambda: True
 
     loaders: T.Dict[str, T.Callable[[], LoaderBase]] = {
         'yaml': lambda: LoaderYAML(args.input),
+        'fastyaml': lambda: LoaderYAML(args.input, strict=False),
         'pickle': lambda: LoaderPickle(args.input),
     }
 

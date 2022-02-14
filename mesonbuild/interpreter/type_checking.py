@@ -244,6 +244,8 @@ def _output_validator(outputs: T.List[str]) -> T.Optional[str]:
             return 'Output must not consist only of whitespace.'
         elif has_path_sep(i):
             return f'Output {i!r} must not contain a path segment.'
+        elif '@INPUT' in i:
+            return f'output {i!r} contains "@INPUT", which is invalid. Did you mean "@PLAINNAME@" or "@BASENAME@?'
 
     return None
 
@@ -269,6 +271,7 @@ CT_INSTALL_TAG_KW: KwargInfo[T.List[T.Union[str, bool]]] = KwargInfo(
     listify=True,
     default=[],
     since='0.60.0',
+    convertor=lambda x: [y if isinstance(y, str) else None for y in x],
 )
 
 INSTALL_KW = KwargInfo('install', bool, default=False)
@@ -282,10 +285,16 @@ CT_INSTALL_DIR_KW: KwargInfo[T.List[T.Union[str, bool]]] = KwargInfo(
 
 CT_BUILD_BY_DEFAULT: KwargInfo[T.Optional[bool]] = KwargInfo('build_by_default', (bool, type(None)), since='0.40.0')
 
-CT_BUILD_ALWAYS: KwargInfo[T.Optional[bool]] = KwargInfo('build_always', (bool, NoneType))
+CT_BUILD_ALWAYS: KwargInfo[T.Optional[bool]] = KwargInfo(
+    'build_always', (bool, NoneType),
+     deprecated='0.47.0',
+     deprecated_message='combine build_by_default and build_always_stale instead.',
+)
 
 CT_BUILD_ALWAYS_STALE: KwargInfo[T.Optional[bool]] = KwargInfo(
-    'build_always_stale', (bool, NoneType))
+    'build_always_stale', (bool, NoneType),
+    since='0.47.0',
+)
 
 INCLUDE_DIRECTORIES: KwargInfo[T.List[T.Union[str, IncludeDirs]]] = KwargInfo(
     'include_dirs',
