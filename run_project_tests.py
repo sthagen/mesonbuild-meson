@@ -84,7 +84,7 @@ if T.TYPE_CHECKING:
 ALL_TESTS = ['cmake', 'common', 'native', 'warning-meson', 'failing-meson', 'failing-build', 'failing-test',
              'keyval', 'platform-osx', 'platform-windows', 'platform-linux',
              'java', 'C#', 'vala', 'cython', 'rust', 'd', 'objective c', 'objective c++',
-             'fortran', 'swift', 'cuda', 'python3', 'python', 'fpga', 'frameworks', 'nasm', 'wasm',
+             'fortran', 'swift', 'cuda', 'python3', 'python', 'fpga', 'frameworks', 'nasm', 'wasm', 'wayland'
              ]
 
 
@@ -282,7 +282,8 @@ class TestDef:
 failing_logs: T.List[str] = []
 print_debug = 'MESON_PRINT_TEST_OUTPUT' in os.environ
 under_ci = 'CI' in os.environ
-ci_jobname = os.environ.get('MESON_CI_JOBNAME', None)
+raw_ci_jobname = os.environ.get('MESON_CI_JOBNAME', None)
+ci_jobname = raw_ci_jobname if raw_ci_jobname != 'thirdparty' else None
 do_debug = under_ci or print_debug
 no_meson_log_msg = 'No meson-log.txt found.'
 
@@ -971,7 +972,7 @@ def have_java() -> bool:
 
 def skip_dont_care(t: TestDef) -> bool:
     # Everything is optional when not running on CI
-    if not under_ci:
+    if ci_jobname is None:
         return True
 
     # Non-frameworks test are allowed to determine their own skipping under CI (currently)
@@ -1032,6 +1033,13 @@ def should_skip_rust(backend: Backend) -> bool:
             return True
     return False
 
+def should_skip_wayland() -> bool:
+    if mesonlib.is_windows() or mesonlib.is_osx():
+        return True
+    if not shutil.which('wayland-scanner'):
+        return True
+    return False
+
 def detect_tests_to_run(only: T.Dict[str, T.List[str]], use_tmp: bool) -> T.List[T.Tuple[str, T.List[TestDef], bool]]:
     """
     Parameters
@@ -1088,6 +1096,7 @@ def detect_tests_to_run(only: T.Dict[str, T.List[str]], use_tmp: bool) -> T.List
         TestCategory('frameworks', 'frameworks'),
         TestCategory('nasm', 'nasm'),
         TestCategory('wasm', 'wasm', shutil.which('emcc') is None or backend is not Backend.ninja),
+        TestCategory('wayland', 'wayland', should_skip_wayland()),
     ]
 
     categories = [t.category for t in all_tests]
@@ -1505,8 +1514,8 @@ def clear_transitive_files() -> None:
             mesonlib.windows_proof_rm(str(d))
 
 if __name__ == '__main__':
-    if under_ci and not ci_jobname:
-        raise SystemExit('Running under CI but MESON_CI_JOBNAME is not set')
+    if under_ci and not raw_ci_jobname:
+        raise SystemExit('Running under CI but $MESON_CI_JOBNAME is not set (set to "thirdparty" if you are running outside of the github org)')
 
     setup_vsenv()
 

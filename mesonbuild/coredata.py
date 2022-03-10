@@ -35,6 +35,7 @@ import typing as T
 if T.TYPE_CHECKING:
     from . import dependencies
     from .compilers.compilers import Compiler, CompileResult
+    from .dependencies.detect import TV_DepID
     from .environment import Environment
     from .mesonlib import OptionOverrideProxy, FileOrString
     from .cmake.traceparser import CMakeCacheEntry
@@ -43,11 +44,14 @@ if T.TYPE_CHECKING:
     KeyedOptionDictType = T.Union[T.Dict['OptionKey', 'UserOption[T.Any]'], OptionOverrideProxy]
     CompilerCheckCacheKey = T.Tuple[T.Tuple[str, ...], str, FileOrString, T.Tuple[str, ...], str]
 
+    # typeshed
+    StrOrBytesPath = T.Union[str, bytes, os.PathLike[str], os.PathLike[bytes]]
+
 # Check major_versions_differ() if changing versioning scheme.
 #
 # Pip requires that RCs are named like this: '0.1.0.rc1'
 # But the corresponding Git tag needs to be '0.1.0rc1'
-version = '0.61.99'
+version = '0.62.0.rc1'
 
 backendlist = ['ninja', 'vs', 'vs2010', 'vs2012', 'vs2013', 'vs2015', 'vs2017', 'vs2019', 'vs2022', 'xcode']
 
@@ -278,9 +282,6 @@ class UserFeatureOption(UserComboOption):
 
     def is_auto(self) -> bool:
         return self.value == 'auto'
-
-if T.TYPE_CHECKING:
-    from .dependencies.detect import TV_DepID
 
 
 class DependencyCacheType(enum.Enum):
@@ -610,7 +611,7 @@ class CoreData:
                 'Default project to execute in Visual Studio',
                 '')
 
-    def get_option(self, key: OptionKey) -> T.Union[str, int, bool, WrapMode]:
+    def get_option(self, key: OptionKey) -> T.Union[T.List[str], str, int, bool, WrapMode]:
         try:
             v = self.options[key].value
             if key.name == 'wrap_mode':
@@ -894,6 +895,9 @@ class CmdLineFileParser(configparser.ConfigParser):
         # We don't want ':' as key delimiter, otherwise it would break when
         # storing subproject options like "subproject:option=value"
         super().__init__(delimiters=['='], interpolation=None)
+
+    def read(self, filenames: T.Union['StrOrBytesPath', T.Iterable['StrOrBytesPath']], encoding: str ='utf-8') -> T.List[str]:
+        return super().read(filenames, encoding)
 
     def optionxform(self, option: str) -> str:
         # Don't call str.lower() on keys
@@ -1218,6 +1222,8 @@ BUILTIN_CORE_OPTIONS: 'KeyedOptionDictType' = OrderedDict([
     (OptionKey('force_fallback_for'), BuiltinOption(UserArrayOption, 'Force fallback for those subprojects', [])),
 
     # Python module
+    (OptionKey('install_env', module='python'),
+     BuiltinOption(UserComboOption, 'Which python environment to install to', 'prefix', choices=['auto', 'prefix', 'system', 'venv'])),
     (OptionKey('platlibdir', module='python'),
      BuiltinOption(UserStringOption, 'Directory for site-specific, platform-specific files.', '')),
     (OptionKey('purelibdir', module='python'),

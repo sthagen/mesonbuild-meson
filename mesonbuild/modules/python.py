@@ -23,7 +23,7 @@ from . import ExtensionModule
 from .. import mesonlib
 from .. import mlog
 from ..coredata import UserFeatureOption
-from ..build import known_shmod_kwargs
+from ..build import known_shmod_kwargs, EnvironmentVariables
 from ..dependencies import DependencyMethods, PkgConfigDependency, NotFoundDependency, SystemDependency, ExtraFrameworkDependency
 from ..dependencies.base import process_method_kw
 from ..environment import detect_cpu_family
@@ -38,26 +38,51 @@ from ..mesonlib import MachineChoice
 from ..programs import ExternalProgram, NonExistingExternalProgram
 
 if T.TYPE_CHECKING:
+    from typing_extensions import TypedDict
+
     from . import ModuleState
     from ..build import SharedModule, Data
     from ..dependencies import ExternalDependency, Dependency
     from ..dependencies.factory import DependencyGenerator
     from ..environment import Environment
     from ..interpreter import Interpreter
+    from ..interpreter.kwargs import ExtractRequired
     from ..interpreterbase.interpreterbase import TYPE_var, TYPE_kwargs
+    from ..backends import InstallData
 
-    from typing_extensions import TypedDict
+    class PythonIntrospectionDict(TypedDict):
+
+        install_paths: T.Dict[str, str]
+        is_pypy: bool
+        is_venv: bool
+        link_libpython: bool
+        sysconfig_paths: T.Dict[str, str]
+        paths: T.Dict[str, str]
+        platform: str
+        suffix: str
+        variables: T.Dict[str, str]
+        version: str
+
+    class PyInstallKw(TypedDict):
+
+        pure: bool
+        subdir: str
+        install_tag: T.Optional[str]
+
+    class FindInstallationKw(ExtractRequired):
+
+        disabler: bool
+        modules: T.List[str]
+
+    _Base = ExternalDependency
+else:
+    _Base = object
 
 
 mod_kwargs = {'subdir'}
 mod_kwargs.update(known_shmod_kwargs)
 mod_kwargs -= {'name_prefix', 'name_suffix'}
 
-
-if T.TYPE_CHECKING:
-    _Base = ExternalDependency
-else:
-    _Base = object
 
 class _PythonDependencyBase(_Base):
 
@@ -133,7 +158,7 @@ class PythonSystemDependency(SystemDependency, _PythonDependencyBase):
         if largs is not None:
             self.link_args = largs
 
-        self.is_found = largs is not None or self.link_libpython
+        self.is_found = largs is not None or not self.link_libpython
 
         inc_paths = mesonlib.OrderedSet([
             self.variables.get('INCLUDEPY'),
@@ -338,26 +363,16 @@ variables.update({'base_prefix': getattr(sys, 'base_prefix', sys.prefix)})
 print(json.dumps({
   'variables': variables,
   'paths': paths,
+  'sysconfig_paths': sysconfig.get_paths(),
   'install_paths': install_paths,
   'sys_paths': sys.path,
   'version': sysconfig.get_python_version(),
   'platform': sysconfig.get_platform(),
   'is_pypy': '__pypy__' in sys.builtin_module_names,
+  'is_venv': sys.prefix != variables['base_prefix'],
   'link_libpython': links_against_libpython(),
 }))
 '''
-
-if T.TYPE_CHECKING:
-    class PythonIntrospectionDict(TypedDict):
-
-        install_paths: T.Dict[str, str]
-        is_pypy: bool
-        link_libpython: bool
-        paths: T.Dict[str, str]
-        platform: str
-        suffix: str
-        variables: T.Dict[str, str]
-        version: str
 
 
 class PythonExternalProgram(ExternalProgram):
@@ -377,12 +392,29 @@ class PythonExternalProgram(ExternalProgram):
         self.info: 'PythonIntrospectionDict' = {
             'install_paths': {},
             'is_pypy': False,
+            'is_venv': False,
             'link_libpython': False,
+            'sysconfig_paths': {},
             'paths': {},
             'platform': 'sentinal',
             'variables': {},
             'version': '0.0',
         }
+        self.devenv_pythonpath: T.Set[str] = set()
+
+    def add_devenv_pythonpath(self, basedir: str, subdir: str, install_subdir: str) -> None:
+        # If we install python module into 'foo/bar' subdir, we need the last 2
+        # parts of source dir to be ['foo', 'bar'] and set PYTHONPATH
+        # pointing grandparent directory. That way scripts will be able to
+        # `import foo.bar.something` just like when the are installed.
+        # If the source tree layout does not match installed layout there is
+        # nothing we can do.
+        install_subdir_parts = Path(install_subdir).parts
+        subdir_parts = Path(subdir).parts
+        if subdir_parts[-len(install_subdir_parts):] == install_subdir_parts:
+            pypath = os.path.join(basedir, *subdir_parts[:-len(install_subdir_parts)])
+            self.devenv_pythonpath.add(pypath)
+            print('done', pypath)
 
     def _check_version(self, version: str) -> bool:
         if self.name == 'python2':
@@ -422,7 +454,22 @@ class PythonExternalProgram(ExternalProgram):
             return rel_path
         value = state.get_option(f'{key}dir', module='python')
         if value:
+            if state.is_user_defined_option('install_env', module='python'):
+                raise mesonlib.MesonException(f'python.{key}dir and python.install_env are mutually exclusive')
             return value
+
+        install_env = state.get_option('install_env', module='python')
+        if install_env == 'auto':
+            install_env = 'venv' if self.info['is_venv'] else 'system'
+
+        if install_env == 'system':
+            rel_path = os.path.join(self.info['variables']['prefix'], rel_path)
+        elif install_env == 'venv':
+            if not self.info['is_venv']:
+                raise mesonlib.MesonException('python.install_env cannot be set to "venv" unless you are in a venv!')
+            # inside a venv, deb_system is *never* active hence info['paths'] may be wrong
+            rel_path = self.info['sysconfig_paths'][key]
+
         # Use python's path relative to prefix, and warn if that's not a location
         # python will lookup for modules.
         abs_path = Path(state.get_option('prefix'), rel_path)
@@ -436,14 +483,6 @@ class PythonExternalProgram(ExternalProgram):
 
 _PURE_KW = KwargInfo('pure', bool, default=True)
 _SUBDIR_KW = KwargInfo('subdir', str, default='')
-
-if T.TYPE_CHECKING:
-
-    class PyInstallKw(TypedDict):
-
-        pure: bool
-        subdir: str
-        install_tag: T.Optional[str]
 
 
 class PythonInstallation(ExternalProgramHolder):
@@ -484,8 +523,10 @@ class PythonInstallation(ExternalProgramHolder):
             subdir = kwargs.pop('subdir', '')
             if not isinstance(subdir, str):
                 raise InvalidArguments('"subdir" argument must be a string.')
-
             kwargs['install_dir'] = os.path.join(self.platlib_install_path, subdir)
+            self.held_object.add_devenv_pythonpath(
+                self.interpreter.environment.get_build_dir(),
+                self.interpreter.subdir, subdir)
 
         # On macOS and some Linux distros (Debian) distutils doesn't link
         # extensions against libpython. We call into distutils and mirror its
@@ -540,11 +581,19 @@ class PythonInstallation(ExternalProgramHolder):
     def install_sources_method(self, args: T.Tuple[T.List[T.Union[str, mesonlib.File]]],
                                kwargs: 'PyInstallKw') -> 'Data':
         tag = kwargs['install_tag'] or 'runtime'
-        return self.interpreter.install_data_impl(
-            self.interpreter.source_strings_to_files(args[0]),
-            self._get_install_dir_impl(kwargs['pure'], kwargs['subdir']),
+        pure = kwargs['pure']
+        sources = self.interpreter.source_strings_to_files(args[0])
+        install_subdir = kwargs['subdir']
+        install_dir = self._get_install_dir_impl(pure, install_subdir)
+        builddir = self.interpreter.environment.get_build_dir()
+        srcdir = self.interpreter.environment.get_source_dir()
+        for src in sources:
+            basedir = builddir if src.is_built else srcdir
+            subdir = os.path.dirname(src.relative_name())
+            self.held_object.add_devenv_pythonpath(basedir, subdir, install_subdir)
+        return self.interpreter.install_data_impl(sources, install_dir,
             mesonlib.FileMode(), rename=None, tag=tag, install_data_type='python',
-            install_dir_name=self._get_install_dir_name_impl(kwargs['pure'], kwargs['subdir']))
+            install_dir_name=self._get_install_dir_name_impl(pure, install_subdir))
 
     @noPosargs
     @typed_kwargs('python_installation.install_dir', _PURE_KW, _SUBDIR_KW)
@@ -602,23 +651,27 @@ class PythonInstallation(ExternalProgramHolder):
         return super().path_method(args, kwargs)
 
 
-if T.TYPE_CHECKING:
-    from ..interpreter.kwargs import ExtractRequired
-
-    class FindInstallationKw(ExtractRequired):
-
-        disabler: bool
-        modules: T.List[str]
-
-
 class PythonModule(ExtensionModule):
 
     @FeatureNew('Python Module', '0.46.0')
     def __init__(self, interpreter: 'Interpreter') -> None:
         super().__init__(interpreter)
+        self.installations: T.Dict[str, ExternalProgram] = {}
         self.methods.update({
             'find_installation': self.find_installation,
         })
+
+    def get_devenv(self) -> T.Optional[EnvironmentVariables]:
+        pythonpath = set()
+        for python in self.installations.values():
+            version = python.info['version']
+            if mesonlib.version_compare(version, '>=3.0'):
+                pythonpath |= python.devenv_pythonpath
+        if pythonpath:
+            env = EnvironmentVariables()
+            env.prepend('PYTHONPATH', list(pythonpath))
+            return env
+        return None
 
     # https://www.python.org/dev/peps/pep-0397/
     @staticmethod
@@ -637,39 +690,7 @@ class PythonModule(ExtensionModule):
         else:
             return None
 
-    @disablerIfNotFound
-    @typed_pos_args('python.find_installation', optargs=[str])
-    @typed_kwargs(
-        'python.find_installation',
-        KwargInfo('required', (bool, UserFeatureOption), default=True),
-        KwargInfo('disabler', bool, default=False, since='0.49.0'),
-        KwargInfo('modules', ContainerTypeInfo(list, str), listify=True, default=[], since='0.51.0'),
-    )
-    def find_installation(self, state: 'ModuleState', args: T.Tuple[T.Optional[str]],
-                          kwargs: 'FindInstallationKw') -> ExternalProgram:
-        feature_check = FeatureNew('Passing "feature" option to find_installation', '0.48.0')
-        disabled, required, feature = extract_required_kwarg(kwargs, state.subproject, feature_check)
-        want_modules = kwargs['modules']
-        found_modules: T.List[str] = []
-        missing_modules: T.List[str] = []
-
-        # FIXME: this code is *full* of sharp corners. It assumes that it's
-        # going to get a string value (or now a list of length 1), of `python2`
-        # or `python3` which is completely nonsense.  On windows the value could
-        # easily be `['py', '-3']`, or `['py', '-3.7']` to get a very specific
-        # version of python. On Linux we might want a python that's not in
-        # $PATH, or that uses a wrapper of some kind.
-        np: T.List[str] = state.environment.lookup_binary_entry(MachineChoice.HOST, 'python') or []
-        fallback = args[0]
-        display_name = fallback or 'python'
-        if not np and fallback is not None:
-            np = [fallback]
-        name_or_path = np[0] if np else None
-
-        if disabled:
-            mlog.log('Program', name_or_path or 'python', 'found:', mlog.red('NO'), '(disabled by:', mlog.bold(feature), ')')
-            return NonExistingExternalProgram()
-
+    def _find_installation_impl(self, state: 'ModuleState', display_name: str, name_or_path: str) -> ExternalProgram:
         if not name_or_path:
             python = PythonExternalProgram('python3', mesonlib.python_command)
         else:
@@ -689,6 +710,49 @@ class PythonModule(ExtensionModule):
             if not python.found() and name_or_path in ['python2', 'python3']:
                 python = PythonExternalProgram('python')
 
+        if python.found() and not python.sanity(state):
+            python = NonExistingExternalProgram()
+
+        return python
+
+    @disablerIfNotFound
+    @typed_pos_args('python.find_installation', optargs=[str])
+    @typed_kwargs(
+        'python.find_installation',
+        KwargInfo('required', (bool, UserFeatureOption), default=True),
+        KwargInfo('disabler', bool, default=False, since='0.49.0'),
+        KwargInfo('modules', ContainerTypeInfo(list, str), listify=True, default=[], since='0.51.0'),
+    )
+    def find_installation(self, state: 'ModuleState', args: T.Tuple[T.Optional[str]],
+                          kwargs: 'FindInstallationKw') -> ExternalProgram:
+        feature_check = FeatureNew('Passing "feature" option to find_installation', '0.48.0')
+        disabled, required, feature = extract_required_kwarg(kwargs, state.subproject, feature_check)
+
+        # FIXME: this code is *full* of sharp corners. It assumes that it's
+        # going to get a string value (or now a list of length 1), of `python2`
+        # or `python3` which is completely nonsense.  On windows the value could
+        # easily be `['py', '-3']`, or `['py', '-3.7']` to get a very specific
+        # version of python. On Linux we might want a python that's not in
+        # $PATH, or that uses a wrapper of some kind.
+        np: T.List[str] = state.environment.lookup_binary_entry(MachineChoice.HOST, 'python') or []
+        fallback = args[0]
+        display_name = fallback or 'python'
+        if not np and fallback is not None:
+            np = [fallback]
+        name_or_path = np[0] if np else None
+
+        if disabled:
+            mlog.log('Program', name_or_path or 'python', 'found:', mlog.red('NO'), '(disabled by:', mlog.bold(feature), ')')
+            return NonExistingExternalProgram()
+
+        python = self.installations.get(name_or_path)
+        if not python:
+            python = self._find_installation_impl(state, display_name, name_or_path)
+            self.installations[name_or_path] = python
+
+        want_modules = kwargs['modules']
+        found_modules: T.List[str] = []
+        missing_modules: T.List[str] = []
         if python.found() and want_modules:
             for mod in want_modules:
                 p, *_ = mesonlib.Popen_safe(
@@ -722,14 +786,7 @@ class PythonModule(ExtensionModule):
                 raise mesonlib.MesonException('{} is missing modules: {}'.format(name_or_path or 'python', ', '.join(missing_modules)))
             return NonExistingExternalProgram()
         else:
-            sane = python.sanity(state)
-
-            if sane:
-                return python
-            else:
-                if required:
-                    raise mesonlib.MesonException(f'{python} is not a valid python or it is missing distutils')
-                return NonExistingExternalProgram()
+            return python
 
         raise mesonlib.MesonBugException('Unreachable code was reached (PythonModule.find_installation).')
 

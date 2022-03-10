@@ -418,7 +418,7 @@ methods:
       to the list of environments that will be applied when using [`meson devenv`](Commands.md#devenv)
       command line.
 
-      This is useful for developpers who wish to use the project without
+      This is useful for developers who wish to use the project without
       installing it, it is often needed to set for example the path to plugins
       directory, etc. Alternatively, a list or dictionary can be passed as first
       argument.
@@ -444,5 +444,25 @@ methods:
 
     posargs:
       env:
-        type: env
-        description: The [[@env]] object to add.
+        type: env | str | list[str] | dict[str] | dict[list[str]]
+        description: |
+          The [[@env]] object to add.
+          Since *0.62.0* list of strings is allowed in dictionnary values. In that
+          case values are joined using the separator.
+    kwargs:
+      separator:
+        type: str
+        since: 0.62.0
+        description: |
+          The separator to use for the initial values defined in
+          the first positional argument. If not explicitly specified, the default
+          path separator for the host operating system will be used, i.e. ';' for
+          Windows and ':' for UNIX/POSIX systems.
+      method:
+        type: str
+        since: 0.62.0
+        description: |
+          Must be one of 'set', 'prepend', or 'append'
+          (defaults to 'set'). Controls if initial values defined in the first
+          positional argument are prepended, appended or repace the current value
+          of the environment variable.

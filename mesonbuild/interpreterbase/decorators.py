@@ -11,12 +11,11 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from __future__ import annotations
 
 from .. import mesonlib, mlog
-from .baseobjects import TV_func, TYPE_var, TYPE_kwargs
 from .disabler import Disabler
 from .exceptions import InterpreterException, InvalidArguments
-from .operator import MesonOperator
 from ._unholder import _unholder
 
 from dataclasses import dataclass
@@ -25,9 +24,21 @@ import abc
 import itertools
 import copy
 import typing as T
+
 if T.TYPE_CHECKING:
+    from typing_extensions import Protocol
+
     from .. import mparser
+    from .baseobjects import InterpreterObject, TV_func, TYPE_var, TYPE_kwargs
     from .interpreterbase import SubProject
+    from .operator import MesonOperator
+
+    _TV_IntegerObject = T.TypeVar('_TV_IntegerObject', bound=InterpreterObject, contravariant=True)
+    _TV_ARG1 = T.TypeVar('_TV_ARG1', bound=TYPE_var, contravariant=True)
+
+    class FN_Operator(Protocol[_TV_IntegerObject, _TV_ARG1]):
+        def __call__(s, self: _TV_IntegerObject, other: _TV_ARG1) -> TYPE_var: ...
+    _TV_FN_Operator = T.TypeVar('_TV_FN_Operator', bound=FN_Operator)
 
 def get_callee_args(wrapped_args: T.Sequence[T.Any]) -> T.Tuple['mparser.BaseNode', T.List['TYPE_var'], 'TYPE_kwargs', 'SubProject']:
     # First argument could be InterpreterBase, InterpreterObject or ModuleObject.
@@ -51,7 +62,7 @@ def noPosargs(f: TV_func) -> TV_func:
         if args:
             raise InvalidArguments('Function does not take positional arguments.')
         return f(*wrapped_args, **wrapped_kwargs)
-    return T.cast(TV_func, wrapped)
+    return T.cast('TV_func', wrapped)
 
 def noKwargs(f: TV_func) -> TV_func:
     @wraps(f)
@@ -60,7 +71,7 @@ def noKwargs(f: TV_func) -> TV_func:
         if kwargs:
             raise InvalidArguments('Function does not take keyword arguments.')
         return f(*wrapped_args, **wrapped_kwargs)
-    return T.cast(TV_func, wrapped)
+    return T.cast('TV_func', wrapped)
 
 def stringArgs(f: TV_func) -> TV_func:
     @wraps(f)
@@ -73,7 +84,7 @@ def stringArgs(f: TV_func) -> TV_func:
             mlog.debug('Element not a string:', str(args))
             raise InvalidArguments('Arguments must be strings.')
         return f(*wrapped_args, **wrapped_kwargs)
-    return T.cast(TV_func, wrapped)
+    return T.cast('TV_func', wrapped)
 
 def noArgsFlattening(f: TV_func) -> TV_func:
     setattr(f, 'no-args-flattening', True)  # noqa: B010
@@ -88,7 +99,7 @@ def unholder_return(f: TV_func) -> T.Callable[..., TYPE_var]:
     def wrapped(*wrapped_args: T.Any, **wrapped_kwargs: T.Any) -> T.Any:
         res = f(*wrapped_args, **wrapped_kwargs)
         return _unholder(res)
-    return T.cast(T.Callable[..., TYPE_var], wrapped)
+    return T.cast('T.Callable[..., TYPE_var]', wrapped)
 
 def disablerIfNotFound(f: TV_func) -> TV_func:
     @wraps(f)
@@ -99,7 +110,7 @@ def disablerIfNotFound(f: TV_func) -> TV_func:
         if disabler and not ret.found():
             return Disabler()
         return ret
-    return T.cast(TV_func, wrapped)
+    return T.cast('TV_func', wrapped)
 
 @dataclass(repr=False, eq=False)
 class permittedKwargs:
@@ -114,18 +125,7 @@ class permittedKwargs:
                 ustr = ', '.join([f'"{u}"' for u in sorted(unknowns)])
                 raise InvalidArguments(f'Got unknown keyword arguments {ustr}')
             return f(*wrapped_args, **wrapped_kwargs)
-        return T.cast(TV_func, wrapped)
-
-if T.TYPE_CHECKING:
-    from .baseobjects import InterpreterObject
-    from typing_extensions import Protocol
-
-    _TV_IntegerObject = T.TypeVar('_TV_IntegerObject', bound=InterpreterObject, contravariant=True)
-    _TV_ARG1 = T.TypeVar('_TV_ARG1', bound=TYPE_var, contravariant=True)
-
-    class FN_Operator(Protocol[_TV_IntegerObject, _TV_ARG1]):
-        def __call__(s, self: _TV_IntegerObject, other: _TV_ARG1) -> TYPE_var: ...
-    _TV_FN_Operator = T.TypeVar('_TV_FN_Operator', bound=FN_Operator)
+        return T.cast('TV_func', wrapped)
 
 def typed_operator(operator: MesonOperator,
                    types: T.Union[T.Type, T.Tuple[T.Type, ...]]) -> T.Callable[['_TV_FN_Operator'], '_TV_FN_Operator']:
@@ -276,7 +276,7 @@ def typed_pos_args(name: str, *types: T.Union[T.Type, T.Tuple[T.Type, ...]],
                 nargs[i] = tuple(args)
             return f(*nargs, **wrapped_kwargs)
 
-        return T.cast(TV_func, wrapper)
+        return T.cast('TV_func', wrapper)
     return inner
 
 
@@ -521,7 +521,7 @@ def typed_kwargs(name: str, *types: KwargInfo) -> T.Callable[..., T.Any]:
 
             node, _, _kwargs, subproject = get_callee_args(wrapped_args)
             # Cast here, as the convertor function may place something other than a TYPE_var in the kwargs
-            kwargs = T.cast(T.Dict[str, object], _kwargs)
+            kwargs = T.cast('T.Dict[str, object]', _kwargs)
 
             all_names = {t.name for t in types}
             unknowns = set(kwargs).difference(all_names)
@@ -572,7 +572,7 @@ def typed_kwargs(name: str, *types: KwargInfo) -> T.Callable[..., T.Any]:
                     kwargs[info.name] = info.convertor(kwargs[info.name])
 
             return f(*wrapped_args, **wrapped_kwargs)
-        return T.cast(TV_func, wrapper)
+        return T.cast('TV_func', wrapper)
     return inner
 
 
@@ -583,11 +583,10 @@ class FeatureCheckBase(metaclass=abc.ABCMeta):
     feature_registry: T.ClassVar[T.Dict[str, T.Dict[str, T.Set[T.Tuple[str, T.Optional['mparser.BaseNode']]]]]]
     emit_notice = False
 
-    def __init__(self, feature_name: str, feature_version: str, extra_message: str = '', location: T.Optional['mparser.BaseNode'] = None):
+    def __init__(self, feature_name: str, feature_version: str, extra_message: str = ''):
         self.feature_name = feature_name  # type: str
         self.feature_version = feature_version    # type: str
         self.extra_message = extra_message  # type: str
-        self.location = location
 
     @staticmethod
     def get_target_version(subproject: str) -> str:
@@ -601,7 +600,7 @@ class FeatureCheckBase(metaclass=abc.ABCMeta):
     def check_version(target_version: str, feature_version: str) -> bool:
         pass
 
-    def use(self, subproject: 'SubProject') -> None:
+    def use(self, subproject: 'SubProject', location: T.Optional['mparser.BaseNode'] = None) -> None:
         tv = self.get_target_version(subproject)
         # No target version
         if tv == '':
@@ -616,7 +615,7 @@ class FeatureCheckBase(metaclass=abc.ABCMeta):
         if self.feature_version not in register:
             register[self.feature_version] = set()
 
-        feature_key = (self.feature_name, self.location)
+        feature_key = (self.feature_name, location)
         if feature_key in register[self.feature_version]:
             # Don't warn about the same feature multiple times
             # FIXME: This is needed to prevent duplicate warnings, but also
@@ -626,7 +625,7 @@ class FeatureCheckBase(metaclass=abc.ABCMeta):
         # Target version is new enough, don't warn even if it is registered for notice
         if self.check_version(tv, self.feature_version):
             return
-        self.log_usage_warning(tv)
+        self.log_usage_warning(tv, location)
 
     @classmethod
     def report(cls, subproject: str) -> None:
@@ -646,7 +645,7 @@ class FeatureCheckBase(metaclass=abc.ABCMeta):
         if '\n' in warning_str:
             mlog.warning(warning_str)
 
-    def log_usage_warning(self, tv: str) -> None:
+    def log_usage_warning(self, tv: str, location: T.Optional['mparser.BaseNode']) -> None:
         raise InterpreterException('log_usage_warning not implemented')
 
     @staticmethod
@@ -663,16 +662,15 @@ class FeatureCheckBase(metaclass=abc.ABCMeta):
             node, _, _, subproject = get_callee_args(wrapped_args)
             if subproject is None:
                 raise AssertionError(f'{wrapped_args!r}')
-            self.location = node
-            self.use(subproject)
+            self.use(subproject, node)
             return f(*wrapped_args, **wrapped_kwargs)
-        return T.cast(TV_func, wrapped)
+        return T.cast('TV_func', wrapped)
 
     @classmethod
     def single_use(cls, feature_name: str, version: str, subproject: 'SubProject',
                    extra_message: str = '', location: T.Optional['mparser.BaseNode'] = None) -> None:
         """Oneline version that instantiates and calls use()."""
-        cls(feature_name, version, extra_message, location).use(subproject)
+        cls(feature_name, version, extra_message).use(subproject, location)
 
 
 class FeatureNew(FeatureCheckBase):
@@ -695,7 +693,7 @@ class FeatureNew(FeatureCheckBase):
     def get_notice_str_prefix(tv: str) -> str:
         return ''
 
-    def log_usage_warning(self, tv: str) -> None:
+    def log_usage_warning(self, tv: str, location: T.Optional['mparser.BaseNode']) -> None:
         args = [
             'Project targeting', f"'{tv}'",
             'but tried to use feature introduced in',
@@ -704,7 +702,7 @@ class FeatureNew(FeatureCheckBase):
         ]
         if self.extra_message:
             args.append(self.extra_message)
-        mlog.warning(*args, location=self.location)
+        mlog.warning(*args, location=location)
 
 class FeatureDeprecated(FeatureCheckBase):
     """Checks for deprecated features"""
@@ -728,7 +726,7 @@ class FeatureDeprecated(FeatureCheckBase):
     def get_notice_str_prefix(tv: str) -> str:
         return 'Future-deprecated features used:'
 
-    def log_usage_warning(self, tv: str) -> None:
+    def log_usage_warning(self, tv: str, location: T.Optional['mparser.BaseNode']) -> None:
         args = [
             'Project targeting', f"'{tv}'",
             'but tried to use feature deprecated since',
@@ -737,7 +735,7 @@ class FeatureDeprecated(FeatureCheckBase):
         ]
         if self.extra_message:
             args.append(self.extra_message)
-        mlog.warning(*args, location=self.location)
+        mlog.warning(*args, location=location)
 
 
 # This cannot be a dataclass due to https://github.com/python/mypy/issues/5374
@@ -749,12 +747,11 @@ class FeatureCheckKwargsBase(metaclass=abc.ABCMeta):
         pass
 
     def __init__(self, feature_name: str, feature_version: str,
-                 kwargs: T.List[str], extra_message: T.Optional[str] = None, location: T.Optional['mparser.BaseNode'] = None):
+                 kwargs: T.List[str], extra_message: T.Optional[str] = None):
         self.feature_name = feature_name
         self.feature_version = feature_version
         self.kwargs = kwargs
         self.extra_message = extra_message
-        self.location = location
 
     def __call__(self, f: TV_func) -> TV_func:
         @wraps(f)
@@ -769,7 +766,7 @@ class FeatureCheckKwargsBase(metaclass=abc.ABCMeta):
                 self.feature_check_class.single_use(
                         name, self.feature_version, subproject, self.extra_message, node)
             return f(*wrapped_args, **wrapped_kwargs)
-        return T.cast(TV_func, wrapped)
+        return T.cast('TV_func', wrapped)
 
 class FeatureNewKwargs(FeatureCheckKwargsBase):
     feature_check_class = FeatureNew

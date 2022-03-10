@@ -13,6 +13,8 @@
 # limitations under the License.
 
 """A library of random helper functionality."""
+
+from __future__ import annotations
 from pathlib import Path
 import argparse
 import enum
@@ -33,6 +35,8 @@ import copy
 from mesonbuild import mlog
 
 if T.TYPE_CHECKING:
+    from typing_extensions import Literal
+
     from .._typing import ImmutableListProtocol
     from ..build import ConfigurationData
     from ..coredata import KeyedOptionDictType, UserOption
@@ -245,7 +249,7 @@ def is_ascii_string(astring: T.Union[str, bytes]) -> bool:
     return True
 
 
-def check_direntry_issues(direntry_array: T.Union[T.List[T.Union[str, bytes]], str, bytes]) -> None:
+def check_direntry_issues(direntry_array: T.Union[T.Iterable[T.Union[str, bytes]], str, bytes]) -> None:
     import locale
     # Warn if the locale is not UTF-8. This can cause various unfixable issues
     # such as os.stat not being able to decode filenames with unicode in them.
@@ -253,7 +257,7 @@ def check_direntry_issues(direntry_array: T.Union[T.List[T.Union[str, bytes]], s
     # encoding, so we can just warn about it.
     e = locale.getpreferredencoding()
     if e.upper() != 'UTF-8' and not is_windows():
-        if not isinstance(direntry_array, list):
+        if isinstance(direntry_array, (str, bytes)):
             direntry_array = [direntry_array]
         for de in direntry_array:
             if is_ascii_string(de):
@@ -886,7 +890,7 @@ def version_compare_condition_with_min(condition: str, minimum: str) -> bool:
     if re.match(r'^\d+.\d+$', condition):
         condition += '.0'
 
-    return T.cast(bool, cmpop(Version(minimum), Version(condition)))
+    return T.cast('bool', cmpop(Version(minimum), Version(condition)))
 
 def search_version(text: str) -> str:
     # Usually of the type 4.1.4 but compiler output may contain
@@ -1091,14 +1095,14 @@ def join_args(args: T.Iterable[str]) -> str:
     return ' '.join([quote_arg(x) for x in args])
 
 
-def do_replacement(regex: T.Pattern[str], line: str, variable_format: str,
+def do_replacement(regex: T.Pattern[str], line: str,
+                   variable_format: Literal['meson', 'cmake', 'cmake@'],
                    confdata: T.Union[T.Dict[str, T.Tuple[str, T.Optional[str]]], 'ConfigurationData']) -> T.Tuple[str, T.Set[str]]:
     missing_variables = set()  # type: T.Set[str]
     if variable_format == 'cmake':
         start_tag = '${'
         backslash_tag = '\\${'
     else:
-        assert variable_format in ['meson', 'cmake@']
         start_tag = '@'
         backslash_tag = '\\@'
 
@@ -1129,7 +1133,8 @@ def do_replacement(regex: T.Pattern[str], line: str, variable_format: str,
             return var_str
     return re.sub(regex, variable_replace, line), missing_variables
 
-def do_define(regex: T.Pattern[str], line: str, confdata: 'ConfigurationData', variable_format: str) -> str:
+def do_define(regex: T.Pattern[str], line: str, confdata: 'ConfigurationData',
+              variable_format: Literal['meson', 'cmake', 'cmake@']) -> str:
     def get_cmake_define(line: str, confdata: 'ConfigurationData') -> str:
         arr = line.split()
         define_value = []
@@ -1168,18 +1173,17 @@ def do_define(regex: T.Pattern[str], line: str, confdata: 'ConfigurationData', v
     else:
         raise MesonException('#mesondefine argument "%s" is of unknown type.' % varname)
 
-def get_variable_regex(variable_format: str = 'meson') -> T.Pattern[str]:
+def get_variable_regex(variable_format: Literal['meson', 'cmake', 'cmake@'] = 'meson') -> T.Pattern[str]:
     # Only allow (a-z, A-Z, 0-9, _, -) as valid characters for a define
     # Also allow escaping '@' with '\@'
-    if variable_format in ['meson', 'cmake@']:
+    if variable_format in {'meson', 'cmake@'}:
         regex = re.compile(r'(?:\\\\)+(?=\\?@)|\\@|@([-a-zA-Z0-9_]+)@')
-    elif variable_format == 'cmake':
-        regex = re.compile(r'(?:\\\\)+(?=\\?\$)|\\\${|\${([-a-zA-Z0-9_]+)}')
     else:
-        raise MesonException(f'Format "{variable_format}" not handled')
+        regex = re.compile(r'(?:\\\\)+(?=\\?\$)|\\\${|\${([-a-zA-Z0-9_]+)}')
     return regex
 
-def do_conf_str(src: str, data: list, confdata: 'ConfigurationData', variable_format: str,
+def do_conf_str(src: str, data: list, confdata: 'ConfigurationData',
+                variable_format: Literal['meson', 'cmake', 'cmake@'],
                 encoding: str = 'utf-8') -> T.Tuple[T.List[str], T.Set[str], bool]:
     def line_is_valid(line: str, variable_format: str) -> bool:
         if variable_format == 'meson':
@@ -1216,7 +1220,8 @@ def do_conf_str(src: str, data: list, confdata: 'ConfigurationData', variable_fo
 
     return result, missing_variables, confdata_useless
 
-def do_conf_file(src: str, dst: str, confdata: 'ConfigurationData', variable_format: str,
+def do_conf_file(src: str, dst: str, confdata: 'ConfigurationData',
+                 variable_format: Literal['meson', 'cmake', 'cmake@'],
                  encoding: str = 'utf-8') -> T.Tuple[T.Set[str], bool]:
     try:
         with open(src, encoding=encoding, newline='') as f:
@@ -1249,15 +1254,13 @@ CONF_NASM_PRELUDE = '''; Autogenerated by the Meson build system.
 
 '''
 
-def dump_conf_header(ofilename: str, cdata: 'ConfigurationData', output_format: str) -> None:
+def dump_conf_header(ofilename: str, cdata: 'ConfigurationData', output_format: T.Literal['c', 'nasm']) -> None:
     if output_format == 'c':
         prelude = CONF_C_PRELUDE
         prefix = '#'
-    elif output_format == 'nasm':
+    else:
         prelude = CONF_NASM_PRELUDE
         prefix = '%'
-    else:
-        raise MesonBugException(f'Undefined output_format: "{output_format}"')
 
     ofilename_tmp = ofilename + '~'
     with open(ofilename_tmp, 'w', encoding='utf-8') as ofile:
@@ -1333,7 +1336,7 @@ def typeslistify(item: 'T.Union[_T, T.Sequence[_T]]',
     list of items all of which are of type @types
     '''
     if isinstance(item, types):
-        item = T.cast(T.List[_T], [item])
+        item = T.cast('T.List[_T]', [item])
     if not isinstance(item, list):
         raise MesonException('Item must be a list or one of {!r}, not {!r}'.format(types, type(item)))
     for i in item:

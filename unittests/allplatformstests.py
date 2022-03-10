@@ -3376,9 +3376,21 @@ class AllPlatformTests(BasePlatformTests):
         ## Validate commands
 
         md_commands = {k for k,v in md_command_sections.items()}
-
         help_output = self._run(self.meson_command + ['--help'])
-        help_commands = {c.strip() for c in re.findall(r'usage:(?:.+)?{((?:[a-z]+,*)+?)}', help_output, re.MULTILINE|re.DOTALL)[0].split(',')}
+        # Python's argument parser might put the command list to its own line. Or it might not.
+        self.assertTrue(help_output.startswith('usage: '))
+        lines = help_output.split('\n')
+        line1 = lines[0]
+        line2 = lines[1]
+        if '{' in line1:
+            cmndline = line1
+        else:
+            self.assertIn('{', line2)
+            cmndline = line2
+        cmndstr = cmndline.split('{')[1]
+        self.assertIn('}', cmndstr)
+        help_commands = set(cmndstr.split('}')[0].split(','))
+        self.assertTrue(len(help_commands) > 0, 'Must detect some command names.')
 
         self.assertEqual(md_commands | {'help'}, help_commands, f'Doc file: `{doc_path}`')
 
@@ -3886,10 +3898,12 @@ class AllPlatformTests(BasePlatformTests):
                 Path(installpath, 'usr/bin/both2.pdb'),
                 Path(installpath, 'usr/bin/bothcustom.pdb'),
                 Path(installpath, 'usr/bin/shared.pdb'),
+                Path(installpath, 'usr/bin/versioned_shared-1.pdb'),
                 Path(installpath, 'usr/lib/both.lib'),
                 Path(installpath, 'usr/lib/both2.lib'),
                 Path(installpath, 'usr/lib/bothcustom.lib'),
                 Path(installpath, 'usr/lib/shared.lib'),
+                Path(installpath, 'usr/lib/versioned_shared.lib'),
             }
         elif is_windows() or is_cygwin():
             expected_devel |= {
@@ -3897,6 +3911,11 @@ class AllPlatformTests(BasePlatformTests):
                 Path(installpath, 'usr/lib/libboth2.dll.a'),
                 Path(installpath, 'usr/lib/libshared.dll.a'),
                 Path(installpath, 'usr/lib/libbothcustom.dll.a'),
+                Path(installpath, 'usr/lib/libversioned_shared.dll.a'),
+            }
+        else:
+            expected_devel |= {
+                Path(installpath, 'usr/' + shared_lib_name('versioned_shared')),
             }
 
         expected_runtime = expected_common | {
@@ -3907,6 +3926,20 @@ class AllPlatformTests(BasePlatformTests):
             Path(installpath, 'usr/' + shared_lib_name('both')),
             Path(installpath, 'usr/' + shared_lib_name('both2')),
         }
+
+        if is_windows() or is_cygwin():
+            expected_runtime |= {
+                Path(installpath, 'usr/' + shared_lib_name('versioned_shared-1')),
+            }
+        elif is_osx():
+            expected_runtime |= {
+                Path(installpath, 'usr/' + shared_lib_name('versioned_shared.1')),
+            }
+        else:
+            expected_runtime |= {
+                Path(installpath, 'usr/' + shared_lib_name('versioned_shared') + '.1'),
+                Path(installpath, 'usr/' + shared_lib_name('versioned_shared') + '.1.2.3'),
+            }
 
         expected_custom = expected_common | {
             Path(installpath, 'usr/share'),

@@ -30,7 +30,7 @@ from . import mconf, mdist, minit, minstall, mintro, msetup, mtest, rewriter, ms
 from .mesonlib import MesonException, MesonBugException
 from .environment import detect_msys2_arch
 from .wrap import wraptool
-
+from .scripts import env2mfile
 
 # Note: when adding arguments, please also add them to the completion
 # scripts in $MESONSRC/data/shell-completions/
@@ -70,6 +70,8 @@ class CommandLineParser:
                          help_msg='Build the project')
         self.add_command('devenv', mdevenv.add_arguments, mdevenv.run,
                          help_msg='Run commands in developer environment')
+        self.add_command('env2mfile', env2mfile.add_arguments, env2mfile.run,
+                         help_msg='Convert current environment to a cross or native file')
 
         # Hidden commands
         self.add_command('runpython', self.add_runpython_arguments, self.run_runpython_command,
@@ -155,21 +157,23 @@ class CommandLineParser:
             if os.environ.get('MESON_FORCE_BACKTRACE'):
                 raise
             return 1
-        except PermissionError:
-            if os.environ.get('MESON_FORCE_BACKTRACE'):
-                raise
-            traceback.print_exc()
-            return 2
         except Exception as e:
             if os.environ.get('MESON_FORCE_BACKTRACE'):
                 raise
             traceback.print_exc()
-            msg = 'Unhandled python exception'
-            if all(getattr(e, a, None) is not None for a in ['file', 'lineno', 'colno']):
-                e = MesonBugException(msg, e.file, e.lineno, e.colno) # type: ignore
-            else:
-                e = MesonBugException(msg)
-            mlog.exception(e)
+            # We assume many types of traceback are Meson logic bugs, but most
+            # particularly anything coming from the interpreter during `setup`.
+            # Some things definitely aren't:
+            # - PermissionError is always a problem in the user environment
+            # - runpython doesn't run Meson's own code, even though it is
+            #   dispatched by our run()
+            if command != 'runpython' and not isinstance(e, PermissionError):
+                msg = 'Unhandled python exception'
+                if all(getattr(e, a, None) is not None for a in ['file', 'lineno', 'colno']):
+                    e = MesonBugException(msg, e.file, e.lineno, e.colno) # type: ignore
+                else:
+                    e = MesonBugException(msg)
+                mlog.exception(e)
             return 2
         finally:
             if pending_python_deprecation_notice:
@@ -217,6 +221,11 @@ def run(original_args, mainfile):
         print(f'You have python {sys.version}.')
         print('Please update your environment')
         return 1
+
+    if sys.version_info >= (3, 10) and os.environ.get('MESON_RUNNING_IN_PROJECT_TESTS'):
+        # workaround for https://bugs.python.org/issue34624
+        import warnings
+        warnings.filterwarnings('error', category=EncodingWarning, module='mesonbuild')
 
     # Meson gets confused if stdout can't output Unicode, if the
     # locale isn't Unicode, just force stdout to accept it. This tries

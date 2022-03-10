@@ -255,8 +255,7 @@ def _get_compilers(env: 'Environment', lang: str, for_machine: MachineChoice) ->
 def _handle_exceptions(
         exceptions: T.Mapping[str, T.Union[Exception, str]],
         binaries: T.List[T.List[str]],
-        bintype: str = 'compiler'
-    ) -> T.NoReturn:
+        bintype: str = 'compiler') -> T.NoReturn:
     errmsg = f'Unknown {bintype}(s): {binaries}'
     if exceptions:
         errmsg += '\nThe following exception(s) were encountered:'
@@ -392,7 +391,7 @@ def _detect_c_or_cpp_compiler(env: 'Environment', lang: str, for_machine: Machin
                 watcom_cls = [sanitize(os.path.join(os.environ['WATCOM'], 'BINNT', 'cl')),
                               sanitize(os.path.join(os.environ['WATCOM'], 'BINNT', 'cl.exe')),
                               sanitize(os.path.join(os.environ['WATCOM'], 'BINNT64', 'cl')),
-                              sanitize(os.path.join(os.environ['WATCOM'], 'BINNT64', 'cl.exe')),]
+                              sanitize(os.path.join(os.environ['WATCOM'], 'BINNT64', 'cl.exe'))]
                 found_cl = sanitize(shutil.which('cl'))
                 if found_cl in watcom_cls:
                     mlog.debug('Skipping unsupported cl.exe clone at:', found_cl)
@@ -613,7 +612,7 @@ def _detect_c_or_cpp_compiler(env: 'Environment', lang: str, for_machine: Machin
                 ccache + compiler, version, for_machine, is_cross, info,
                 exe_wrap, full_version=full_version, linker=l)
         if 'TMS320C2000 C/C++' in out or 'MSP430 C/C++' in out or 'TI ARM C/C++ Compiler' in out:
-            lnk : T.Union[T.Type[C2000DynamicLinker], T.Type[TIDynamicLinker]]
+            lnk: T.Union[T.Type[C2000DynamicLinker], T.Type[TIDynamicLinker]]
             if 'TMS320C2000 C/C++' in out:
                 cls = C2000CCompiler if lang == 'c' else C2000CPPCompiler
                 lnk = C2000DynamicLinker

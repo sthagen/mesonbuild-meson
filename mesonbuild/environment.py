@@ -47,6 +47,7 @@ from functools import lru_cache
 from mesonbuild import envconfig
 
 if T.TYPE_CHECKING:
+    import argparse
     from configparser import ConfigParser
 
     from .wrap.wrap import Resolver
@@ -54,9 +55,6 @@ if T.TYPE_CHECKING:
 build_filename = 'meson.build'
 
 CompilersDict = T.Dict[str, Compiler]
-
-if T.TYPE_CHECKING:
-    import argparse
 
 
 def _get_env_var(for_machine: MachineChoice, is_cross: bool, var_name: str) -> T.Optional[str]:
@@ -813,6 +811,10 @@ class Environment:
         if m.is_windows() or m.is_cygwin():
             return self.get_bindir()
         return self.get_libdir()
+
+    def get_jar_dir(self) -> str:
+        """Install dir for JAR files"""
+        return f"{self.get_datadir()}/java"
 
     def get_static_lib_dir(self) -> str:
         "Install dir for the static library"

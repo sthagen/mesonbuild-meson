@@ -13,7 +13,7 @@
 # limitations under the License.
 
 from __future__ import annotations
-from collections import OrderedDict
+from collections import defaultdict, OrderedDict
 from dataclasses import dataclass, field
 from functools import lru_cache
 import copy
@@ -46,6 +46,7 @@ from .linkers import StaticLinker
 from .interpreterbase import FeatureNew, FeatureDeprecated
 
 if T.TYPE_CHECKING:
+    from typing_extensions import Literal
     from ._typing import ImmutableListProtocol, ImmutableSetProtocol
     from .backend.backends import Backend, ExecutableSerialisation
     from .interpreter.interpreter import Test, SourceOutputs, Interpreter
@@ -254,7 +255,7 @@ class Build:
         self.test_setups: T.Dict[str, TestSetup] = {}
         self.test_setup_default_name = None
         self.find_overrides: T.Dict[str, T.Union['Executable', programs.ExternalProgram, programs.OverrideProgram]] = {}
-        self.searched_programs = set() # The list of all programs that have been searched for.
+        self.searched_programs: T.Set[str] = set() # The list of all programs that have been searched for.
 
         # If we are doing a cross build we need two caches, if we're doing a
         # build == host compilation the both caches should point to the same place.
@@ -278,7 +279,7 @@ class Build:
                 custom_targets[name] = t
         return custom_targets
 
-    def copy(self):
+    def copy(self) -> Build:
         other = Build(self.environment)
         for k, v in self.__dict__.items():
             if isinstance(v, (list, dict, set, OrderedDict)):
@@ -287,11 +288,11 @@ class Build:
                 other.__dict__[k] = v
         return other
 
-    def merge(self, other):
+    def merge(self, other: Build) -> None:
         for k, v in other.__dict__.items():
             self.__dict__[k] = v
 
-    def ensure_static_linker(self, compiler):
+    def ensure_static_linker(self, compiler: Compiler) -> None:
         if self.static_linker[compiler.for_machine] is None and compiler.needs_static_linker():
             self.static_linker[compiler.for_machine] = detect_static_linker(self.environment, compiler)
 
@@ -451,15 +452,19 @@ class ExtractedObjects(HoldableObject):
             for source in self.get_sources(self.srclist, self.genlist)
         ]
 
+EnvInitValueType = T.Dict[str, T.Union[str, T.List[str]]]
+
 class EnvironmentVariables(HoldableObject):
-    def __init__(self, values: T.Optional[T.Dict[str, str]] = None) -> None:
+    def __init__(self, values: T.Optional[EnvValueType] = None,
+                 init_method: Literal['set', 'prepend', 'append'] = 'set', separator: str = os.pathsep) -> None:
         self.envvars: T.List[T.Tuple[T.Callable[[T.Dict[str, str], str, T.List[str], str], str], str, T.List[str], str]] = []
         # The set of all env vars we have operations for. Only used for self.has_name()
         self.varnames: T.Set[str] = set()
 
         if values:
+            init_func = getattr(self, init_method)
             for name, value in values.items():
-                self.set(name, [value])
+                init_func(name, listify(value), separator)
 
     def __repr__(self) -> str:
         repr_str = "<{0}: {1}>"
@@ -475,6 +480,9 @@ class EnvironmentVariables(HoldableObject):
 
     def has_name(self, name: str) -> bool:
         return name in self.varnames
+
+    def get_names(self) -> T.Set[str]:
+        return self.varnames
 
     def set(self, name: str, values: T.List[str], separator: str = os.pathsep) -> None:
         self.varnames.add(name)
@@ -525,7 +533,7 @@ class Target(HoldableObject):
             mlog.warning(textwrap.dedent(f'''\
                 Target "{self.name}" has a path separator in its name.
                 This is not supported, it can cause unexpected failures and will become
-                a hard error in the future.\
+                a hard error in the future.
             '''))
         self.install = False
         self.build_always_stale = False
@@ -649,7 +657,7 @@ class Target(HoldableObject):
         # In this case we have an already parsed and ready to go dictionary
         # provided by typed_kwargs
         if isinstance(opts, dict):
-            return T.cast(T.Dict[OptionKey, str], opts)
+            return T.cast('T.Dict[OptionKey, str]', opts)
 
         result: T.Dict[OptionKey, str] = {}
         overrides = stringlistify(opts)
@@ -702,7 +710,7 @@ class BuildTarget(Target):
         self.extra_args: T.Dict[str, T.List['FileOrString']] = {}
         self.sources: T.List[File] = []
         self.generated: T.List['GeneratedTypes'] = []
-        self.d_features = {}
+        self.d_features = defaultdict(list)
         self.pic = False
         self.pie = False
         # Track build_rpath entries so we can remove them at install time
@@ -1059,7 +1067,7 @@ class BuildTarget(Target):
                     is reserved for libraries built as part of this project. External
                     libraries must be passed using the dependencies keyword argument
                     instead, because they are conceptually "external dependencies",
-                    just like those detected with the dependency() function.\
+                    just like those detected with the dependency() function.
                 '''))
             self.link(linktarget)
         lwhole = extract_as_list(kwargs, 'link_whole')
@@ -1084,7 +1092,7 @@ class BuildTarget(Target):
 
         dlist = stringlistify(kwargs.get('d_args', []))
         self.add_compiler_args('d', dlist)
-        dfeatures = dict()
+        dfeatures = defaultdict(list)
         dfeature_unittest = kwargs.get('d_unittest', False)
         if dfeature_unittest:
             dfeatures['unittest'] = dfeature_unittest
@@ -1112,7 +1120,7 @@ class BuildTarget(Target):
                 mlog.warning(textwrap.dedent('''\
                     Please do not define rpath with a linker argument, use install_rpath
                     or build_rpath properties instead.
-                    This will become a hard error in a future Meson release.\
+                    This will become a hard error in a future Meson release.
                 '''))
         self.process_link_depends(kwargs.get('link_depends', []), environment)
         # Target-specific include dirs must be added BEFORE include dirs from
@@ -1293,6 +1301,13 @@ class BuildTarget(Target):
         for dep in deps:
             if dep in self.added_deps:
                 continue
+
+            dep_d_features = dep.d_features
+
+            for feature in ('versions', 'import_dirs'):
+                if feature in dep_d_features:
+                    self.d_features[feature].extend(dep_d_features[feature])
+
             if isinstance(dep, dependencies.InternalDependency):
                 # Those parts that are internal.
                 self.process_sourcelist(dep.sources)
@@ -1307,7 +1322,7 @@ class BuildTarget(Target):
                                                               [],
                                                               dep.get_compile_args(),
                                                               dep.get_link_args(),
-                                                              [], [], [], [], {})
+                                                              [], [], [], [], {}, [], [])
                     self.external_deps.append(extpart)
                 # Deps of deps.
                 self.add_deps(dep.ext_deps)
@@ -1345,8 +1360,8 @@ You probably should put it in link_with instead.''')
                 if isinstance(t, (CustomTarget, CustomTargetIndex)):
                     if not t.should_install():
                         mlog.warning(f'Try to link an installed static library target {self.name} with a'
-                                      'custom target that is not installed, this might cause problems'
-                                      'when you try to use this static library')
+                                     'custom target that is not installed, this might cause problems'
+                                     'when you try to use this static library')
                 elif t.is_internal():
                     # When we're a static library and we link_with to an
                     # internal/convenience library, promote to link_whole.
@@ -1456,8 +1471,8 @@ You probably should put it in link_with instead.''')
         else:
             self.extra_args[language] = args
 
-    def get_aliases(self) -> T.Dict[str, str]:
-        return {}
+    def get_aliases(self) -> T.List[T.Tuple[str, str, str]]:
+        return []
 
     def get_langs_used_by_deps(self) -> T.List[str]:
         '''
@@ -1600,12 +1615,12 @@ You probably should put it in link_with instead.''')
                     link_target.force_soname = True
                 else:
                     mlog.deprecation(f'target {self.name} links against shared module {link_target.name}, which is incorrect.'
-                            '\n             '
-                            f'This will be an error in the future, so please use shared_library() for {link_target.name} instead.'
-                            '\n             '
-                            f'If shared_module() was used for {link_target.name} because it has references to undefined symbols,'
-                            '\n             '
-                            'use shared_libary() with `override_options: [\'b_lundef=false\']` instead.')
+                                     '\n             '
+                                     f'This will be an error in the future, so please use shared_library() for {link_target.name} instead.'
+                                     '\n             '
+                                     f'If shared_module() was used for {link_target.name} because it has references to undefined symbols,'
+                                     '\n             '
+                                     'use shared_libary() with `override_options: [\'b_lundef=false\']` instead.')
                     link_target.force_soname = True
 
 class Generator(HoldableObject):
@@ -1967,8 +1982,8 @@ class SharedLibrary(BuildTarget):
                 mlog.debug('Defaulting Rust dynamic library target crate type to "dylib"')
                 self.rust_crate_type = 'dylib'
             # Don't let configuration proceed with a non-dynamic crate type
-            elif self.rust_crate_type not in ['dylib', 'cdylib']:
-                raise InvalidArguments(f'Crate type "{self.rust_crate_type}" invalid for dynamic libraries; must be "dylib" or "cdylib"')
+            elif self.rust_crate_type not in ['dylib', 'cdylib', 'proc-macro']:
+                raise InvalidArguments(f'Crate type "{self.rust_crate_type}" invalid for dynamic libraries; must be "dylib", "cdylib", or "proc-macro"')
         if not hasattr(self, 'prefix'):
             self.prefix = None
         if not hasattr(self, 'suffix'):
@@ -2200,6 +2215,8 @@ class SharedLibrary(BuildTarget):
                 self.rust_crate_type = rust_crate_type
             else:
                 raise InvalidArguments(f'Invalid rust_crate_type "{rust_crate_type}": must be a string.')
+            if rust_crate_type == 'proc-macro':
+                FeatureNew.single_use('Rust crate type "proc-macro"', '0.62.0', self.subproject)
 
     def get_import_filename(self) -> T.Optional[str]:
         """
@@ -2225,7 +2242,7 @@ class SharedLibrary(BuildTarget):
     def get_all_link_deps(self):
         return [self] + self.get_transitive_link_deps()
 
-    def get_aliases(self) -> T.Dict[str, str]:
+    def get_aliases(self) -> T.List[T.Tuple[str, str, str]]:
         """
         If the versioned library name is libfoo.so.0.100.0, aliases are:
         * libfoo.so.0 (soversion) -> libfoo.so.0.100.0
@@ -2233,7 +2250,7 @@ class SharedLibrary(BuildTarget):
         Same for dylib:
         * libfoo.dylib (unversioned; for linking) -> libfoo.0.dylib
         """
-        aliases: T.Dict[str, str] = {}
+        aliases: T.List[T.Tuple[str, str, str]] = []
         # Aliases are only useful with .so and .dylib libraries. Also if
         # there's no self.soversion (no versioning), we don't need aliases.
         if self.suffix not in ('so', 'dylib') or not self.soversion:
@@ -2245,14 +2262,16 @@ class SharedLibrary(BuildTarget):
         if self.suffix == 'so' and self.ltversion and self.ltversion != self.soversion:
             alias_tpl = self.filename_tpl.replace('ltversion', 'soversion')
             ltversion_filename = alias_tpl.format(self)
-            aliases[ltversion_filename] = self.filename
+            tag = self.install_tag[0] or 'runtime'
+            aliases.append((ltversion_filename, self.filename, tag))
         # libfoo.so.0/libfoo.0.dylib is the actual library
         else:
             ltversion_filename = self.filename
         # Unversioned alias:
         #  libfoo.so -> libfoo.so.0
         #  libfoo.dylib -> libfoo.0.dylib
-        aliases[self.basic_filename_tpl.format(self)] = ltversion_filename
+        tag = self.install_tag[0] or 'devel'
+        aliases.append((self.basic_filename_tpl.format(self), ltversion_filename, tag))
         return aliases
 
     def type_suffix(self):
@@ -2627,6 +2646,9 @@ class Jar(BuildTarget):
             return ['-cp', os.pathsep.join(cp_paths)]
         return []
 
+    def get_default_install_dir(self, environment: environment.Environment) -> T.Tuple[str, str]:
+        return environment.get_jar_dir(), '{jardir}'
+
 @dataclass(eq=False)
 class CustomTargetIndex(HoldableObject):
 
@@ -2707,6 +2729,9 @@ class ConfigurationData(HoldableObject):
 
     def __contains__(self, value: str) -> bool:
         return value in self.values
+
+    def __bool__(self) -> bool:
+        return bool(self.values)
 
     def get(self, name: str) -> T.Tuple[T.Union[str, int, bool], T.Optional[str]]:
         return self.values[name] # (val, desc)

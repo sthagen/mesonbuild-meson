@@ -60,7 +60,7 @@ def add_arguments(parser: 'argparse.ArgumentParser') -> None:
 
 def get_releases() -> T.Dict[str, T.Any]:
     url = urlopen('https://wrapdb.mesonbuild.com/v2/releases.json')
-    return T.cast(T.Dict[str, T.Any], json.loads(url.read().decode()))
+    return T.cast('T.Dict[str, T.Any]', json.loads(url.read().decode()))
 
 def list_projects(options: 'argparse.Namespace') -> None:
     releases = get_releases()
@@ -119,13 +119,25 @@ def parse_patch_url(patch_url: str) -> T.Tuple[str, str]:
     else:
         raise WrapException(f'Invalid wrapdb URL {patch_url}')
 
-def get_current_version(wrapfile: str) -> T.Tuple[str, str, str, str, str]:
+def get_current_version(wrapfile: str) -> T.Tuple[str, str, str, str, T.Optional[str]]:
     cp = configparser.ConfigParser(interpolation=None)
     cp.read(wrapfile)
-    wrap_data = cp['wrap-file']
-    patch_url = wrap_data['patch_url']
-    branch, revision = parse_patch_url(patch_url)
-    return branch, revision, wrap_data['directory'], wrap_data['source_filename'], wrap_data['patch_filename']
+    try:
+        wrap_data = cp['wrap-file']
+    except KeyError:
+        raise WrapException(f'Not a wrap-file, cannot have come from the wrapdb')
+    try:
+        patch_url = wrap_data['patch_url']
+    except KeyError:
+        # We assume a wrap without a patch_url is probably just an pointer to upstream's
+        # build files. The version should be in the tarball filename, even if it isn't
+        # purely guaranteed. The wrapdb revision should be 1 because it just needs uploading once.
+        branch = mesonlib.search_version(wrap_data['source_filename'])
+        revision, patch_filename = '1', None
+    else:
+        branch, revision = parse_patch_url(patch_url)
+        patch_filename = wrap_data['patch_filename']
+    return branch, revision, wrap_data['directory'], wrap_data['source_filename'], patch_filename
 
 def update_wrap_file(wrapfile: str, name: str, new_version: str, new_revision: str) -> None:
     url = urlopen(f'https://wrapdb.mesonbuild.com/v2/{name}_{new_version}-{new_revision}/{name}.wrap')
@@ -150,10 +162,11 @@ def update(options: 'argparse.Namespace') -> None:
         os.unlink(os.path.join('subprojects/packagecache', src_file))
     except FileNotFoundError:
         pass
-    try:
-        os.unlink(os.path.join('subprojects/packagecache', patch_file))
-    except FileNotFoundError:
-        pass
+    if patch_file is not None:
+        try:
+            os.unlink(os.path.join('subprojects/packagecache', patch_file))
+        except FileNotFoundError:
+            pass
     print(f'Updated {name} version {new_branch} revision {new_revision}')
 
 def info(options: 'argparse.Namespace') -> None:
@@ -212,7 +225,7 @@ def status(options: 'argparse.Namespace') -> None:
         try:
             (current_branch, current_revision, _, _, _) = get_current_version(w)
         except Exception:
-            print('Wrap file not from wrapdb.', file=sys.stderr)
+            print('', name, 'Wrap file not from wrapdb.', file=sys.stderr)
             continue
         if current_branch == latest_branch and current_revision == latest_revision:
             print('', name, f'up to date. Branch {current_branch}, revision {current_revision}.')

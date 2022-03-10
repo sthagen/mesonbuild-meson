@@ -46,6 +46,7 @@ modules = [
     'mesonbuild/modules/java.py',
     'mesonbuild/modules/keyval.py',
     'mesonbuild/modules/qt.py',
+    'mesonbuild/modules/sourceset.py',
     'mesonbuild/modules/unstable_external_project.py',
     'mesonbuild/modules/unstable_rust.py',
     'mesonbuild/modules/windows.py',
@@ -55,7 +56,6 @@ modules = [
     'mesonbuild/optinterpreter.py',
     'mesonbuild/programs.py',
 
-    'run_custom_lint.py',
     'run_mypy.py',
     'run_project_tests.py',
     'run_single_test.py',

@@ -339,7 +339,8 @@ class GnomeModule(ExtensionModule):
         # Normal program lookup
         return state.find_program(name, required=required)
 
-    @typed_kwargs('gnome.post_install',
+    @typed_kwargs(
+        'gnome.post_install',
         KwargInfo('glib_compile_schemas', bool, default=False),
         KwargInfo('gio_querymodules', ContainerTypeInfo(list, str), default=[], listify=True),
         KwargInfo('gtk_update_icon_cache', bool, default=False),
@@ -751,8 +752,10 @@ class GnomeModule(ExtensionModule):
     def _devenv_prepend(self, varname: str, value: str) -> None:
         if self.devenv is None:
             self.devenv = build.EnvironmentVariables()
-            self.interpreter.build.devenv.append(self.devenv)
         self.devenv.prepend(varname, [value])
+
+    def get_devenv(self) -> T.Optional[build.EnvironmentVariables]:
+        return self.devenv
 
     def _get_gir_dep(self, state: 'ModuleState') -> T.Tuple[Dependency, T.Union[build.Executable, 'ExternalProgram', 'OverrideProgram'],
                                                             T.Union[build.Executable, 'ExternalProgram', 'OverrideProgram']]:
@@ -899,7 +902,7 @@ class GnomeModule(ExtensionModule):
                            libsources: T.Sequence[T.Union[
                                str, mesonlib.File, build.GeneratedList,
                                build.CustomTarget, build.CustomTargetIndex]]
-                            ) -> str:
+                           ) -> str:
         gir_filelist_dir = state.backend.get_target_private_dir_abs(girtargets[0])
         if not os.path.isdir(gir_filelist_dir):
             os.mkdir(gir_filelist_dir)
@@ -1061,12 +1064,12 @@ class GnomeModule(ExtensionModule):
         KwargInfo('includes', ContainerTypeInfo(list, (str, GirTarget)), default=[], listify=True),
         KwargInfo('install_gir', (bool, NoneType), since='0.61.0'),
         KwargInfo('install_dir_gir', (str, bool, NoneType),
-            deprecated_values={False: ('0.61.0', 'Use install_gir to disable installation')},
-            validator=lambda x: 'as boolean can only be false' if x is True else None),
+                  deprecated_values={False: ('0.61.0', 'Use install_gir to disable installation')},
+                  validator=lambda x: 'as boolean can only be false' if x is True else None),
         KwargInfo('install_typelib', (bool, NoneType), since='0.61.0'),
         KwargInfo('install_dir_typelib', (str, bool, NoneType),
-            deprecated_values={False: ('0.61.0', 'Use install_typelib to disable installation')},
-            validator=lambda x: 'as boolean can only be false' if x is True else None),
+                  deprecated_values={False: ('0.61.0', 'Use install_typelib to disable installation')},
+                  validator=lambda x: 'as boolean can only be false' if x is True else None),
         KwargInfo('link_with', ContainerTypeInfo(list, (build.SharedLibrary, build.StaticLibrary)), default=[], listify=True),
         KwargInfo('namespace', str, required=True),
         KwargInfo('nsversion', str, required=True),
@@ -1165,7 +1168,7 @@ class GnomeModule(ExtensionModule):
         scan_target = self._make_gir_target(
             state, girfile, scan_command, generated_files, depends,
             # We have to cast here because mypy can't figure this out
-            T.cast(T.Dict[str, T.Any], kwargs))
+            T.cast('T.Dict[str, T.Any]', kwargs))
 
         typelib_output = f'{ns}-{nsversion}.typelib'
         typelib_cmd = [gicompiler, scan_target, '--output', '@OUTPUT@']
@@ -1174,7 +1177,7 @@ class GnomeModule(ExtensionModule):
         for incdir in typelib_includes:
             typelib_cmd += ["--includedir=" + incdir]
 
-        typelib_target = self._make_typelib_target(state, typelib_output, typelib_cmd, generated_files, T.cast(T.Dict[str, T.Any], kwargs))
+        typelib_target = self._make_typelib_target(state, typelib_output, typelib_cmd, generated_files, T.cast('T.Dict[str, T.Any]', kwargs))
 
         self._devenv_prepend('GI_TYPELIB_PATH', os.path.join(state.environment.get_build_dir(), state.subdir))
 
@@ -1360,7 +1363,7 @@ class GnomeModule(ExtensionModule):
         KwargInfo('mkdb_args', ContainerTypeInfo(list, str), default=[], listify=True),
         KwargInfo(
             'mode', str, default='auto', since='0.37.0',
-             validator=in_set_validator({'xml', 'sgml', 'none', 'auto'})),
+            validator=in_set_validator({'xml', 'sgml', 'none', 'auto'})),
         KwargInfo('module_version', str, default='', since='0.48.0'),
         KwargInfo('namespace', str, default='', since='0.37.0'),
         KwargInfo('scan_args', ContainerTypeInfo(list, str), default=[], listify=True),
@@ -1414,8 +1417,10 @@ class GnomeModule(ExtensionModule):
             t_args.append(f'--{program_name}={path}')
         if namespace:
             t_args.append('--namespace=' + namespace)
-        if state.environment.need_exe_wrapper() and not isinstance(state.environment.get_exe_wrapper(), EmptyExternalProgram):
-            t_args.append('--run=' + ' '.join(state.environment.get_exe_wrapper().get_command()))
+        # if not need_exe_wrapper, we get an EmptyExternalProgram. If none provided, we get NoneType
+        exe_wrapper = state.environment.get_exe_wrapper()
+        if not isinstance(exe_wrapper, (NoneType, EmptyExternalProgram)):
+            t_args.append('--run=' + ' '.join(exe_wrapper.get_command()))
         t_args.append(f'--htmlargs={"@@".join(kwargs["html_args"])}')
         t_args.append(f'--scanargs={"@@".join(kwargs["scan_args"])}')
         t_args.append(f'--scanobjsargs={"@@".join(kwargs["scanobjs_args"])}')
@@ -2085,7 +2090,7 @@ class GnomeModule(ExtensionModule):
         # - add relevant directories to include dirs
         incs = [build.IncludeDirs(state.subdir, ['.'] + vapi_includes, False)]
         sources = [vapi_target] + vapi_depends
-        rv = InternalDependency(None, incs, [], [], link_with, [], sources, [], {})
+        rv = InternalDependency(None, incs, [], [], link_with, [], sources, [], {}, [], [])
         created_values.append(rv)
         return ModuleReturnValue(rv, created_values)
 

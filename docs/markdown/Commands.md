@@ -150,6 +150,35 @@ Create a project in `sourcedir`:
 meson init -C sourcedir
 ```
 
+### env2mfile
+
+*This command is experimental and subject to change.*
+
+*{Since 0.62.0}*
+
+{{ env2mfile_usage.inc }}
+
+Create native and cross files from the current environment, typically
+by sniffing environment variables like `CC` and `CFLAGS`.
+
+{{ env2mfile_arguments.inc }}
+
+#### Examples:
+
+Autodetect the current cross build environment:
+
+```
+meson env2mfile --cross -o current_cross.txt --cpu=arm7a --cpu-family=arm --system=linux
+```
+
+Generate a cross build using Debian system information:
+
+```
+meson env2mfile --cross --debarch=armhf -o deb_arm_cross.txt
+```
+
+
+
 ### introspect
 
 {{ introspect_usage.inc }}
@@ -311,5 +340,24 @@ These variables are set in environment in addition to those set using `meson.add
   schemas is compiled. This is automatically set when using `gnome.compile_schemas()`.
   Note that this requires GLib >= 2.64 when `gnome.compile_schemas()` is used in
   more than one directory.
+- `PYTHONPATH` *Since 0.62.0* includes every directory where a python module is being
+  installed using [`python.install_sources()`](Python-module.md#install_sources)
+  and [`python.extension_module()`](Python-module.md#extension_module). Python
+  modules installed by other means, such as `install_data()` or `install_subdir()`,
+  will not be included and should be added to `PYTHONPATH` manually using
+  [`meson.add_devenv()`](Reference-manual_builtin_meson.md#mesonadd_devenv).
+  Note that when modules are installed into subdirectories the source tree
+  layout must match the installed tree layout otherwise `import subdir.mod`
+  cannot work.
+
+Since *Since 0.62.0* if bash-completion scripts are being installed and the
+shell is bash, they will be automatically sourced.
+
+Since *Since 0.62.0* when GDB helper scripts (*-gdb.py, *-gdb.gdb, and *-gdb.csm)
+are installed with a library name that matches one being built, Meson adds the
+needed auto-load commands into `<builddir>/.gdbinit` file. When running gdb from
+top build directory, that file is loaded by gdb automatically. In the case of
+python scripts that needs to load other python modules, `PYTHONPATH` may need
+to be modified using `meson.add_devenv()`.
 
 {{ devenv_arguments.inc }}

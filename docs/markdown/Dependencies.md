@@ -486,16 +486,41 @@ instead.
 ## JDK
 
 *(added 0.58.0)*
+*(deprecated 0.62.0)*
 
-Provides access to compiling with the Java Native Interface (JNI). Lookup is
-entirely dependent on the `target_machine` Java compiler. In a
-cross-compilation, remember to override the Java compiler in order to add the
-correct flags. The `version` keyword is compared against the version of the
-Java compiler. No other `dependency()` keywords are respected.
+Deprecated name for JNI. `dependency('jdk')` instead of `dependency('jni')`.
+
+## JNI
+
+*(added 0.62.0)*
+
+`modules` is an optional list of strings containing any of `jvm` and `awt`.
+
+Provides access to compiling with the Java Native Interface (JNI). The lookup
+will first check if `JAVA_HOME` is set in the environment, and if not will use
+the resolved path of `javac`. Systems will usually link your preferred JDK to
+well known paths like `/usr/bin/javac` on Linux for instance. Using the path
+from `JAVA_HOME` or the resolved `javac`, this dependency will place the JDK
+installation's `include` directory and its platform-dependent subdirectory on
+the compiler's include path. If `modules` is non-empty, then the proper linker
+arguments will also be added.
 
 ```meson
-dep = dependency('jdk', version: '>= 1.8.0')
+dep = dependency('jni', version: '>= 1.8.0', modules: ['jvm'])
 ```
+
+**Note**: Due to usage of a resolved path, upgrading the JDK may cause the
+various paths to not be found. In that case, please reconfigure the build
+directory. One workaround is to explicitly set `JAVA_HOME` instead of relying on
+the fallback `javac` resolved path behavior.
+
+**Note**: Include paths might be broken on platforms other than `linux`,
+`windows`, `darwin`, and `sunos`. Please submit a PR or open an issue in this
+case.
+
+**Note**: Use of the `modules` argument on a JDK `<= 1.8` may be broken if your
+system is anything other than `x86_64`. Please submit a PR or open an issue in
+this case.
 
 ## libgcrypt
 
@@ -600,6 +625,12 @@ for OpenMP support.
 
 The `language` keyword may used.
 
+## OpenSSL
+
+*(added 0.62.0)*
+
+`method` may be `auto`, `pkg-config`, `system` or `cmake`.
+
 ## pcap
 
 *(added 0.42.0)*
@@ -678,11 +709,17 @@ or as an OSX framework.
 
 *(added 0.51.0)*
 
-Shaderc currently does not ship with any means of detection.
-Nevertheless, Meson can try to detect it using `pkg-config`, but will
-default to looking for the appropriate library manually. If the
-`static` keyword argument is `true`, `shaderc_combined` is preferred.
-Otherwise, `shaderc_shared` is preferred. Note that it is not possible
+Meson will first attempt to find shaderc using `pkg-config`. Upstream
+currently ships three different `pkg-config` files and by default will
+check them in this order: `shaderc`, `shaderc_combined`, and
+`shaderc_static`. If the `static` keyword argument is `true`, then
+Meson instead checks in this order: `shaderc_combined`, `shaderc_static`,
+and `shaderc`.
+
+If no `pkg-config` file is found, then Meson will try to detect the
+library manually. In this case, it will try to link against either
+`-lshaderc_shared` or `-lshaderc_combined`, preferring the latter
+if the static keyword argument is true. Note that it is not possible
 to obtain the shaderc version using this method.
 
 `method` may be `auto`, `pkg-config` or `system`.

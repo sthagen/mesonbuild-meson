@@ -51,7 +51,7 @@ if T.TYPE_CHECKING:
     class TargetIntrospectionData(TypedDict):
 
         language: str
-        compiler : T.List[str]
+        compiler: T.List[str]
         parameters: T.List[str]
         sources: T.List[str]
         generated_sources: T.List[str]
@@ -135,7 +135,6 @@ class TargetInstallData:
     fname: str
     outdir: str
     outdir_name: InitVar[str]
-    aliases: T.Dict[str, str]
     strip: bool
     install_name_mappings: T.Mapping[str, str]
     rpath_dirs_to_remove: T.Set[bytes]
@@ -145,6 +144,7 @@ class TargetInstallData:
     subproject: str
     optional: bool = False
     tag: T.Optional[str] = None
+    can_strip: bool = False
 
     def __post_init__(self, outdir_name: str) -> None:
         self.out_name = os.path.join(outdir_name, os.path.basename(self.fname))
@@ -173,6 +173,7 @@ class InstallSymlinkData:
     install_path: str
     subproject: str
     tag: T.Optional[str] = None
+    allow_missing: bool = False
 
 # cannot use dataclass here because "exclude" is out of order
 class SubdirInstallData(InstallDataBase):
@@ -328,7 +329,7 @@ class Backend:
         # cast, we know what's in coredata anyway.
         # TODO: if it's possible to annotate get_option or validate_option_value
         # in the future we might be able to remove the cast here
-        return T.cast(T.Union[str, int, bool, 'WrapMode'], v)
+        return T.cast('T.Union[str, int, bool, WrapMode]', v)
 
     def get_source_dir_include_args(self, target: build.BuildTarget, compiler: 'Compiler', *, absolute_path: bool = False) -> T.List[str]:
         curdir = target.get_subdir()
@@ -937,7 +938,7 @@ class Backend:
             commands += compiler.get_no_warn_args()
         else:
             # warning_level is a string, but mypy can't determine that
-            commands += compiler.get_warn_args(T.cast(str, self.get_option_for_target(OptionKey('warning_level'), target)))
+            commands += compiler.get_warn_args(T.cast('str', self.get_option_for_target(OptionKey('warning_level'), target)))
         # Add -Werror if werror=true is set in the build options set on the
         # command-line or default_options inside project(). This only sets the
         # action to be done for warnings if/when they are emitted, so it's ok
@@ -1386,7 +1387,7 @@ class Backend:
 
     def eval_custom_target_command(
             self, target: build.CustomTarget, absolute_outputs: bool = False) -> \
-                T.Tuple[T.List[str], T.List[str], T.List[str]]:
+            T.Tuple[T.List[str], T.List[str], T.List[str]]:
         # We want the outputs to be absolute only when using the VS backend
         # XXX: Maybe allow the vs backend to use relative paths too?
         source_root = self.build_to_src
@@ -1484,6 +1485,7 @@ class Backend:
             mlog.log(f'Running postconf script {name!r}')
             run_exe(s, env)
 
+    @lru_cache(maxsize=1)
     def create_install_data(self) -> InstallData:
         strip_bin = self.environment.lookup_binary_entry(MachineChoice.HOST, 'strip')
         if strip_bin is None:
@@ -1572,7 +1574,8 @@ class Backend:
                 #
                 # TODO: Create GNUStrip/AppleStrip/etc. hierarchy for more
                 #       fine-grained stripping of static archives.
-                should_strip = not isinstance(t, build.StaticLibrary) and self.get_option_for_target(OptionKey('strip'), t)
+                can_strip = not isinstance(t, build.StaticLibrary)
+                should_strip = can_strip and self.get_option_for_target(OptionKey('strip'), t)
                 assert isinstance(should_strip, bool), 'for mypy'
                 # Install primary build output (library/executable/jar, etc)
                 # Done separately because of strip/aliases/rpath
@@ -1580,11 +1583,16 @@ class Backend:
                     tag = t.install_tag[0] or ('devel' if isinstance(t, build.StaticLibrary) else 'runtime')
                     mappings = t.get_link_deps_mapping(d.prefix, self.environment)
                     i = TargetInstallData(self.get_target_filename(t), outdirs[0],
-                                          install_dir_name, t.get_aliases(),
+                                          install_dir_name,
                                           should_strip, mappings, t.rpath_dirs_to_remove,
                                           t.install_rpath, install_mode, t.subproject,
-                                          tag=tag)
+                                          tag=tag, can_strip=can_strip)
                     d.targets.append(i)
+
+                    for alias, to, tag in t.get_aliases():
+                        alias = os.path.join(outdirs[0], alias)
+                        s = InstallSymlinkData(to, alias, outdirs[0], t.subproject, tag, allow_missing=True)
+                        d.symlinks.append(s)
 
                     if isinstance(t, (build.SharedLibrary, build.SharedModule, build.Executable)):
                         # On toolchains/platforms that use an import library for
@@ -1601,7 +1609,7 @@ class Backend:
                             # Install the import library; may not exist for shared modules
                             i = TargetInstallData(self.get_target_filename_for_linking(t),
                                                   implib_install_dir, install_dir_name,
-                                                  {}, False, {}, set(), '', install_mode,
+                                                  False, {}, set(), '', install_mode,
                                                   t.subproject, optional=isinstance(t, build.SharedModule),
                                                   tag='devel')
                             d.targets.append(i)
@@ -1610,7 +1618,7 @@ class Backend:
                             debug_file = os.path.join(self.get_target_dir(t), t.get_debug_filename())
                             i = TargetInstallData(debug_file, outdirs[0],
                                                   install_dir_name,
-                                                  {}, False, {}, set(), '',
+                                                  False, {}, set(), '',
                                                   install_mode, t.subproject,
                                                   optional=True, tag='devel')
                             d.targets.append(i)
@@ -1621,7 +1629,7 @@ class Backend:
                         if outdir is False:
                             continue
                         f = os.path.join(self.get_target_dir(t), output)
-                        i = TargetInstallData(f, outdir, install_dir_name, {}, False, {}, set(), None,
+                        i = TargetInstallData(f, outdir, install_dir_name, False, {}, set(), None,
                                               install_mode, t.subproject,
                                               tag=tag)
                         d.targets.append(i)
@@ -1638,7 +1646,7 @@ class Backend:
                         f = os.path.join(self.get_target_dir(t), output)
                         if not install_dir_name:
                             dir_name = os.path.join('{prefix}', outdirs[0])
-                        i = TargetInstallData(f, outdirs[0], dir_name, {},
+                        i = TargetInstallData(f, outdirs[0], dir_name,
                                               False, {}, set(), None, install_mode,
                                               t.subproject, optional=not t.build_by_default,
                                               tag=tag)
@@ -1652,7 +1660,7 @@ class Backend:
                         if not install_dir_name:
                             dir_name = os.path.join('{prefix}', outdir)
                         i = TargetInstallData(f, outdir, dir_name,
-                                              {}, False, {}, set(), None, install_mode,
+                                              False, {}, set(), None, install_mode,
                                               t.subproject, optional=not t.build_by_default,
                                               tag=tag)
                         d.targets.append(i)
@@ -1833,11 +1841,13 @@ class Backend:
                 # LD_LIBRARY_PATH. This allows running system applications using
                 # that library.
                 library_paths.add(tdir)
-        if mesonlib.is_windows() or mesonlib.is_cygwin():
-            extra_paths.update(library_paths)
-        elif mesonlib.is_osx():
-            env.prepend('DYLD_LIBRARY_PATH', list(library_paths))
-        else:
-            env.prepend('LD_LIBRARY_PATH', list(library_paths))
-        env.prepend('PATH', list(extra_paths))
+        if library_paths:
+            if mesonlib.is_windows() or mesonlib.is_cygwin():
+                extra_paths.update(library_paths)
+            elif mesonlib.is_osx():
+                env.prepend('DYLD_LIBRARY_PATH', list(library_paths))
+            else:
+                env.prepend('LD_LIBRARY_PATH', list(library_paths))
+        if extra_paths:
+            env.prepend('PATH', list(extra_paths))
         return env

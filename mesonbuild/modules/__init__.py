@@ -26,6 +26,7 @@ if T.TYPE_CHECKING:
     from ..interpreterbase import TYPE_var, TYPE_kwargs
     from ..programs import ExternalProgram
     from ..wrap import WrapMode
+    from ..build import EnvironmentVariables
 
 class ModuleState:
     """Object passed to all module methods.
@@ -80,8 +81,10 @@ class ModuleState:
 
     def find_program(self, prog: T.Union[str, T.List[str]], required: bool = True,
                      version_func: T.Optional[T.Callable[['ExternalProgram'], str]] = None,
-                     wanted: T.Optional[str] = None, silent: bool = False) -> 'ExternalProgram':
-        return self._interpreter.find_program_impl(prog, required=required, version_func=version_func, wanted=wanted, silent=silent)
+                     wanted: T.Optional[str] = None, silent: bool = False,
+                     for_machine: MachineChoice = MachineChoice.HOST) -> 'ExternalProgram':
+        return self._interpreter.find_program_impl(prog, required=required, version_func=version_func,
+                                                   wanted=wanted, silent=silent, for_machine=for_machine)
 
     def test(self, args: T.Tuple[str, T.Union[build.Executable, build.Jar, 'ExternalProgram', mesonlib.File]],
              workdir: T.Optional[str] = None,
@@ -103,6 +106,13 @@ class ModuleState:
                    module: T.Optional[str] = None) -> T.Union[str, int, bool, 'WrapMode']:
         return self.environment.coredata.get_option(mesonlib.OptionKey(name, subproject, machine, lang, module))
 
+    def is_user_defined_option(self, name: str, subproject: str = '',
+                               machine: MachineChoice = MachineChoice.HOST,
+                               lang: T.Optional[str] = None,
+                               module: T.Optional[str] = None) -> bool:
+        key = mesonlib.OptionKey(name, subproject, machine, lang, module)
+        return key in self._interpreter.user_defined_options.cmd_line_options
+
 
 class ModuleObject(HoldableObject):
     """Base class for all objects returned by modules
@@ -116,28 +126,6 @@ class ModuleObject(HoldableObject):
 
 class MutableModuleObject(ModuleObject):
     pass
-
-
-# FIXME: Port all modules to stop using self.interpreter and use API on
-# ModuleState instead. Modules should stop using this class and instead use
-# ModuleObject base class.
-class ExtensionModule(ModuleObject):
-    def __init__(self, interpreter: 'Interpreter') -> None:
-        super().__init__()
-        self.interpreter = interpreter
-        self.methods.update({
-            'found': self.found_method,
-        })
-
-    @noPosargs
-    @noKwargs
-    def found_method(self, state: 'ModuleState', args: T.List['TYPE_var'], kwargs: 'TYPE_kwargs') -> bool:
-        return self.found()
-
-    @staticmethod
-    def found() -> bool:
-        return True
-
 
 class NewExtensionModule(ModuleObject):
 
@@ -161,6 +149,16 @@ class NewExtensionModule(ModuleObject):
     def found() -> bool:
         return True
 
+    def get_devenv(self) -> T.Optional['EnvironmentVariables']:
+        return None
+
+# FIXME: Port all modules to stop using self.interpreter and use API on
+# ModuleState instead. Modules should stop using this class and instead use
+# ModuleObject base class.
+class ExtensionModule(NewExtensionModule):
+    def __init__(self, interpreter: 'Interpreter') -> None:
+        super().__init__()
+        self.interpreter = interpreter
 
 class NotFoundExtensionModule(NewExtensionModule):
 

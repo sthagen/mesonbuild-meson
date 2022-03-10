@@ -127,7 +127,7 @@ class CMakeDependency(ExternalDependency):
             return
 
         # Setup the trace parser
-        self.traceparser = CMakeTraceParser(self.cmakebin.version(), self._get_build_dir())
+        self.traceparser = CMakeTraceParser(self.cmakebin.version(), self._get_build_dir(), self.env)
 
         cm_args = stringlistify(extract_as_list(kwargs, 'cmake_args'))
         cm_args = check_cmake_args(cm_args)
@@ -166,7 +166,7 @@ class CMakeDependency(ExternalDependency):
             gen_list += [CMakeDependency.class_working_generator]
         gen_list += CMakeDependency.class_cmake_generators
 
-        temp_parser = CMakeTraceParser(self.cmakebin.version(), self._get_build_dir())
+        temp_parser = CMakeTraceParser(self.cmakebin.version(), self._get_build_dir(), self.env)
         toolchain = CMakeToolchain(self.cmakebin, self.env, self.for_machine, CMakeExecScope.DEPENDENCY, self._get_build_dir())
         toolchain.write()
 
@@ -482,7 +482,6 @@ class CMakeDependency(ExternalDependency):
                 for tgt in partial_modules:
                     mlog.debug(tgt)
 
-
             incDirs = [x for x in self.traceparser.get_cmake_var('PACKAGE_INCLUDE_DIRS') if x]
             defs = [x for x in self.traceparser.get_cmake_var('PACKAGE_DEFINITIONS') if x]
             libs_raw = [x for x in self.traceparser.get_cmake_var('PACKAGE_LIBRARIES') if x]
@@ -546,7 +545,7 @@ class CMakeDependency(ExternalDependency):
             if not autodetected_module_list:
                 self.found_modules += [i]
 
-            rtgt = resolve_cmake_trace_targets(i ,self.traceparser, self.env,
+            rtgt = resolve_cmake_trace_targets(i, self.traceparser, self.env,
                 clib_compiler=self.clib_compiler,
                 not_found_warning=lambda x: mlog.warning('CMake: Dependency', mlog.bold(x), 'for', mlog.bold(name), 'was not found')
             )

@@ -14,6 +14,7 @@
 
 # This class contains the basic functionality needed to run any interpreter
 # or an interpreter-based tool.
+from __future__ import annotations
 
 from .. import mparser, mesonlib
 from .. import environment
@@ -26,10 +27,7 @@ from .baseobjects import (
     ObjectHolder,
     IterableObject,
 
-    SubProject,
-
     TYPE_var,
-    TYPE_kwargs,
 
     HoldableTypes,
 )
@@ -54,6 +52,7 @@ import typing as T
 import textwrap
 
 if T.TYPE_CHECKING:
+    from .baseobjects import SubProject, TYPE_kwargs
     from ..interpreter import Interpreter
 
 HolderMapType = T.Dict[
@@ -526,7 +525,7 @@ class InterpreterBase:
         self.argument_depth += 1
         reduced_pos = [self.evaluate_statement(arg) for arg in args.arguments]
         if any(x is None for x in reduced_pos):
-            raise InvalidArguments(f'At least one value in the arguments is void.')
+            raise InvalidArguments('At least one value in the arguments is void.')
         reduced_kw: T.Dict[str, InterpreterObject] = {}
         for key, val in args.kwargs.items():
             reduced_key = key_resolver(key)
