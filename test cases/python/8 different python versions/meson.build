@@ -5,8 +5,16 @@ py_mod = import('python')
 
 py = py_mod.find_installation(get_option('python'), required : false)
 
+# CI images don't have 32-bit python2 for 32-bit windows,
+# so this actually gets detected then fails
+require = not (
+  get_option('python') == 'python2' and
+  host_machine.system() == 'windows' and
+  host_machine.cpu() == 'x86'
+)
+
 if py.found()
-  py_dep = py.dependency(required : false)
+  py_dep = py.dependency(required: require)
 
   if py_dep.found()
     subdir('ext')
