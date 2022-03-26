@@ -36,11 +36,11 @@ from .mesonlib import (
     extract_as_list, typeslistify, stringlistify, classify_unity_sources,
     get_filenames_templates_dict, substitute_values, has_path_sep,
     OptionKey, PerMachineDefaultable,
-    MesonBugException,
+    MesonBugException
 )
 from .compilers import (
-    Compiler, is_object, clink_langs, sort_clink, lang_suffixes,
-    is_known_suffix, detect_static_linker, detect_compiler_for
+    Compiler, is_object, clink_langs, sort_clink, lang_suffixes, all_languages,
+    is_known_suffix, detect_static_linker
 )
 from .linkers import StaticLinker
 from .interpreterbase import FeatureNew, FeatureDeprecated
@@ -59,23 +59,12 @@ if T.TYPE_CHECKING:
 
 pch_kwargs = {'c_pch', 'cpp_pch'}
 
-lang_arg_kwargs = {
-    'c_args',
-    'cpp_args',
-    'cuda_args',
-    'd_args',
+lang_arg_kwargs = {f'{lang}_args' for lang in all_languages}
+lang_arg_kwargs |= {
     'd_import_dirs',
     'd_unittest',
     'd_module_versions',
     'd_debug',
-    'fortran_args',
-    'java_args',
-    'objc_args',
-    'objcpp_args',
-    'rust_args',
-    'vala_args',
-    'cs_args',
-    'cython_args',
 }
 
 vala_kwargs = {'vala_header', 'vala_gir', 'vala_vapi'}
@@ -122,7 +111,7 @@ known_exe_kwargs = known_build_target_kwargs | {'implib', 'export_dynamic', 'pie
 known_shlib_kwargs = known_build_target_kwargs | {'version', 'soversion', 'vs_module_defs', 'darwin_versions'}
 known_shmod_kwargs = known_build_target_kwargs | {'vs_module_defs'}
 known_stlib_kwargs = known_build_target_kwargs | {'pic', 'prelink'}
-known_jar_kwargs = known_exe_kwargs | {'main_class'}
+known_jar_kwargs = known_exe_kwargs | {'main_class', 'java_resources'}
 
 @lru_cache(maxsize=None)
 def get_target_macos_dylib_install_name(ld) -> str:
@@ -588,8 +577,7 @@ class Target(HoldableObject):
             '''))
         self.install = False
         self.build_always_stale = False
-        self.option_overrides_base: T.Dict[OptionKey, str] = {}
-        self.option_overrides_compiler: T.Dict[OptionKey, str] = {}
+        self.option_overrides: T.Dict[OptionKey, str] = {}
         self.extra_files = []  # type: T.List[File]
         if not hasattr(self, 'typename'):
             raise RuntimeError(f'Target type is not set for target class "{type(self).__name__}". This is a bug')
@@ -697,9 +685,9 @@ class Target(HoldableObject):
 
         for k, v in option_overrides.items():
             if k.lang:
-                self.option_overrides_compiler[k.evolve(machine=self.for_machine)] = v
+                self.option_overrides[k.evolve(machine=self.for_machine)] = v
                 continue
-            self.option_overrides_base[k] = v
+            self.option_overrides[k] = v
 
     @staticmethod
     def parse_overrides(kwargs: T.Dict[str, T.Any]) -> T.Dict[OptionKey, str]:
@@ -737,11 +725,12 @@ class BuildTarget(Target):
 
     def __init__(self, name: str, subdir: str, subproject: SubProject, for_machine: MachineChoice,
                  sources: T.List['SourceOutputs'], structured_sources: T.Optional[StructuredSources],
-                 objects, environment: environment.Environment, kwargs):
+                 objects, environment: environment.Environment, compilers: T.Dict[str, 'Compiler'], kwargs):
         super().__init__(name, subdir, subproject, True, for_machine)
         unity_opt = environment.coredata.get_option(OptionKey('unity'))
         self.is_unity = unity_opt == 'on' or (unity_opt == 'subprojects' and subproject != '')
         self.environment = environment
+        self.all_compilers = compilers
         self.compilers = OrderedDict() # type: OrderedDict[str, Compiler]
         self.objects: T.List[T.Union[str, 'File', 'ExtractedObjects']] = []
         self.structured_sources = structured_sources
@@ -775,14 +764,15 @@ class BuildTarget(Target):
         self.process_objectlist(objects)
         self.process_kwargs(kwargs, environment)
         self.check_unknown_kwargs(kwargs)
-        self.process_compilers()
         if not any([self.sources, self.generated, self.objects, self.link_whole, self.structured_sources]):
             raise InvalidArguments(f'Build target {name} has no sources.')
-        self.process_compilers_late()
-        self.validate_sources()
         self.validate_install(environment)
         self.check_module_linking()
 
+    def post_init(self) -> None:
+        ''' Initialisations and checks requiring the final list of compilers to be known
+        '''
+        self.validate_sources()
         if self.structured_sources and any([self.sources, self.generated]):
             raise MesonException('cannot mix structured sources and unstructured sources')
         if self.structured_sources and 'rust' not in self.compilers:
@@ -856,15 +846,15 @@ class BuildTarget(Target):
                 removed = True
         return removed
 
-    def process_compilers_late(self):
+    def process_compilers_late(self, extra_languages: T.List[str]):
         """Processes additional compilers after kwargs have been evaluated.
 
         This can add extra compilers that might be required by keyword
         arguments, such as link_with or dependencies. It will also try to guess
         which compiler to use if one hasn't been selected already.
         """
-        # Populate list of compilers
-        compilers = self.environment.coredata.compilers[self.for_machine]
+        for lang in extra_languages:
+            self.compilers[lang] = self.all_compilers[lang]
 
         # did user override clink_langs for this target?
         link_langs = [self.link_language] if self.link_language else clink_langs
@@ -872,36 +862,40 @@ class BuildTarget(Target):
         # If this library is linked against another library we need to consider
         # the languages of those libraries as well.
         if self.link_targets or self.link_whole_targets:
-            extra = set()
             for t in itertools.chain(self.link_targets, self.link_whole_targets):
                 if isinstance(t, CustomTarget) or isinstance(t, CustomTargetIndex):
                     continue # We can't know anything about these.
                 for name, compiler in t.compilers.items():
-                    if name in link_langs:
-                        extra.add((name, compiler))
-            for name, compiler in sorted(extra, key=lambda p: sort_clink(p[0])):
-                self.compilers[name] = compiler
+                    if name in link_langs and name not in self.compilers:
+                        self.compilers[name] = compiler
 
         if not self.compilers:
             # No source files or parent targets, target consists of only object
             # files of unknown origin. Just add the first clink compiler
             # that we have and hope that it can link these objects
             for lang in link_langs:
-                if lang in compilers:
-                    self.compilers[lang] = compilers[lang]
+                if lang in self.all_compilers:
+                    self.compilers[lang] = self.all_compilers[lang]
                     break
 
-    def process_compilers(self) -> None:
+        # Now that we have the final list of compilers we can sort it according
+        # to clink_langs and do sanity checks.
+        self.compilers = OrderedDict(sorted(self.compilers.items(),
+                                            key=lambda t: sort_clink(t[0])))
+        self.post_init()
+
+    def process_compilers(self) -> T.List[str]:
         '''
         Populate self.compilers, which is the list of compilers that this
         target will use for compiling all its sources.
         We also add compilers that were used by extracted objects to simplify
         dynamic linker determination.
+        Returns a list of missing languages that we can add implicitly, such as
+        C/C++ compiler for cython.
         '''
+        missing_languages: T.List[str] = []
         if not any([self.sources, self.generated, self.objects, self.structured_sources]):
-            return
-        # Populate list of compilers
-        compilers = self.environment.coredata.compilers[self.for_machine]
+            return missing_languages
         # Pre-existing sources
         sources: T.List['FileOrString'] = list(self.sources)
         generated = self.generated.copy()
@@ -948,73 +942,38 @@ class BuildTarget(Target):
             # are expected to be able to add arbitrary non-source files to the
             # sources list
             for s in sources:
-                for lang, compiler in compilers.items():
+                for lang, compiler in self.all_compilers.items():
                     if compiler.can_compile(s):
                         if lang not in self.compilers:
                             self.compilers[lang] = compiler
                         break
                 else:
                     if is_known_suffix(s):
-                        raise MesonException('No {} machine compiler for "{}"'.
-                                             format(self.for_machine.get_lower_case_name(), s))
-
-            # Re-sort according to clink_langs
-            self.compilers = OrderedDict(sorted(self.compilers.items(),
-                                                key=lambda t: sort_clink(t[0])))
+                        path = pathlib.Path(str(s)).as_posix()
+                        m = f'No {self.for_machine.get_lower_case_name()} machine compiler for {path!r}'
+                        raise MesonException(m)
 
         # If all our sources are Vala, our target also needs the C compiler but
         # it won't get added above.
         if 'vala' in self.compilers and 'c' not in self.compilers:
-            self.compilers['c'] = compilers['c']
+            self.compilers['c'] = self.all_compilers['c']
         if 'cython' in self.compilers:
             key = OptionKey('language', machine=self.for_machine, lang='cython')
-            if key in self.option_overrides_compiler:
-                value = self.option_overrides_compiler[key]
+            if key in self.option_overrides:
+                value = self.option_overrides[key]
             else:
                 value = self.environment.coredata.options[key].value
-
             try:
-                self.compilers[value] = compilers[value]
+                self.compilers[value] = self.all_compilers[value]
             except KeyError:
-                # TODO: it would be nice to not have to do this here, but we
-                # have two problems to work around:
-                # 1. If this is set via an override we have no way to know
-                #    before now that we need a compiler for the non-default language
-                # 2. Because Cython itself initializes the `cython_language`
-                #    option, we have no good place to insert that you need it
-                #    before now, so we just have to do it here.
-                comp = detect_compiler_for(self.environment, value, self.for_machine)
+                missing_languages.append(value)
 
-                # This is copied verbatim from the interpreter
-                if self.for_machine == MachineChoice.HOST or self.environment.is_cross_build():
-                    logger_fun = mlog.log
-                else:
-                    logger_fun = mlog.debug
-                logger_fun(comp.get_display_language(), 'compiler for the', self.for_machine.get_lower_case_name(), 'machine:',
-                           mlog.bold(' '.join(comp.get_exelist())), comp.get_version_string())
-                if comp.linker is not None:
-                    logger_fun(comp.get_display_language(), 'linker for the', self.for_machine.get_lower_case_name(), 'machine:',
-                               mlog.bold(' '.join(comp.linker.get_exelist())), comp.linker.id, comp.linker.version)
-                if comp is None:
-                    raise MesonException(f'Cannot find required compiler {value}')
-                self.compilers[value] = comp
+        return missing_languages
 
     def validate_sources(self):
-        if not self.sources:
-            return
-        for lang in ('cs', 'java'):
-            if lang in self.compilers:
-                check_sources = list(self.sources)
-                compiler = self.compilers[lang]
-                if not self.can_compile_remove_sources(compiler, check_sources):
-                    raise InvalidArguments(f'No {lang} sources found in target {self.name!r}')
-                if check_sources:
-                    m = '{0} targets can only contain {0} files:\n'.format(lang.capitalize())
-                    m += '\n'.join([repr(c) for c in check_sources])
-                    raise InvalidArguments(m)
-                # CSharp and Java targets can't contain any other file types
-                assert len(self.compilers) == 1
-                return
+        if len(self.compilers) > 1 and any(lang in self.compilers for lang in {'cs', 'java'}):
+            langs = ', '.join(self.compilers.keys())
+            raise InvalidArguments(f'Cannot mix those languages into a target: {langs}')
 
     def process_link_depends(self, sources, environment):
         """Process the link_depends keyword argument.
@@ -1142,24 +1101,18 @@ class BuildTarget(Target):
         for linktarget in lwhole:
             self.link_whole(linktarget)
 
-        c_pchlist, cpp_pchlist, clist, cpplist, cudalist, cslist, valalist,  objclist, objcpplist, fortranlist, rustlist \
-            = (extract_as_list(kwargs, c) for c in ['c_pch', 'cpp_pch', 'c_args', 'cpp_args', 'cuda_args', 'cs_args', 'vala_args', 'objc_args', 'objcpp_args', 'fortran_args', 'rust_args'])
+        for lang in all_languages:
+            lang_args = extract_as_list(kwargs, f'{lang}_args')
+            self.add_compiler_args(lang, lang_args)
 
-        self.add_pch('c', c_pchlist)
-        self.add_pch('cpp', cpp_pchlist)
-        compiler_args = {'c': clist, 'cpp': cpplist, 'cuda': cudalist, 'cs': cslist, 'vala': valalist, 'objc': objclist, 'objcpp': objcpplist,
-                         'fortran': fortranlist, 'rust': rustlist
-                         }
-        for key, value in compiler_args.items():
-            self.add_compiler_args(key, value)
+        self.add_pch('c', extract_as_list(kwargs, 'c_pch'))
+        self.add_pch('cpp', extract_as_list(kwargs, 'cpp_pch'))
 
         if not isinstance(self, Executable) or 'export_dynamic' in kwargs:
             self.vala_header = kwargs.get('vala_header', self.name + '.h')
             self.vala_vapi = kwargs.get('vala_vapi', self.name + '.vapi')
             self.vala_gir = kwargs.get('vala_gir', None)
 
-        dlist = stringlistify(kwargs.get('d_args', []))
-        self.add_compiler_args('d', dlist)
         dfeatures = defaultdict(list)
         dfeature_unittest = kwargs.get('d_unittest', False)
         if dfeature_unittest:
@@ -1571,14 +1524,13 @@ You probably should put it in link_with instead.''')
         return langs
 
     def get_prelinker(self):
-        all_compilers = self.environment.coredata.compilers[self.for_machine]
         if self.link_language:
-            comp = all_compilers[self.link_language]
+            comp = self.all_compilers[self.link_language]
             return comp
         for l in clink_langs:
             if l in self.compilers:
                 try:
-                    prelinker = all_compilers[l]
+                    prelinker = self.all_compilers[l]
                 except KeyError:
                     raise MesonException(
                         f'Could not get a prelinker linker for build target {self.name!r}. '
@@ -1597,14 +1549,15 @@ You probably should put it in link_with instead.''')
         that can link compiled C. We don't actually need to add an exception
         for Vala here because of that.
         '''
-        # Populate list of all compilers, not just those being used to compile
-        # sources in this target
-        all_compilers = self.environment.coredata.compilers[self.for_machine]
-
         # If the user set the link_language, just return that.
         if self.link_language:
-            comp = all_compilers[self.link_language]
+            comp = self.all_compilers[self.link_language]
             return comp, comp.language_stdlib_only_link_flags(self.environment)
+
+        # Since dependencies could come from subprojects, they could have
+        # languages we don't have in self.all_compilers. Use the global list of
+        # all compilers here.
+        all_compilers = self.environment.coredata.compilers[self.for_machine]
 
         # Languages used by dependencies
         dep_langs = self.get_langs_used_by_deps()
@@ -1619,11 +1572,9 @@ You probably should put it in link_with instead.''')
                         f'Requires a linker for language "{l}", but that is not '
                         'a project language.')
                 stdlib_args: T.List[str] = []
-                added_languages: T.Set[str] = set()
                 for dl in itertools.chain(self.compilers, dep_langs):
                     if dl != linker.language:
                         stdlib_args += all_compilers[dl].language_stdlib_only_link_flags(self.environment)
-                        added_languages.add(dl)
                 # Type of var 'linker' is Compiler.
                 # Pretty hard to fix because the return value is passed everywhere
                 return linker, stdlib_args
@@ -1631,25 +1582,7 @@ You probably should put it in link_with instead.''')
         raise AssertionError(f'Could not get a dynamic linker for build target {self.name!r}')
 
     def uses_rust(self) -> bool:
-        """Is this target a rust target."""
-        if self.sources:
-            first_file = self.sources[0]
-            if first_file.fname.endswith('.rs'):
-                return True
-        elif self.generated:
-            if self.generated[0].get_outputs()[0].endswith('.rs'):
-                return True
-        elif self.structured_sources:
-            for v in self.structured_sources.sources.values():
-                for s in v:
-                    if isinstance(s, (str, File)):
-                        if s.endswith('.rs'):
-                            return True
-                    else:
-                        for ss in s.get_outputs():
-                            if ss.endswith('.rs'):
-                                return True
-        return False
+        return 'rust' in self.compilers
 
     def get_using_msvc(self) -> bool:
         '''
@@ -1671,7 +1604,7 @@ You probably should put it in link_with instead.''')
         '''
         # Rustc can use msvc style linkers
         if self.uses_rust():
-            compiler = self.environment.coredata.compilers[self.for_machine]['rust']
+            compiler = self.all_compilers['rust']
         else:
             compiler, _ = self.get_clink_dynamic_linker_and_stdlibs()
         # Mixing many languages with MSVC is not supported yet so ignore stdlibs.
@@ -1851,18 +1784,38 @@ class Executable(BuildTarget):
 
     def __init__(self, name: str, subdir: str, subproject: str, for_machine: MachineChoice,
                  sources: T.List[File], structured_sources: T.Optional['StructuredSources'],
-                 objects, environment: environment.Environment, kwargs):
+                 objects, environment: environment.Environment, compilers: T.Dict[str, 'Compiler'],
+                 kwargs):
         self.typename = 'executable'
         key = OptionKey('b_pie')
         if 'pie' not in kwargs and key in environment.coredata.options:
             kwargs['pie'] = environment.coredata.options[key].value
-        super().__init__(name, subdir, subproject, for_machine, sources, structured_sources, objects, environment, kwargs)
+        super().__init__(name, subdir, subproject, for_machine, sources, structured_sources, objects,
+                         environment, compilers, kwargs)
+        # Check for export_dynamic
+        self.export_dynamic = kwargs.get('export_dynamic', False)
+        if not isinstance(self.export_dynamic, bool):
+            raise InvalidArguments('"export_dynamic" keyword argument must be a boolean')
+        self.implib = kwargs.get('implib')
+        if not isinstance(self.implib, (bool, str, type(None))):
+            raise InvalidArguments('"export_dynamic" keyword argument must be a boolean or string')
+        if self.implib:
+            self.export_dynamic = True
+        if self.export_dynamic and self.implib is False:
+            raise InvalidArguments('"implib" keyword argument must not be false for if "export_dynamic" is true')
+        # Only linkwithable if using export_dynamic
+        self.is_linkwithable = self.export_dynamic
+        # Remember that this exe was returned by `find_program()` through an override
+        self.was_returned_by_find_program = False
+
+    def post_init(self) -> None:
+        super().post_init()
+        machine = self.environment.machines[self.for_machine]
         # Unless overridden, executables have no suffix or prefix. Except on
         # Windows and with C#/Mono executables where the suffix is 'exe'
         if not hasattr(self, 'prefix'):
             self.prefix = ''
         if not hasattr(self, 'suffix'):
-            machine = environment.machines[for_machine]
             # Executable for Windows or C#/Mono
             if machine.is_windows() or machine.is_cygwin() or 'cs' in self.compilers:
                 self.suffix = 'exe'
@@ -1880,7 +1833,7 @@ class Executable(BuildTarget):
                   'cpp' in self.compilers and self.compilers['cpp'].get_id() in ('ti', 'c2000')):
                 self.suffix = 'out'
             else:
-                self.suffix = environment.machines[for_machine].get_exe_suffix()
+                self.suffix = machine.get_exe_suffix()
         self.filename = self.name
         if self.suffix:
             self.filename += '.' + self.suffix
@@ -1895,25 +1848,12 @@ class Executable(BuildTarget):
         # The debugging information file this target will generate
         self.debug_filename = None
 
-        # Check for export_dynamic
-        self.export_dynamic = False
-        if kwargs.get('export_dynamic'):
-            if not isinstance(kwargs['export_dynamic'], bool):
-                raise InvalidArguments('"export_dynamic" keyword argument must be a boolean')
-            self.export_dynamic = True
-        if kwargs.get('implib'):
-            self.export_dynamic = True
-        if self.export_dynamic and kwargs.get('implib') is False:
-            raise InvalidArguments('"implib" keyword argument must not be false for if "export_dynamic" is true')
-
-        m = environment.machines[for_machine]
-
         # If using export_dynamic, set the import library name
         if self.export_dynamic:
             implib_basename = self.name + '.exe'
-            if not isinstance(kwargs.get('implib', False), bool):
-                implib_basename = kwargs['implib']
-            if m.is_windows() or m.is_cygwin():
+            if isinstance(self.implib, str):
+                implib_basename = self.implib
+            if machine.is_windows() or machine.is_cygwin():
                 self.vs_import_filename = f'{implib_basename}.lib'
                 self.gcc_import_filename = f'lib{implib_basename}.a'
                 if self.get_using_msvc():
@@ -1921,16 +1861,10 @@ class Executable(BuildTarget):
                 else:
                     self.import_filename = self.gcc_import_filename
 
-        if m.is_windows() and ('cs' in self.compilers or
-                               self.uses_rust() or
-                               self.get_using_msvc()):
+        if machine.is_windows() and ('cs' in self.compilers or
+                                     self.uses_rust() or
+                                     self.get_using_msvc()):
             self.debug_filename = self.name + '.pdb'
-
-        # Only linkwithable if using export_dynamic
-        self.is_linkwithable = self.export_dynamic
-
-        # Remember that this exe was returned by `find_program()` through an override
-        self.was_returned_by_find_program = False
 
     def get_default_install_dir(self, environment: environment.Environment) -> T.Tuple[str, str]:
         return environment.get_bindir(), '{bindir}'
@@ -1978,9 +1912,17 @@ class StaticLibrary(BuildTarget):
 
     def __init__(self, name: str, subdir: str, subproject: str, for_machine: MachineChoice,
                  sources: T.List[File], structured_sources: T.Optional['StructuredSources'],
-                 objects, environment: environment.Environment, kwargs):
+                 objects, environment: environment.Environment, compilers: T.Dict[str, 'Compiler'],
+                 kwargs):
         self.typename = 'static library'
-        super().__init__(name, subdir, subproject, for_machine, sources, structured_sources, objects, environment, kwargs)
+        self.prelink = kwargs.get('prelink', False)
+        if not isinstance(self.prelink, bool):
+            raise InvalidArguments('Prelink keyword argument must be a boolean.')
+        super().__init__(name, subdir, subproject, for_machine, sources, structured_sources, objects,
+                         environment, compilers, kwargs)
+
+    def post_init(self) -> None:
+        super().post_init()
         if 'cs' in self.compilers:
             raise InvalidArguments('Static libraries not supported for C#.')
         if 'rust' in self.compilers:
@@ -2011,9 +1953,6 @@ class StaticLibrary(BuildTarget):
                 self.suffix = 'a'
         self.filename = self.prefix + self.name + '.' + self.suffix
         self.outputs = [self.filename]
-        self.prelink = kwargs.get('prelink', False)
-        if not isinstance(self.prelink, bool):
-            raise InvalidArguments('Prelink keyword argument must be a boolean.')
 
     def get_link_deps_mapping(self, prefix: str, environment: environment.Environment) -> T.Mapping[str, str]:
         return {}
@@ -2041,7 +1980,8 @@ class SharedLibrary(BuildTarget):
 
     def __init__(self, name: str, subdir: str, subproject: str, for_machine: MachineChoice,
                  sources: T.List[File], structured_sources: T.Optional['StructuredSources'],
-                 objects, environment: environment.Environment, kwargs):
+                 objects, environment: environment.Environment, compilers: T.Dict[str, 'Compiler'],
+                 kwargs):
         self.typename = 'shared library'
         self.soversion = None
         self.ltversion = None
@@ -2058,7 +1998,11 @@ class SharedLibrary(BuildTarget):
         self.debug_filename = None
         # Use by the pkgconfig module
         self.shared_library_only = False
-        super().__init__(name, subdir, subproject, for_machine, sources, structured_sources, objects, environment, kwargs)
+        super().__init__(name, subdir, subproject, for_machine, sources, structured_sources, objects,
+                         environment, compilers, kwargs)
+
+    def post_init(self) -> None:
+        super().post_init()
         if 'rust' in self.compilers:
             # If no crate type is specified, or it's the generic lib type, use dylib
             if not hasattr(self, 'rust_crate_type') or self.rust_crate_type == 'lib':
@@ -2072,7 +2016,7 @@ class SharedLibrary(BuildTarget):
         if not hasattr(self, 'suffix'):
             self.suffix = None
         self.basic_filename_tpl = '{0.prefix}{0.name}.{0.suffix}'
-        self.determine_filenames(environment)
+        self.determine_filenames(self.environment)
 
     def get_link_deps_mapping(self, prefix: str, environment: environment.Environment) -> T.Mapping[str, str]:
         result: T.Dict[str, str] = {}
@@ -2370,13 +2314,14 @@ class SharedModule(SharedLibrary):
 
     def __init__(self, name: str, subdir: str, subproject: str, for_machine: MachineChoice,
                  sources: T.List[File], structured_sources: T.Optional['StructuredSources'],
-                 objects, environment: environment.Environment, kwargs):
+                 objects, environment: environment.Environment,
+                 compilers: T.Dict[str, 'Compiler'], kwargs):
         if 'version' in kwargs:
             raise MesonException('Shared modules must not specify the version kwarg.')
         if 'soversion' in kwargs:
             raise MesonException('Shared modules must not specify the soversion kwarg.')
         super().__init__(name, subdir, subproject, for_machine, sources,
-                         structured_sources, objects, environment, kwargs)
+                         structured_sources, objects, environment, compilers, kwargs)
         self.typename = 'shared module'
         # We need to set the soname in cases where build files link the module
         # to build targets, see: https://github.com/mesonbuild/meson/issues/9492
@@ -2698,9 +2643,11 @@ class Jar(BuildTarget):
 
     def __init__(self, name: str, subdir: str, subproject: str, for_machine: MachineChoice,
                  sources: T.List[File], structured_sources: T.Optional['StructuredSources'],
-                 objects, environment: environment.Environment, kwargs):
+                 objects, environment: environment.Environment, compilers: T.Dict[str, 'Compiler'],
+                 kwargs):
         self.typename = 'jar'
-        super().__init__(name, subdir, subproject, for_machine, sources, structured_sources, objects, environment, kwargs)
+        super().__init__(name, subdir, subproject, for_machine, sources, structured_sources, objects,
+                         environment, compilers, kwargs)
         for s in self.sources:
             if not s.endswith('.java'):
                 raise InvalidArguments(f'Jar source {s} is not a java file.')
@@ -2712,6 +2659,7 @@ class Jar(BuildTarget):
         self.filename = self.name + '.jar'
         self.outputs = [self.filename]
         self.java_args = kwargs.get('java_args', [])
+        self.java_resources: T.Optional[StructuredSources] = kwargs.get('java_resources', None)
 
     def get_main_class(self):
         return self.main_class
@@ -2721,6 +2669,9 @@ class Jar(BuildTarget):
 
     def get_java_args(self):
         return self.java_args
+
+    def get_java_resources(self) -> T.Optional[StructuredSources]:
+        return self.java_resources
 
     def validate_install(self, environment):
         # All jar targets are installable.

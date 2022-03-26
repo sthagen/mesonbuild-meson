@@ -190,7 +190,7 @@ defaults['cuda'] = ['nvcc']
 defaults['rust'] = ['rustc']
 defaults['swift'] = ['swiftc']
 defaults['vala'] = ['valac']
-defaults['cython'] = ['cython']
+defaults['cython'] = ['cython', 'cython3'] # Official name is cython, but Debian renamed it to cython3.
 defaults['static_linker'] = ['ar', 'gar']
 defaults['strip'] = ['strip']
 defaults['vs_static_linker'] = ['lib']
@@ -1049,6 +1049,7 @@ def detect_rust_compiler(env: 'Environment', for_machine: MachineChoice) -> Rust
                 # This trickery with type() gets us the class of the linker
                 # so we can initialize a new copy for the Rust Compiler
                 # TODO rewrite this without type: ignore
+                assert cc.linker is not None, 'for mypy'
                 if is_link_exe:
                     linker = type(cc.linker)(for_machine, always_args, exelist=cc.linker.exelist,   # type: ignore
                                              version=cc.linker.version, **extra_args)               # type: ignore

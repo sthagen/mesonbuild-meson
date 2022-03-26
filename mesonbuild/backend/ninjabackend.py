@@ -606,7 +606,7 @@ class NinjaBackend(backends.Backend):
             with open(os.path.join(builddir, 'compile_commands.json'), 'wb') as f:
                 f.write(jsondb)
         except Exception:
-            mlog.warning('Could not create compilation database.')
+            mlog.warning('Could not create compilation database.', fatal=False)
 
     # Get all generated headers. Any source file might need them so
     # we need to add an order dependency to them.
@@ -1231,10 +1231,11 @@ class NinjaBackend(backends.Backend):
         elem = NinjaBuildElement(self.all_outputs, 'PHONY', 'phony', '')
         self.add_build(elem)
 
-    def generate_jar_target(self, target):
+    def generate_jar_target(self, target: build.Jar):
         fname = target.get_filename()
         outname_rel = os.path.join(self.get_target_dir(target), fname)
         src_list = target.get_sources()
+        resources = target.get_java_resources()
         class_list = []
         compiler = target.compilers['java']
         c = 'c'
@@ -1280,6 +1281,9 @@ class NinjaBackend(backends.Backend):
         commands += ['-C', self.get_target_private_dir(target), '.']
         elem = NinjaBuildElement(self.all_outputs, outname_rel, jar_rule, [])
         elem.add_dep(class_dep_list)
+        if resources:
+            # Copy all resources into the root of the jar.
+            elem.add_orderdep(self.__generate_sources_structure(Path(self.get_target_private_dir(target)), resources)[0])
         elem.add_item('ARGS', commands)
         self.add_build(elem)
         # Create introspection information
@@ -1601,7 +1605,7 @@ class NinjaBackend(backends.Backend):
 
         cython = target.compilers['cython']
 
-        opt_proxy = self.get_compiler_options_for_target(target)
+        opt_proxy = self.get_options_for_target(target)
 
         args: T.List[str] = []
         args += cython.get_always_args()
@@ -1611,6 +1615,7 @@ class NinjaBackend(backends.Backend):
         args += cython.get_option_compile_args(opt_proxy)
         args += self.build.get_global_args(cython, target.for_machine)
         args += self.build.get_project_args(cython, target.subproject, target.for_machine)
+        args += target.get_extra_args('cython')
 
         ext = opt_proxy[OptionKey('language', machine=target.for_machine, lang='cython')].value
 
@@ -1663,11 +1668,10 @@ class NinjaBackend(backends.Backend):
         elem.add_orderdep(instr)
         self.add_build(elem)
 
-    def __generate_compile_structure(self, target: build.BuildTarget) -> T.Tuple[T.List[str], T.Optional[str]]:
+    def __generate_sources_structure(self, root: Path, structured_sources: build.StructuredSources) -> T.Tuple[T.List[str], T.Optional[str]]:
         first_file: T.Optional[str] = None
         orderdeps: T.List[str] = []
-        root = Path(self.get_target_private_dir(target)) / 'structured'
-        for path, files in target.structured_sources.sources.items():
+        for path, files in structured_sources.sources.items():
             for file in files:
                 if isinstance(file, File):
                     out = root / path / Path(file.fname).name
@@ -1689,7 +1693,7 @@ class NinjaBackend(backends.Backend):
         # Rust compiler takes only the main file as input and
         # figures out what other files are needed via import
         # statements and magic.
-        base_proxy = self.get_base_options_for_target(target)
+        base_proxy = self.get_options_for_target(target)
         args = rustc.compiler_args()
         # Compiler args for compiling this target
         args += compilers.get_base_compile_args(base_proxy, rustc)
@@ -1706,7 +1710,8 @@ class NinjaBackend(backends.Backend):
         main_rust_file = None
         if target.structured_sources:
             if target.structured_sources.needs_copy():
-                _ods, main_rust_file = self.__generate_compile_structure(target)
+                _ods, main_rust_file = self.__generate_sources_structure(Path(
+                    self.get_target_private_dir(target)) / 'structured', target.structured_sources)
                 orderdeps.extend(_ods)
             else:
                 # The only way to get here is to have only files in the "root"
@@ -2459,7 +2464,7 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
         return linker.get_link_debugfile_args(outname)
 
     def generate_llvm_ir_compile(self, target, src):
-        base_proxy = self.get_base_options_for_target(target)
+        base_proxy = self.get_options_for_target(target)
         compiler = get_compiler_for_source(target.compilers.values(), src)
         commands = compiler.compiler_args()
         # Compiler args for compiling this target
@@ -2519,7 +2524,7 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
         return commands
 
     def _generate_single_compile_base_args(self, target: build.BuildTarget, compiler: 'Compiler') -> 'CompilerArgs':
-        base_proxy = self.get_base_options_for_target(target)
+        base_proxy = self.get_options_for_target(target)
         # Create an empty commands list, and start adding arguments from
         # various sources in the order in which they must override each other
         commands = compiler.compiler_args()
@@ -3021,9 +3026,9 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
         # options passed on the command-line, in default_options, etc.
         # These have the lowest priority.
         if isinstance(target, build.StaticLibrary):
-            commands += linker.get_base_link_args(self.get_base_options_for_target(target))
+            commands += linker.get_base_link_args(self.get_options_for_target(target))
         else:
-            commands += compilers.get_base_link_args(self.get_base_options_for_target(target),
+            commands += compilers.get_base_link_args(self.get_options_for_target(target),
                                                      linker,
                                                      isinstance(target, build.SharedModule))
         # Add -nostdlib if needed; can't be overridden

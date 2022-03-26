@@ -32,7 +32,7 @@ from .. import mesonlib
 from .. import mlog
 from ..compilers import LANGUAGES_USING_LDFLAGS, detect
 from ..mesonlib import (
-    File, MachineChoice, MesonException, OptionType, OrderedSet, OptionOverrideProxy,
+    File, MachineChoice, MesonException, OrderedSet, OptionOverrideProxy,
     classify_unity_sources, OptionKey, join_args
 )
 
@@ -310,27 +310,18 @@ class Backend:
     def get_target_filename_abs(self, target: T.Union[build.Target, build.CustomTargetIndex]) -> str:
         return os.path.join(self.environment.get_build_dir(), self.get_target_filename(target))
 
-    def get_base_options_for_target(self, target: build.BuildTarget) -> OptionOverrideProxy:
-        return OptionOverrideProxy(target.option_overrides_base,
-                                   {k: v for k, v in self.environment.coredata.options.items()
-                                    if k.type in {OptionType.BASE, OptionType.BUILTIN}})
+    def get_options_for_target(self, target: build.BuildTarget) -> OptionOverrideProxy:
+        return OptionOverrideProxy(target.option_overrides,
+                                   self.environment.coredata.options,
+                                   target.subproject)
 
-    def get_compiler_options_for_target(self, target: build.BuildTarget) -> OptionOverrideProxy:
-        comp_reg = {k: v for k, v in self.environment.coredata.options.items() if k.is_compiler()}
-        comp_override = target.option_overrides_compiler
-        return OptionOverrideProxy(comp_override, comp_reg)
-
-    def get_option_for_target(self, option_name: 'OptionKey', target: build.BuildTarget) -> T.Union[str, int, bool, 'WrapMode']:
-        if option_name in target.option_overrides_base:
-            override = target.option_overrides_base[option_name]
-            v = self.environment.coredata.validate_option_value(option_name, override)
-        else:
-            v = self.environment.coredata.get_option(option_name.evolve(subproject=target.subproject))
+    def get_option_for_target(self, key: 'OptionKey', target: build.BuildTarget) -> T.Union[str, int, bool, 'WrapMode']:
+        options = self.get_options_for_target(target)
         # We don't actually have wrapmode here to do an assert, so just do a
         # cast, we know what's in coredata anyway.
         # TODO: if it's possible to annotate get_option or validate_option_value
         # in the future we might be able to remove the cast here
-        return T.cast('T.Union[str, int, bool, WrapMode]', v)
+        return T.cast('T.Union[str, int, bool, WrapMode]', options[key].value)
 
     def get_source_dir_include_args(self, target: build.BuildTarget, compiler: 'Compiler', *, absolute_path: bool = False) -> T.List[str]:
         curdir = target.get_subdir()
@@ -926,7 +917,7 @@ class Backend:
         # starting from hard-coded defaults followed by build options and so on.
         commands = compiler.compiler_args()
 
-        copt_proxy = self.get_compiler_options_for_target(target)
+        copt_proxy = self.get_options_for_target(target)
         # First, the trivial ones that are impossible to override.
         #
         # Add -nostdinc/-nostdinc++ if needed; can't be overridden

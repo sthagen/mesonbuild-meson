@@ -1938,8 +1938,7 @@ def generate_list(func: T.Callable[..., T.Generator[_T, None, None]]) -> T.Calla
     return wrapper
 
 
-class OptionOverrideProxy(collections.abc.MutableMapping):
-
+class OptionOverrideProxy(collections.abc.Mapping):
     '''Mimic an option list but transparently override selected option
     values.
     '''
@@ -1947,26 +1946,29 @@ class OptionOverrideProxy(collections.abc.MutableMapping):
     # TODO: the typing here could be made more explicit using a TypeDict from
     # python 3.8 or typing_extensions
 
-    def __init__(self, overrides: T.Dict['OptionKey', T.Any], *options: 'KeyedOptionDictType'):
-        self.overrides = overrides.copy()
-        self.options: T.Dict['OptionKey', UserOption] = {}
-        for o in options:
-            self.options.update(o)
+    def __init__(self, overrides: T.Dict['OptionKey', T.Any], options: 'KeyedOptionDictType',
+                 subproject: T.Optional[str] = None):
+        self.overrides = overrides
+        self.options = options
+        self.subproject = subproject
 
-    def __getitem__(self, key: 'OptionKey') -> T.Union['UserOption']:
-        if key in self.options:
+    def __getitem__(self, key: 'OptionKey') -> 'UserOption':
+        # FIXME: This is fundamentally the same algorithm than interpreter.get_option_internal().
+        # We should try to share the code somehow.
+        key = key.evolve(subproject=self.subproject)
+        if not key.is_project():
+            opt = self.options.get(key)
+            if opt is None or opt.yielding:
+                opt = self.options[key.as_root()]
+        else:
             opt = self.options[key]
-            if key in self.overrides:
-                opt = copy.copy(opt)
-                opt.set_value(self.overrides[key])
-            return opt
-        raise KeyError('Option not found', key)
-
-    def __setitem__(self, key: 'OptionKey', value: T.Union['UserOption']) -> None:
-        self.overrides[key] = value.value
-
-    def __delitem__(self, key: 'OptionKey') -> None:
-        del self.overrides[key]
+            if opt.yielding:
+                opt = self.options.get(key.as_root(), opt)
+        override_value = self.overrides.get(key.as_root())
+        if override_value is not None :
+            opt = copy.copy(opt)
+            opt.set_value(override_value)
+        return opt
 
     def __iter__(self) -> T.Iterator['OptionKey']:
         return iter(self.options)
@@ -1974,8 +1976,12 @@ class OptionOverrideProxy(collections.abc.MutableMapping):
     def __len__(self) -> int:
         return len(self.options)
 
-    def copy(self) -> 'OptionOverrideProxy':
-        return OptionOverrideProxy(self.overrides.copy(), self.options.copy())
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, OptionOverrideProxy):
+            return NotImplemented
+        t1 = (self.overrides, self.subproject, self.options)
+        t2 = (other.overrides, other.subproject, other.options)
+        return t1 == t2
 
 
 class OptionType(enum.IntEnum):
