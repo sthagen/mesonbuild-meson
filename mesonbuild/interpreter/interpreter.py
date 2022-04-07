@@ -356,6 +356,7 @@ class Interpreter(InterpreterBase, HoldableObject):
                            'configuration_data': self.func_configuration_data,
                            'configure_file': self.func_configure_file,
                            'custom_target': self.func_custom_target,
+                           'debug': self.func_debug,
                            'declare_dependency': self.func_declare_dependency,
                            'dependency': self.func_dependency,
                            'disabler': self.func_disabler,
@@ -1324,6 +1325,13 @@ external dependencies (including libraries) must go to "dependencies".''')
         args_str = [stringifyUserArguments(i) for i in args]
         raise InterpreterException('Problem encountered: ' + ' '.join(args_str))
 
+    @noArgsFlattening
+    @FeatureNew('debug', '0.63.0')
+    @noKwargs
+    def func_debug(self, node, args, kwargs):
+        args_str = [stringifyUserArguments(i) for i in args]
+        mlog.debug('Debug:', *args_str)
+
     @noKwargs
     @noPosargs
     def func_exception(self, node, args, kwargs):
@@ -1485,12 +1493,12 @@ external dependencies (including libraries) must go to "dependencies".''')
                           required: bool = True, silent: bool = True,
                           wanted: T.Union[str, T.List[str]] = '',
                           search_dirs: T.Optional[T.List[str]] = None,
-                          version_func: T.Optional[T.Callable[[T.Union['ExternalProgram', 'build.Executable', 'OverrideProgram']], str]] = None
-                          ) -> T.Union['ExternalProgram', 'build.Executable', 'OverrideProgram']:
+                          version_func: T.Optional[T.Callable[[T.Union['ExternalProgram', 'build.Executable', 'OverrideProgram']], str]] = None,
+                          depname: T.Optional[str] = None, varname: T.Optional[str] = None) -> T.Union['ExternalProgram', 'build.Executable', 'OverrideProgram']:
         args = mesonlib.listify(args)
 
         extra_info: T.List[mlog.TV_Loggable] = []
-        progobj = self.program_lookup(args, for_machine, required, search_dirs, extra_info)
+        progobj = self.program_lookup(args, for_machine, required, search_dirs, depname, varname, extra_info)
         if progobj is None:
             progobj = self.notfound_program(args)
 
@@ -1534,7 +1542,9 @@ external dependencies (including libraries) must go to "dependencies".''')
         return progobj
 
     def program_lookup(self, args: T.List[mesonlib.FileOrString], for_machine: MachineChoice,
-                       required: bool, search_dirs: T.List[str], extra_info: T.List[mlog.TV_Loggable]
+                       required: bool, search_dirs: T.List[str],
+                       depname: T.Optional[str], varname: T.Optional[str],
+                       extra_info: T.List[mlog.TV_Loggable]
                        ) -> T.Optional[T.Union[ExternalProgram, build.Executable, OverrideProgram]]:
         progobj = self.program_from_overrides(args, extra_info)
         if progobj:
@@ -1548,6 +1558,20 @@ external dependencies (including libraries) must go to "dependencies".''')
             return self.find_program_fallback(fallback, args, required, extra_info)
 
         progobj = self.program_from_file_for(for_machine, args)
+        if progobj is None and depname:
+            # Check if the program path is found in a pkgconfig variable.
+            # Currently only used internally by gnome and wayland modules, this
+            # code path is not (yet?) exposed in public find_program() function.
+            name = args[0]
+            if not varname:
+                varname = name.replace('-', '_')
+            df = DependencyFallbacksHolder(self, [depname], allow_fallback=False)
+            dep = df.lookup({'native': for_machine == MachineChoice.BUILD,
+                             'required': False})
+            if dep.found():
+                path = dep.get_variable(pkgconfig=varname, default_value='')
+                if path:
+                    progobj = ExternalProgram(name, [path], silent=True)
         if progobj is None:
             progobj = self.program_from_system(args, search_dirs, extra_info)
         if progobj is None and args[0].endswith('python3'):
@@ -1763,6 +1787,7 @@ external dependencies (including libraries) must go to "dependencies".''')
             kwargs['output'][0],
             self.subdir,
             self.subproject,
+            self.environment,
             self.environment.get_build_command() +
                 ['--internal',
                 'vcstagger',
@@ -1889,6 +1914,7 @@ external dependencies (including libraries) must go to "dependencies".''')
             name,
             self.subdir,
             self.subproject,
+            self.environment,
             command,
             inputs,
             kwargs['output'],
@@ -1927,7 +1953,8 @@ external dependencies (including libraries) must go to "dependencies".''')
         if isinstance(all_args[0], str):
             all_args[0] = self.find_program_impl([all_args[0]])
         name = args[0]
-        tg = build.RunTarget(name, all_args, kwargs['depends'], self.subdir, self.subproject, kwargs['env'])
+        tg = build.RunTarget(name, all_args, kwargs['depends'], self.subdir, self.subproject, self.environment,
+                             kwargs['env'])
         self.add_target(name, tg)
         full_name = (self.subproject, name)
         assert full_name not in self.build.run_target_names
@@ -1940,7 +1967,7 @@ external dependencies (including libraries) must go to "dependencies".''')
     def func_alias_target(self, node: mparser.BaseNode, args: T.Tuple[str, T.List[build.Target]],
                           kwargs: 'TYPE_kwargs') -> build.AliasTarget:
         name, deps = args
-        tg = build.AliasTarget(name, deps, self.subdir, self.subproject)
+        tg = build.AliasTarget(name, deps, self.subdir, self.subproject, self.environment)
         self.add_target(name, tg)
         return tg
 

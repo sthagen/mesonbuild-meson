@@ -25,6 +25,7 @@ if T.TYPE_CHECKING:
         subprojects: T.List[str]
         types: str
         subprojects_func: T.Callable[[], bool]
+        allow_insecure: bool
 
     class UpdateArguments(Arguments):
         rebase: bool
@@ -131,9 +132,9 @@ class Runner:
             branch, revision = wraptool.parse_patch_url(patch_url)
         except WrapException:
             return
-        new_branch, new_revision = wraptool.get_latest_version(self.wrap.name)
+        new_branch, new_revision = wraptool.get_latest_version(self.wrap.name, self.options.allow_insecure)
         if new_branch != branch or new_revision != revision:
-            wraptool.update_wrap_file(self.wrap.filename, self.wrap.name, new_branch, new_revision)
+            wraptool.update_wrap_file(self.wrap.filename, self.wrap.name, new_branch, new_revision, self.options.allow_insecure)
             self.log('  -> New wrap file downloaded.')
 
     def update_file(self) -> bool:
@@ -575,6 +576,8 @@ def add_common_arguments(p: argparse.ArgumentParser) -> None:
                    help=f'Comma-separated list of subproject types. Supported types are: {ALL_TYPES_STRING} (default: all)')
     p.add_argument('--num-processes', default=None, type=int,
                    help='How many parallel processes to use (Since 0.59.0).')
+    p.add_argument('--allow-insecure', default=False, action='store_true',
+                   help='Allow insecure server connections.')
 
 def add_subprojects_argument(p: argparse.ArgumentParser) -> None:
     p.add_argument('subprojects', nargs='*',
@@ -643,7 +646,7 @@ def run(options: 'Arguments') -> int:
     if not os.path.isdir(subprojects_dir):
         mlog.log('Directory', mlog.bold(src_dir), 'does not seem to have subprojects.')
         return 0
-    r = Resolver(src_dir, 'subprojects')
+    r = Resolver(src_dir, 'subprojects', wrap_frontend=True, allow_insecure=options.allow_insecure)
     if options.subprojects:
         wraps = [wrap for name, wrap in r.wraps.items() if name in options.subprojects]
     else:

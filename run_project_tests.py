@@ -13,6 +13,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from __future__ import annotations
 
 # Work around some pathlib bugs...
 from mesonbuild import _pathlib
@@ -80,6 +81,20 @@ if T.TYPE_CHECKING:
         failfast: bool
         no_unittests: bool
         only: T.List[str]
+
+    # In previous python versions the global variables are lost in ProcessPoolExecutor.
+    # So, we use this tuple to restore some of them
+    class GlobalState(T.NamedTuple):
+        compile_commands:   T.List[str]
+        clean_commands:     T.List[str]
+        test_commands:      T.List[str]
+        install_commands:   T.List[str]
+        uninstall_commands: T.List[str]
+
+        backend:      'Backend'
+        backend_flags: T.List[str]
+
+        host_c_compiler: T.Optional[str]
 
 ALL_TESTS = ['cmake', 'common', 'native', 'warning-meson', 'failing-meson', 'failing-build', 'failing-test',
              'keyval', 'platform-osx', 'platform-windows', 'platform-linux',
@@ -586,20 +601,6 @@ def detect_parameter_files(test: TestDef, test_build_dir: str) -> T.Tuple[Path, 
         crossfile = format_parameter_file('crossfile.ini', test, test_build_dir)
 
     return nativefile, crossfile
-
-# In previous python versions the global variables are lost in ProcessPoolExecutor.
-# So, we use this tuple to restore some of them
-class GlobalState(T.NamedTuple):
-    compile_commands:   T.List[str]
-    clean_commands:     T.List[str]
-    test_commands:      T.List[str]
-    install_commands:   T.List[str]
-    uninstall_commands: T.List[str]
-
-    backend:      'Backend'
-    backend_flags: T.List[str]
-
-    host_c_compiler: T.Optional[str]
 
 def run_test(test: TestDef,
              extra_args: T.List[str],
@@ -1172,6 +1173,12 @@ class LogRunFuture:
 
 RunFutureUnion = T.Union[TestRunFuture, LogRunFuture]
 
+def test_emits_skip_msg(line: str) -> bool:
+    for prefix in {'Problem encountered', 'Assert failed', 'Failed to configure the CMake subproject'}:
+        if f'{prefix}: MESON_SKIP_TEST' in line:
+            return True
+    return False
+
 def _run_tests(all_tests: T.List[T.Tuple[str, T.List[TestDef], bool]],
                log_name_base: str,
                failfast: bool,
@@ -1229,19 +1236,21 @@ def _run_tests(all_tests: T.List[T.Tuple[str, T.List[TestDef], bool]],
     # Ensure we only cancel once
     tests_canceled = False
 
-    # Optionally enable the tqdm progress bar
+    # Optionally enable the tqdm progress bar, but only if there is at least
+    # one LogRunFuture and one TestRunFuture
     global safe_print
     futures_iter: T.Iterable[RunFutureUnion] = futures
-    try:
-        from tqdm import tqdm
-        futures_iter = tqdm(futures, desc='Running tests', unit='test')
+    if len(futures) > 2:
+        try:
+            from tqdm import tqdm
+            futures_iter = tqdm(futures, desc='Running tests', unit='test')
 
-        def tqdm_print(*args: mlog.TV_Loggable, sep: str = ' ') -> None:
-            tqdm.write(sep.join([str(x) for x in args]))
+            def tqdm_print(*args: mlog.TV_Loggable, sep: str = ' ') -> None:
+                tqdm.write(sep.join([str(x) for x in args]))
 
-        safe_print = tqdm_print
-    except ImportError:
-        pass
+            safe_print = tqdm_print
+        except ImportError:
+            pass
 
     # Wait and handle the test results and print the stored log output
     for f in futures_iter:
@@ -1278,10 +1287,19 @@ def _run_tests(all_tests: T.List[T.Tuple[str, T.List[TestDef], bool]],
         if result is None:
             # skipped due to skipped category skip or 'tools:' or 'skip_on_env:'
             is_skipped = True
+            skip_reason = 'not run because preconditions were not met'
             skip_as_expected = True
         else:
             # skipped due to test outputting 'MESON_SKIP_TEST'
-            is_skipped = 'MESON_SKIP_TEST' in result.stdo
+            for l in result.stdo.splitlines():
+                if test_emits_skip_msg(l):
+                    is_skipped = True
+                    offset = l.index('MESON_SKIP_TEST') + 16
+                    skip_reason = l[offset:].strip()
+                    break
+            else:
+                is_skipped = False
+                skip_reason = ''
             if not skip_dont_care(t):
                 skip_as_expected = (is_skipped == t.skip_expected)
             else:
@@ -1292,6 +1310,7 @@ def _run_tests(all_tests: T.List[T.Tuple[str, T.List[TestDef], bool]],
 
         if is_skipped and skip_as_expected:
             f.update_log(TestStatus.SKIP)
+            safe_print(bold('Reason:'), skip_reason)
             current_test = ET.SubElement(current_suite, 'testcase', {'name': testname, 'classname': t.category})
             ET.SubElement(current_test, 'skipped', {})
             continue

@@ -32,7 +32,7 @@ class PlatformAgnosticTests(BasePlatformTests):
         Tests that find_program() with a relative path does not find the program
         in current workdir.
         '''
-        testdir = os.path.join(self.unit_test_dir, '101 relative find program')
+        testdir = os.path.join(self.unit_test_dir, '100 relative find program')
         self.init(testdir, workdir=testdir)
 
     def test_invalid_option_names(self):
@@ -68,5 +68,18 @@ class PlatformAgnosticTests(BasePlatformTests):
         interp.process(fname)
 
     def test_python_dependency_without_pkgconfig(self):
-        testdir = os.path.join(self.unit_test_dir, '103 python without pkgconfig')
+        testdir = os.path.join(self.unit_test_dir, '102 python without pkgconfig')
         self.init(testdir, override_envvars={'PKG_CONFIG': 'notfound'})
+
+    def test_debug_function_outputs_to_meson_log(self):
+        testdir = os.path.join(self.unit_test_dir, '104 debug function')
+        log_msg = 'This is an example debug output, should only end up in debug log'
+        output = self.init(testdir)
+
+        # Check if message is not printed to stdout while configuring
+        self.assertNotIn(log_msg, output)
+
+        # Check if message is written to the meson log
+        mesonlog = os.path.join(self.builddir, 'meson-logs/meson-log.txt')
+        with open(mesonlog, mode='r', encoding='utf-8') as file:
+            self.assertIn(log_msg, file.read())

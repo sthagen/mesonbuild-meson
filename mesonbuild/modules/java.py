@@ -11,17 +11,23 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from __future__ import annotations
 
 import os
 import pathlib
 import typing as T
+
 from mesonbuild import mesonlib
 from mesonbuild.build import CustomTarget, CustomTargetIndex, GeneratedList, Target
-from mesonbuild.compilers import detect_compiler_for, Compiler
-from mesonbuild.interpreter import Interpreter
+from mesonbuild.compilers import detect_compiler_for
 from mesonbuild.interpreterbase.decorators import ContainerTypeInfo, FeatureDeprecated, FeatureNew, KwargInfo, typed_pos_args, typed_kwargs
 from mesonbuild.mesonlib import version_compare, MachineChoice
-from . import NewExtensionModule, ModuleReturnValue, ModuleState
+from . import NewExtensionModule, ModuleReturnValue
+
+if T.TYPE_CHECKING:
+    from . import ModuleState
+    from ..compilers import Compiler
+    from ..interpreter import Interpreter
 
 class JavaModule(NewExtensionModule):
     @FeatureNew('Java Module', '0.60.0')
@@ -60,6 +66,7 @@ class JavaModule(NewExtensionModule):
             os.path.basename(header),
             state.subdir,
             state.subproject,
+            state.environment,
             mesonlib.listify([
                 javac.exelist,
                 '-d',
@@ -112,7 +119,11 @@ class JavaModule(NewExtensionModule):
 
         prefix = classes[0] if not package else package
 
-        target = CustomTarget(f'{prefix}-native-headers', state.subdir, state.subproject, command,
+        target = CustomTarget(f'{prefix}-native-headers',
+                              state.subdir,
+                              state.subproject,
+                              state.environment,
+                              command,
                               sources=args[0], outputs=headers, backend=state.backend)
 
         # It is only known that 1.8.0 won't pre-create the directory. 11 and 16

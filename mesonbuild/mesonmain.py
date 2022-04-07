@@ -18,6 +18,7 @@ import sys
 sys.modules['pathlib'] = _pathlib
 
 import os.path
+import platform
 import importlib
 import traceback
 import argparse
@@ -28,7 +29,6 @@ from . import mesonlib
 from . import mlog
 from . import mconf, mdist, minit, minstall, mintro, msetup, mtest, rewriter, msubprojects, munstable_coredata, mcompile, mdevenv
 from .mesonlib import MesonException, MesonBugException
-from .environment import detect_msys2_arch
 from .wrap import wraptool
 from .scripts import env2mfile
 
@@ -93,8 +93,9 @@ class CommandLineParser:
         for i in [name] + aliases:
             self.commands[i] = p
 
-    def add_runpython_arguments(self, parser):
+    def add_runpython_arguments(self, parser: argparse.ArgumentParser):
         parser.add_argument('-c', action='store_true', dest='eval_arg', default=False)
+        parser.add_argument('--version', action='version', version=platform.python_version())
         parser.add_argument('script_file')
         parser.add_argument('script_args', nargs=argparse.REMAINDER)
 
@@ -233,13 +234,9 @@ def run(original_args, mainfile):
     ensure_stdout_accepts_unicode()
 
     # https://github.com/mesonbuild/meson/issues/3653
-    if sys.platform.lower() == 'msys':
-        mlog.error('This python3 seems to be msys/python on MSYS2 Windows, which is known to have path semantics incompatible with Meson')
-        msys2_arch = detect_msys2_arch()
-        if msys2_arch:
-            mlog.error('Please install and use mingw-w64-i686-python3 and/or mingw-w64-x86_64-python3 with Pacman')
-        else:
-            mlog.error('Please download and use Python as detailed at: https://mesonbuild.com/Getting-meson.html')
+    if sys.platform == 'cygwin' and os.environ.get('MSYSTEM', '') not in ['MSYS', '']:
+        mlog.error('This python3 seems to be msys/python on MSYS2 Windows, but you are in a MinGW environment')
+        mlog.error('Please install and use mingw-w64-x86_64-python3 and/or mingw-w64-x86_64-meson with Pacman')
         return 2
 
     # Set the meson command that will be used to run scripts and so on

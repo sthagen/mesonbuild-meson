@@ -45,7 +45,9 @@ class WaylandModule(ExtensionModule):
     )
     def scan_xml(self, state, args, kwargs):
         if self.scanner_bin is None:
-            self.scanner_bin = state.find_program('wayland-scanner', for_machine=MachineChoice.BUILD)
+            self.scanner_bin = state.find_program('wayland-scanner',
+                                                  for_machine=MachineChoice.BUILD,
+                                                  depname='wayland-scanner')
 
         scope = 'public' if kwargs['public'] else 'private'
         sides = [i for i in ['client', 'server'] if kwargs[i]]
@@ -61,6 +63,7 @@ class WaylandModule(ExtensionModule):
                 f'{name}-protocol',
                 state.subdir,
                 state.subproject,
+                state.environment,
                 [self.scanner_bin, f'{scope}-code', '@INPUT@', '@OUTPUT@'],
                 [xml_file],
                 [f'{name}-protocol.c'],
@@ -73,6 +76,7 @@ class WaylandModule(ExtensionModule):
                     f'{name}-{side}-protocol',
                     state.subdir,
                     state.subproject,
+                    state.environment,
                     [self.scanner_bin, f'{side}-header', '@INPUT@', '@OUTPUT@'],
                     [xml_file],
                     [f'{name}-{side}-protocol.h'],
