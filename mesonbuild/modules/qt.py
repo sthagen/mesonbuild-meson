@@ -131,8 +131,12 @@ class QtBaseModule(ExtensionModule):
             for b in self.tools:
                 if qt_dep.bindir:
                     yield os.path.join(qt_dep.bindir, b), b
-                # prefer the <tool>-qt<version> of the tool to the plain one, as we
+                if qt_dep.libexecdir:
+                    yield os.path.join(qt_dep.libexecdir, b), b
+                # prefer the (official) <tool><version> or (unofficial) <tool>-qt<version>
+                # of the tool to the plain one, as we
                 # don't know what the unsuffixed one points to without calling it.
+                yield f'{b}{qt_dep.qtver}', b
                 yield f'{b}-qt{qt_dep.qtver}', b
                 yield b, b
 
