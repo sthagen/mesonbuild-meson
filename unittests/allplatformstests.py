@@ -83,7 +83,7 @@ def temp_filename():
         except OSError:
             pass
 
-def _git_init(project_dir):
+def git_init(project_dir):
     # If a user has git configuration init.defaultBranch set we want to override that
     with tempfile.TemporaryDirectory() as d:
         out = git(['--version'], str(d))[1]
@@ -1165,7 +1165,7 @@ class AllPlatformTests(BasePlatformTests):
             raise SkipTest('Dist is only supported with Ninja')
 
         try:
-            self.dist_impl(_git_init, _git_add_all)
+            self.dist_impl(git_init, _git_add_all)
         except PermissionError:
             # When run under Windows CI, something (virus scanner?)
             # holds on to the git files so cleaning up the dir
@@ -1220,7 +1220,7 @@ class AllPlatformTests(BasePlatformTests):
                 project_dir = os.path.join(tmpdir, 'a')
                 shutil.copytree(os.path.join(self.unit_test_dir, '35 dist script'),
                                 project_dir)
-                _git_init(project_dir)
+                git_init(project_dir)
                 self.init(project_dir)
                 self.build('dist')
 
@@ -1635,6 +1635,39 @@ class AllPlatformTests(BasePlatformTests):
         cargs = ['-I' + incdir.as_posix(), '-DLIBFOO']
         # pkg-config and pkgconf does not respect the same order
         self.assertEqual(sorted(foo_dep.get_compile_args()), sorted(cargs))
+
+    @skipIfNoPkgconfig
+    def test_pkgconfig_relocatable(self):
+        '''
+        Test that it generates relocatable pkgconfig when module
+        option pkgconfig.relocatable=true.
+        '''
+        testdir_rel = os.path.join(self.common_test_dir, '44 pkgconfig-gen')
+        self.init(testdir_rel, extra_args=['-Dpkgconfig.relocatable=true'])
+
+        def check_pcfile(name, *, relocatable, levels=2):
+            with open(os.path.join(self.privatedir, name), encoding='utf-8') as f:
+                pcfile = f.read()
+                # The pkgconfig module always uses posix path regardless of platform
+                prefix_rel = PurePath('${pcfiledir}', *(['..'] * levels)).as_posix()
+                (self.assertIn if relocatable else self.assertNotIn)(
+                    f'prefix={prefix_rel}\n',
+                    pcfile)
+
+        check_pcfile('libvartest.pc', relocatable=True)
+        check_pcfile('libvartest2.pc', relocatable=True)
+
+        self.wipe()
+        self.init(testdir_rel, extra_args=['-Dpkgconfig.relocatable=false'])
+
+        check_pcfile('libvartest.pc', relocatable=False)
+        check_pcfile('libvartest2.pc', relocatable=False)
+
+        self.wipe()
+        testdir_abs = os.path.join(self.unit_test_dir, '105 pkgconfig relocatable with absolute path')
+        self.init(testdir_abs)
+
+        check_pcfile('libsimple.pc', relocatable=True, levels=3)
 
     def test_array_option_change(self):
         def get_opt():
@@ -2603,7 +2636,7 @@ class AllPlatformTests(BasePlatformTests):
         # Ensure that test project is in git even when running meson from tarball.
         srcdir = os.path.join(self.builddir, 'src')
         shutil.copytree(testdir, srcdir)
-        _git_init(srcdir)
+        git_init(srcdir)
         testdir = srcdir
         self.new_builddir()
 
@@ -3602,7 +3635,7 @@ class AllPlatformTests(BasePlatformTests):
             shutil.copytree(os.path.join(self.unit_test_dir, '80 wrap-git'), srcdir)
             upstream = os.path.join(srcdir, 'subprojects', 'wrap_git_upstream')
             upstream_uri = Path(upstream).as_uri()
-            _git_init(upstream)
+            git_init(upstream)
             with open(os.path.join(srcdir, 'subprojects', 'wrap_git.wrap'), 'w', encoding='utf-8') as f:
                 f.write(textwrap.dedent('''
                   [wrap-git]

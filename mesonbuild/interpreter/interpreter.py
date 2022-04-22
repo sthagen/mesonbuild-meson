@@ -1752,9 +1752,14 @@ external dependencies (including libraries) must go to "dependencies".''')
         vcs_cmd = kwargs['command']
         source_dir = os.path.normpath(os.path.join(self.environment.get_source_dir(), self.subdir))
         if vcs_cmd:
-            maincmd = self.find_program_impl(vcs_cmd[0], required=False)
-            if maincmd.found():
-                vcs_cmd[0] = maincmd
+            if isinstance(vcs_cmd[0], (str, mesonlib.File)):
+                if isinstance(vcs_cmd[0], mesonlib.File):
+                    FeatureNew.single_use('vcs_tag with file as the first argument', '0.62.0', self.subproject, location=node)
+                maincmd = self.find_program_impl(vcs_cmd[0], required=False)
+                if maincmd.found():
+                    vcs_cmd[0] = maincmd
+            else:
+                FeatureNew.single_use('vcs_tag with custom_tgt, external_program, or exe as the first argument', '0.63.0', self.subproject, location=node)
         else:
             vcs = mesonlib.detect_vcs(source_dir)
             if vcs:
@@ -2725,7 +2730,6 @@ external dependencies (including libraries) must go to "dependencies".''')
         FeatureDeprecated.report(self.subproject)
         if not self.is_subproject():
             self.print_extra_warnings()
-        if self.subproject == '':
             self._print_summary()
 
     def print_extra_warnings(self) -> None:
