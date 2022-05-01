@@ -1,4 +1,4 @@
-# Copyright 2016-2021 The Meson development team
+# Copyright 2016-2022 The Meson development team
 
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -1152,9 +1152,12 @@ class LinuxlikeTests(BasePlatformTests):
         env = get_fake_env(testdir, self.builddir, self.prefix)
         env.coredata.set_options({OptionKey('pkg_config_path'): pkg_dir}, subproject='')
 
-        PkgConfigDependency.setup_env({}, env, MachineChoice.HOST, pkg_dir)
+        # Regression test: This used to modify the value of `pkg_config_path`
+        # option, adding the meson-uninstalled directory to it.
+        PkgConfigDependency.setup_env({}, env, MachineChoice.HOST, uninstalled=True)
+
         pkg_config_path = env.coredata.options[OptionKey('pkg_config_path')].value
-        self.assertEqual(len(pkg_config_path), 1)
+        self.assertEqual(pkg_config_path, [pkg_dir])
 
     @skipIfNoPkgconfig
     def test_pkgconfig_internal_libraries(self):
@@ -1597,7 +1600,7 @@ class LinuxlikeTests(BasePlatformTests):
                 if isinstance(comp, (AppleClangCCompiler, AppleClangCPPCompiler,
                                      AppleClangObjCCompiler, AppleClangObjCPPCompiler)):
                     raise SkipTest('AppleClang is currently only supported with ld64')
-                if lang != 'rust' and comp.use_linker_args('bfd') == []:
+                if lang != 'rust' and comp.use_linker_args('bfd', '') == []:
                     raise SkipTest(
                         f'Compiler {comp.id} does not support using alternative linkers')
                 self.assertEqual(comp.linker.id, expected)
