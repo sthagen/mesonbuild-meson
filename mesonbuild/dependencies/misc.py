@@ -196,7 +196,6 @@ class Python3DependencySystem(SystemDependency):
             return
 
         self.name = 'python3'
-        self.static = kwargs.get('static', False)
         # We can only be sure that it is Python 3 at this point
         self.version = '3'
         self._find_libpy3_windows(environment)
@@ -613,7 +612,7 @@ def shaderc_factory(env: 'Environment',
         shared_libs = ['shaderc']
         static_libs = ['shaderc_combined', 'shaderc_static']
 
-        if kwargs.get('static', False):
+        if kwargs.get('static', env.coredata.get_option(mesonlib.OptionKey('prefer_static'))):
             c = [functools.partial(PkgConfigDependency, name, env, kwargs)
                  for name in static_libs + shared_libs]
         else:

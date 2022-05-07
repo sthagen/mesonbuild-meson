@@ -23,9 +23,9 @@ import itertools
 import typing as T
 from enum import Enum
 
-from .. import mlog
+from .. import mlog, mesonlib
 from ..compilers import clib_langs
-from ..mesonlib import LibType, MachineChoice, MesonException, HoldableObject
+from ..mesonlib import LibType, MachineChoice, MesonException, HoldableObject, OptionKey
 from ..mesonlib import version_compare_many
 #from ..interpreterbase import FeatureDeprecated, FeatureNew
 
@@ -165,6 +165,9 @@ class Dependency(HoldableObject):
         else:
             return 'unknown'
 
+    def get_include_dirs(self) -> T.List['IncludeDirs']:
+        return []
+
     def get_include_type(self) -> str:
         return self.include_type
 
@@ -298,6 +301,9 @@ class InternalDependency(Dependency):
             final_link_args, final_libraries, final_whole_libraries,
             final_sources, final_deps, self.variables, [], [])
 
+    def get_include_dirs(self) -> T.List['IncludeDirs']:
+        return self.include_directories
+
     def get_variable(self, *, cmake: T.Optional[str] = None, pkgconfig: T.Optional[str] = None,
                      configtool: T.Optional[str] = None, internal: T.Optional[str] = None,
                      default_value: T.Optional[str] = None,
@@ -332,7 +338,7 @@ class ExternalDependency(Dependency, HasNativeKwarg):
             self.version_reqs = [self.version_reqs]
         self.required = kwargs.get('required', True)
         self.silent = kwargs.get('silent', False)
-        self.static = kwargs.get('static', False)
+        self.static = kwargs.get('static', self.env.coredata.get_option(OptionKey('prefer_static')))
         self.libtype = LibType.STATIC if self.static else LibType.PREFER_SHARED
         if not isinstance(self.static, bool):
             raise DependencyException('Static keyword must be boolean')
@@ -459,6 +465,22 @@ class ExternalLibrary(ExternalDependency):
         if not link_args:
             new.link_args = []
         return new
+
+
+def get_leaf_external_dependencies(deps: T.List[Dependency]) -> T.List[Dependency]:
+    if not deps:
+        # Ensure that we always return a new instance
+        return deps.copy()
+    final_deps = []
+    while deps:
+        next_deps = []
+        for d in mesonlib.listify(deps):
+            if not isinstance(d, Dependency) or d.is_built():
+                raise DependencyException('Dependencies must be external dependencies')
+            final_deps.append(d)
+            next_deps.extend(d.ext_deps)
+        deps = next_deps
+    return final_deps
 
 
 def sort_libpaths(libpaths: T.List[str], refpaths: T.List[str]) -> T.List[str]:

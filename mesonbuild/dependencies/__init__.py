@@ -18,7 +18,7 @@ from .hdf5 import hdf5_factory
 from .base import Dependency, InternalDependency, ExternalDependency, NotFoundDependency
 from .base import (
         ExternalLibrary, DependencyException, DependencyMethods,
-        BuiltinDependency, SystemDependency)
+        BuiltinDependency, SystemDependency, get_leaf_external_dependencies)
 from .cmake import CMakeDependency
 from .configtool import ConfigToolDependency
 from .dub import DubDependency
@@ -65,6 +65,7 @@ __all__ = [
 
     'find_external_dependency',
     'get_dep_identifier',
+    'get_leaf_external_dependencies',
 ]
 
 """Dependency representations and discovery logic.
@@ -141,8 +142,8 @@ There are a couple of things about this that still aren't ideal. For one, we
 don't want to be reading random environment variables at this point. Those
 should actually be added to `envconfig.Properties` and read in
 `environment.Environment._set_default_properties_from_env` (see how
-`BOOST_ROOT` is handled). We can also handle the `static` keyword. So
-now that becomes:
+`BOOST_ROOT` is handled). We can also handle the `static` keyword and the
+`prefer_static` built-in option. So now that becomes:
 
 ```python
 class FooSystemDependency(ExternalDependency):
@@ -155,7 +156,9 @@ class FooSystemDependency(ExternalDependency):
             self.is_found = False
             return
 
-        static = Mesonlib.LibType.STATIC if kwargs.get('static', False) else Mesonlib.LibType.SHARED
+        get_option = environment.coredata.get_option
+        static_opt = kwargs.get('static', get_option(Mesonlib.OptionKey('prefer_static'))
+        static = Mesonlib.LibType.STATIC if static_opt else Mesonlib.LibType.SHARED
         lib = self.clib_compiler.find_library(
             'foo', environment, [os.path.join(root, 'lib')], libtype=static)
         if lib is None:
