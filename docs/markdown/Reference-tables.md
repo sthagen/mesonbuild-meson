@@ -246,6 +246,8 @@ which are supported by GCC, Clang, and other compilers.
 | pure                     |
 | retain⁴                  |
 | returns_nonnull          |
+| section⁵                 |
+| sentinel⁵                |
 | unused                   |
 | used                     |
 | visibility*              |
@@ -267,6 +269,8 @@ which are supported by GCC, Clang, and other compilers.
 ³ *New in 0.55.0*
 
 ⁴ *New in 0.62.0*
+
+⁵ *New in 0.63.0*
 
 ### MSVC __declspec
 
