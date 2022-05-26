@@ -749,8 +749,8 @@ class BuildTarget(Target):
         self.external_deps: T.List[dependencies.Dependency] = []
         self.include_dirs: T.List['IncludeDirs'] = []
         self.link_language = kwargs.get('link_language')
-        self.link_targets: T.List[T.Union['BuildTarget', 'CustomTarget', 'CustomTargetIndex']] = []
-        self.link_whole_targets = []
+        self.link_targets: T.List[T.Union[SharedLibrary, StaticLibrary, 'CustomTarget', 'CustomTargetIndex']] = []
+        self.link_whole_targets: T.List[T.Union[StaticLibrary, CustomTarget, CustomTargetIndex]] = []
         self.link_depends = []
         self.added_deps = set()
         self.name_prefix_set = False
@@ -1418,8 +1418,8 @@ You probably should put it in link_with instead.''')
             if isinstance(t, (CustomTarget, CustomTargetIndex)):
                 if not t.is_linkable_target():
                     raise InvalidArguments(f'Custom target {t!r} is not linkable.')
-                if not t.get_filename().endswith('.a'):
-                    raise InvalidArguments('Can only link_whole custom targets that are .a archives.')
+                if t.links_dynamically():
+                    raise InvalidArguments('Can only link_whole custom targets that are static archives.')
                 if isinstance(self, StaticLibrary):
                     # FIXME: We could extract the .a archive to get object files
                     raise InvalidArguments('Cannot link_whole a custom target into a static library')
@@ -2545,6 +2545,16 @@ class CustomTarget(Target, CommandBase):
         suf = os.path.splitext(self.outputs[0])[-1]
         return suf in {'.a', '.dll', '.lib', '.so', '.dylib'}
 
+    def links_dynamically(self) -> bool:
+        """Whether this target links dynamically or statically
+
+        Does not assert the target is linkable, just that it is not shared
+
+        :return: True if is dynamically linked, otherwise False
+        """
+        suf = os.path.splitext(self.outputs[0])[-1]
+        return suf not in {'.a', '.lib'}
+
     def get_link_deps_mapping(self, prefix: str) -> T.Mapping[str, str]:
         return {}
 
@@ -2743,6 +2753,16 @@ class CustomTargetIndex(HoldableObject):
     def is_linkable_target(self) -> bool:
         suf = os.path.splitext(self.output)[-1]
         return suf in {'.a', '.dll', '.lib', '.so'}
+
+    def links_dynamically(self) -> bool:
+        """Whether this target links dynamically or statically
+
+        Does not assert the target is linkable, just that it is not shared
+
+        :return: True if is dynamically linked, otherwise False
+        """
+        suf = os.path.splitext(self.output)[-1]
+        return suf not in {'.a', '.lib'}
 
     def should_install(self) -> bool:
         return self.target.should_install()

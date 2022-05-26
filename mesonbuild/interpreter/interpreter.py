@@ -305,7 +305,7 @@ class Interpreter(InterpreterBase, HoldableObject):
         self.build_func_dict()
         self.build_holder_map()
         self.user_defined_options = user_defined_options
-        self.compilers: PerMachine[T.Dict[str, 'Compiler']] = PerMachine({}, {})
+        self.compilers: PerMachine[T.Dict[str, 'compilers.Compiler']] = PerMachine({}, {})
 
         # build_def_files needs to be defined before parse_project is called
         #
@@ -623,7 +623,9 @@ class Interpreter(InterpreterBase, HoldableObject):
         return self.source_strings_to_files(args[0])
 
     # Used by declare_dependency() and pkgconfig.generate()
-    def extract_variables(self, kwargs, argname='variables', list_new=False, dict_new=False):
+    def extract_variables(self, kwargs: T.Dict[str, T.Union[T.Dict[str, str], T.List[str], str]],
+                          argname: str = 'variables', list_new: bool = False,
+                          dict_new: bool = False) -> T.Dict[str, str]:
         variables = kwargs.get(argname, {})
         if isinstance(variables, dict):
             if dict_new and variables:
@@ -632,7 +634,7 @@ class Interpreter(InterpreterBase, HoldableObject):
             varlist = mesonlib.stringlistify(variables)
             if list_new:
                 FeatureNew.single_use(f'{argname} as list of strings', '0.56.0', self.subproject, location=self.current_node)
-            variables = collections.OrderedDict()
+            variables = {}
             for v in varlist:
                 try:
                     (key, value) = v.split('=', 1)
@@ -685,10 +687,19 @@ class Interpreter(InterpreterBase, HoldableObject):
         for d in deps:
             if not isinstance(d, dependencies.Dependency):
                 raise InterpreterException('Invalid dependency')
+
+        dep_err = 'declare_dependency: Entries in "{}" may only be self-built targets, external dependencies (including libraries) must go to "dependencies".'
+
         for l in libs:
             if isinstance(l, dependencies.Dependency):
-                raise InterpreterException('''Entries in "link_with" may only be self-built targets,
-external dependencies (including libraries) must go to "dependencies".''')
+                raise InvalidArguments(dep_err.format('link_with'))
+        for l in libs_whole:
+            if isinstance(l, dependencies.Dependency):
+                raise InvalidArguments(dep_err.format('link_whole'))
+            if isinstance(l, build.SharedLibrary):
+                raise InvalidArguments('declare_dependency: SharedLibrary objects are not allowed in "link_whole"')
+            if isinstance(l, (build.CustomTarget, build.CustomTargetIndex)) and l.links_dynamically():
+                raise InvalidArguments('declare_dependency: CustomTarget and CustomTargetIndex returning shared libaries are not allowed in "link_whole"')
         dep = dependencies.InternalDependency(version, incs, compile_args,
                                               link_args, libs, libs_whole, sources, deps,
                                               variables, d_module_versions, d_import_dirs)
@@ -759,7 +770,12 @@ external dependencies (including libraries) must go to "dependencies".''')
                           'configuration')
         expanded_args: T.List[str] = []
         if isinstance(cmd, build.Executable):
-            progname = node.args.arguments[0].value
+            for name, exe in self.build.find_overrides.items():
+                if cmd == exe:
+                    progname = name
+                    break
+            else:
+                raise MesonBugException('cmd was a built executable but not found in overrides table')
             raise InterpreterException(overridden_msg.format(progname, cmd.description()))
         if isinstance(cmd, ExternalProgram):
             if not cmd.found():
@@ -987,7 +1003,7 @@ external dependencies (including libraries) must go to "dependencies".''')
 
                 # Debug print the generated meson file
                 from ..ast import AstIndentationGenerator, AstPrinter
-                printer = AstPrinter()
+                printer = AstPrinter(update_ast_line_nos=True)
                 ast.accept(AstIndentationGenerator())
                 ast.accept(printer)
                 printer.post_process()
@@ -2847,6 +2863,9 @@ Try setting b_lundef to false instead.'''.format(self.coredata.options[OptionKey
 
     @T.overload
     def source_strings_to_files(self, sources: T.List['mesonlib.FileOrString'], strict: bool = False) -> T.List['mesonlib.FileOrString']: ... # noqa: F811
+
+    @T.overload
+    def source_strings_to_files(self, sources: T.List[mesonlib.FileOrString, build.GeneratedTypes]) -> T.List[T.Union[mesonlib.File, build.GeneratedTypes]]: ... # noqa: F811
 
     @T.overload
     def source_strings_to_files(self, sources: T.List['SourceInputs'], strict: bool = True) -> T.List['SourceOutputs']: ... # noqa: F811
