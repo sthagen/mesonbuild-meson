@@ -268,13 +268,20 @@ def _output_validator(outputs: T.List[str]) -> T.Optional[str]:
 
     return None
 
-CT_OUTPUT_KW: KwargInfo[T.List[str]] = KwargInfo(
+MULTI_OUTPUT_KW: KwargInfo[T.List[str]] = KwargInfo(
     'output',
     ContainerTypeInfo(list, str, allow_empty=False),
     listify=True,
     required=True,
     default=[],
     validator=_output_validator,
+)
+
+OUTPUT_KW: KwargInfo[str] = KwargInfo(
+    'output',
+    str,
+    required=True,
+    validator=lambda x: _output_validator([x])
 )
 
 CT_INPUT_KW: KwargInfo[T.List[T.Union[str, File, ExternalProgram, BuildTarget, CustomTarget, CustomTargetIndex, ExtractedObjects, GeneratedList]]] = KwargInfo(
@@ -317,6 +324,8 @@ CT_BUILD_ALWAYS_STALE: KwargInfo[T.Optional[bool]] = KwargInfo(
     'build_always_stale', (bool, NoneType),
     since='0.47.0',
 )
+
+INSTALL_DIR_KW: KwargInfo[T.Optional[str]] = KwargInfo('install_dir', (str, NoneType))
 
 INCLUDE_DIRECTORIES: KwargInfo[T.List[T.Union[str, IncludeDirs]]] = KwargInfo(
     'include_dirs',

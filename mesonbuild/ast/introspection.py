@@ -15,21 +15,32 @@
 # This class contains the basic functionality needed to run any interpreter
 # or an interpreter-based tool
 
-from .interpreter import AstInterpreter
-from .visitor import AstVisitor
-from .. import compilers, environment, mesonlib, optinterpreter
-from .. import coredata as cdata
-from ..mesonlib import MachineChoice, OptionKey
-from ..interpreterbase import InvalidArguments, TYPE_nvar
-from ..build import BuildTarget, Executable, Jar, SharedLibrary, SharedModule, StaticLibrary
-from ..mparser import BaseNode, ArithmeticNode, ArrayNode, ElementaryNode, IdNode, FunctionNode, StringNode
-from ..compilers import detect_compiler_for
-import typing as T
-import os
+from __future__ import annotations
 import argparse
 import copy
+import os
+import typing as T
 
-build_target_functions = ['executable', 'jar', 'library', 'shared_library', 'shared_module', 'static_library', 'both_libraries']
+from .. import compilers, environment, mesonlib, optinterpreter
+from .. import coredata as cdata
+from ..build import Executable, Jar, SharedLibrary, SharedModule, StaticLibrary
+from ..compilers import detect_compiler_for
+from ..interpreterbase import InvalidArguments
+from ..mesonlib import MachineChoice, OptionKey
+from ..mparser import BaseNode, ArithmeticNode, ArrayNode, ElementaryNode, IdNode, FunctionNode, StringNode
+from .interpreter import AstInterpreter
+
+if T.TYPE_CHECKING:
+    from ..build import BuildTarget
+    from ..interpreterbase import TYPE_nvar
+    from .visitor import AstVisitor
+
+
+# TODO: it would be nice to not have to duplicate this
+BUILD_TARGET_FUNCTIONS = [
+    'executable', 'jar', 'library', 'shared_library', 'shared_module',
+    'static_library', 'both_libraries'
+]
 
 class IntrospectionHelper(argparse.Namespace):
     # mimic an argparse namespace
@@ -239,7 +250,7 @@ class IntrospectionInterpreter(AstInterpreter):
                     continue
                 arg_nodes = arg_node.arguments.copy()
                 # Pop the first element if the function is a build target function
-                if isinstance(curr, FunctionNode) and curr.func_name in build_target_functions:
+                if isinstance(curr, FunctionNode) and curr.func_name in BUILD_TARGET_FUNCTIONS:
                     arg_nodes.pop(0)
                 elemetary_nodes = [x for x in arg_nodes if isinstance(x, (str, StringNode))]
                 inqueue += [x for x in arg_nodes if isinstance(x, (FunctionNode, ArrayNode, IdNode, ArithmeticNode))]

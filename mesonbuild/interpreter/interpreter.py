@@ -57,7 +57,8 @@ from .type_checking import (
     CT_BUILD_BY_DEFAULT,
     CT_INPUT_KW,
     CT_INSTALL_DIR_KW,
-    CT_OUTPUT_KW,
+    MULTI_OUTPUT_KW,
+    OUTPUT_KW,
     DEFAULT_OPTIONS,
     DEPENDS_KW,
     DEPEND_FILES_KW,
@@ -67,6 +68,7 @@ from .type_checking import (
     ENV_METHOD_KW,
     ENV_SEPARATOR_KW,
     INSTALL_KW,
+    INSTALL_DIR_KW,
     INSTALL_MODE_KW,
     CT_INSTALL_TAG_KW,
     INSTALL_TAG_KW,
@@ -1742,8 +1744,9 @@ class Interpreter(InterpreterBase, HoldableObject):
         elif target_type == 'shared_library':
             return self.build_target(node, args, kwargs, build.SharedLibrary)
         elif target_type == 'shared_module':
-            FeatureNew('build_target(target_type: \'shared_module\')',
-                       '0.51.0').use(self.subproject)
+            FeatureNew.single_use(
+                'build_target(target_type: \'shared_module\')',
+                '0.51.0', self.subproject, location=node)
             return self.build_target(node, args, kwargs, build.SharedModule)
         elif target_type == 'static_library':
             return self.build_target(node, args, kwargs, build.StaticLibrary)
@@ -1760,7 +1763,7 @@ class Interpreter(InterpreterBase, HoldableObject):
     @typed_kwargs(
         'vcs_tag',
         CT_INPUT_KW.evolve(required=True),
-        CT_OUTPUT_KW,
+        MULTI_OUTPUT_KW,
         # Cannot use the COMMAND_KW because command is allowed to be empty
         KwargInfo(
             'command',
@@ -1850,7 +1853,7 @@ class Interpreter(InterpreterBase, HoldableObject):
         CT_INPUT_KW,
         CT_INSTALL_DIR_KW,
         CT_INSTALL_TAG_KW,
-        CT_OUTPUT_KW,
+        MULTI_OUTPUT_KW,
         DEPENDS_KW,
         DEPEND_FILES_KW,
         DEPFILE_KW,
@@ -1924,6 +1927,8 @@ class Interpreter(InterpreterBase, HoldableObject):
                                    f'(there are {len(kwargs["install_tag"])} install_tags, '
                                    f'and {len(kwargs["output"])} outputs)')
 
+        for t in kwargs['output']:
+            self.validate_forbidden_targets(t)
         self._validate_custom_target_outputs(len(inputs) > 1, kwargs['output'], "custom_target")
 
         tg = build.CustomTarget(
@@ -2090,10 +2095,10 @@ class Interpreter(InterpreterBase, HoldableObject):
     @typed_pos_args('install_headers', varargs=(str, mesonlib.File))
     @typed_kwargs(
         'install_headers',
-        KwargInfo('install_dir', (str, NoneType)),
         KwargInfo('preserve_path', bool, default=False, since='0.63.0'),
         KwargInfo('subdir', (str, NoneType)),
         INSTALL_MODE_KW.evolve(since='0.47.0'),
+        INSTALL_DIR_KW,
     )
     def func_install_headers(self, node: mparser.BaseNode,
                              args: T.Tuple[T.List['mesonlib.FileOrString']],
@@ -2128,9 +2133,9 @@ class Interpreter(InterpreterBase, HoldableObject):
     @typed_pos_args('install_man', varargs=(str, mesonlib.File))
     @typed_kwargs(
         'install_man',
-        KwargInfo('install_dir', (str, NoneType)),
         KwargInfo('locale', (str, NoneType), since='0.58.0'),
-        INSTALL_MODE_KW.evolve(since='0.47.0')
+        INSTALL_MODE_KW.evolve(since='0.47.0'),
+        INSTALL_DIR_KW,
     )
     def func_install_man(self, node: mparser.BaseNode,
                          args: T.Tuple[T.List['mesonlib.FileOrString']],
@@ -2293,11 +2298,11 @@ class Interpreter(InterpreterBase, HoldableObject):
     @typed_pos_args('install_data', varargs=(str, mesonlib.File))
     @typed_kwargs(
         'install_data',
-        KwargInfo('install_dir', (str, NoneType)),
         KwargInfo('sources', ContainerTypeInfo(list, (str, mesonlib.File)), listify=True, default=[]),
         KwargInfo('rename', ContainerTypeInfo(list, str), default=[], listify=True, since='0.46.0'),
         INSTALL_MODE_KW.evolve(since='0.38.0'),
         INSTALL_TAG_KW.evolve(since='0.60.0'),
+        INSTALL_DIR_KW,
     )
     def func_install_data(self, node: mparser.BaseNode,
                           args: T.Tuple[T.List['mesonlib.FileOrString']],
@@ -2390,7 +2395,7 @@ class Interpreter(InterpreterBase, HoldableObject):
         KwargInfo('install', (bool, NoneType), since='0.50.0'),
         KwargInfo('install_dir', (str, bool), default='',
                   validator=lambda x: 'must be `false` if boolean' if x is True else None),
-        KwargInfo('output', str, required=True),
+        OUTPUT_KW,
         KwargInfo('output_format', str, default='c', since='0.47.0',
                   validator=in_set_validator({'c', 'nasm'})),
     )
@@ -2446,8 +2451,6 @@ class Interpreter(InterpreterBase, HoldableObject):
             mlog.warning('Output file', mlog.bold(ofile_rpath, True), 'for configure_file() at', current_call, 'overwrites configure_file() output at', first_call)
         else:
             self.configure_file_outputs[ofile_rpath] = self.current_lineno
-        if os.path.dirname(output) != '':
-            raise InterpreterException('Output file name must not contain a subdirectory.')
         (ofile_path, ofile_fname) = os.path.split(os.path.join(self.subdir, output))
         ofile_abs = os.path.join(self.environment.build_dir, ofile_path, ofile_fname)
 
@@ -2850,7 +2853,7 @@ Try setting b_lundef to false instead.'''.format(self.coredata.options[OptionKey
             # subproject files, as long as they are scheduled to be installed.
             if validate_installable_file(norm):
                 return
-        norm = Path(srcdir, subdir, fname).resolve()
+        norm = Path(os.path.abspath(Path(srcdir, subdir, fname)))
         if os.path.isdir(norm):
             inputtype = 'directory'
         else:
@@ -2914,7 +2917,19 @@ Try setting b_lundef to false instead.'''.format(self.coredata.options[OptionKey
                                            'string or File-type object')
         return results
 
-    def add_target(self, name, tobj):
+    @staticmethod
+    def validate_forbidden_targets(name: str) -> None:
+        if name.startswith('meson-internal__'):
+            raise InvalidArguments("Target names starting with 'meson-internal__' are reserved "
+                                   "for Meson's internal use. Please rename.")
+        if name.startswith('meson-') and '.' not in name:
+            raise InvalidArguments("Target names starting with 'meson-' and without a file extension "
+                                   "are reserved for Meson's internal use. Please rename.")
+        if name in coredata.FORBIDDEN_TARGET_NAMES:
+            raise InvalidArguments(f"Target name '{name}' is reserved for Meson's "
+                                   "internal use. Please rename.")
+
+    def add_target(self, name: str, tobj: build.Target) -> None:
         if name == '':
             raise InterpreterException('Target name must not be empty.')
         if name.strip() == '':
@@ -2927,12 +2942,7 @@ Try setting b_lundef to false instead.'''.format(self.coredata.options[OptionKey
                     To define a target that builds in that directory you must define it
                     in the meson.build file in that directory.
             '''))
-        if name.startswith('meson-'):
-            raise InvalidArguments("Target names starting with 'meson-' are reserved "
-                                   "for Meson's internal use. Please rename.")
-        if name in coredata.FORBIDDEN_TARGET_NAMES:
-            raise InvalidArguments(f"Target name '{name}' is reserved for Meson's "
-                                   "internal use. Please rename.")
+        self.validate_forbidden_targets(name)
         # To permit an executable and a shared library to have the
         # same name, such as "foo.exe" and "libfoo.a".
         idname = tobj.get_id()
