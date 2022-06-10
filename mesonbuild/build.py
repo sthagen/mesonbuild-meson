@@ -113,7 +113,7 @@ known_shmod_kwargs = known_build_target_kwargs | {'vs_module_defs'}
 known_stlib_kwargs = known_build_target_kwargs | {'pic', 'prelink'}
 known_jar_kwargs = known_exe_kwargs | {'main_class', 'java_resources'}
 
-def _process_install_tag(install_tag: T.List[T.Optional[str]],
+def _process_install_tag(install_tag: T.Optional[T.Sequence[T.Optional[str]]],
                          num_outputs: int) -> T.List[T.Optional[str]]:
     _install_tag: T.List[T.Optional[str]]
     if not install_tag:
@@ -624,13 +624,14 @@ class Target(HoldableObject):
 
     def get_install_dir(self) -> T.Tuple[T.List[T.Union[str, Literal[False]]], str, Literal[False]]:
         # Find the installation directory.
-        default_install_dir, install_dir_name = self.get_default_install_dir()
+        default_install_dir, default_install_dir_name = self.get_default_install_dir()
         outdirs = self.get_custom_install_dir()
         if outdirs and outdirs[0] != default_install_dir and outdirs[0] is not True:
             # Either the value is set to a non-default value, or is set to
             # False (which means we want this specific output out of many
             # outputs to not be installed).
             custom_install_dir = True
+            default_install_dir_name = None
         else:
             custom_install_dir = False
             # if outdirs is empty we need to set to something, otherwise we set
@@ -640,7 +641,7 @@ class Target(HoldableObject):
             else:
                 outdirs = [default_install_dir]
 
-        return outdirs, install_dir_name, custom_install_dir
+        return outdirs, default_install_dir_name, custom_install_dir
 
     def get_basename(self) -> str:
         return self.name
@@ -1277,13 +1278,10 @@ class BuildTarget(Target):
 
     def _extract_pic_pie(self, kwargs, arg: str, option: str):
         # Check if we have -fPIC, -fpic, -fPIE, or -fpie in cflags
-        all_flags = set(self.extra_args['c']) | set(self.extra_args['cpp'])
-        if {f'-f-{arg.lower()}', f'-f-{arg.upper()}'}.issubset(all_flags):
+        all_flags = self.extra_args['c'] + self.extra_args['cpp']
+        if '-f' + arg.lower() in all_flags or '-f' + arg.upper() in all_flags:
             mlog.warning(f"Use the '{arg}' kwarg instead of passing '-f{arg}' manually to {self.name!r}")
             return True
-        elif {f'-fno-{arg.lower()}', f'-fno-{arg.upper()}'}.issubset(all_flags):
-            mlog.warning(f"Use the '{arg}' kwarg instead of passing '-fno-{arg}' manually to {self.name!r}")
-            return False
 
         k = OptionKey(option)
         if arg in kwargs:
@@ -2774,7 +2772,7 @@ class CustomTargetIndex(HoldableObject):
 
     def is_linkable_target(self) -> bool:
         suf = os.path.splitext(self.output)[-1]
-        return suf in {'.a', '.dll', '.lib', '.so'}
+        return suf in {'.a', '.dll', '.lib', '.so', '.dylib'}
 
     def links_dynamically(self) -> bool:
         """Whether this target links dynamically or statically

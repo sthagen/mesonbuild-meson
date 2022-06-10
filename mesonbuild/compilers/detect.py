@@ -477,11 +477,9 @@ def _detect_c_or_cpp_compiler(env: 'Environment', lang: str, for_machine: Machin
                 exe_wrap, linker=linker, full_version=full_version)
 
         if 'Arm C/C++/Fortran Compiler' in out:
-            arm_ver_match = re.search(r'version (\d+)\.(\d+) \(build number (\d+)\)', out)
-            arm_ver_major = arm_ver_match.group(1)
-            arm_ver_minor = arm_ver_match.group(2)
-            arm_ver_build = arm_ver_match.group(3)
-            version = '.'.join([arm_ver_major, arm_ver_minor, arm_ver_build])
+            arm_ver_match = re.search(r'version (\d+)\.(\d+)\.?(\d+)? \(build number (\d+)\)', out)
+            assert arm_ver_match is not None, 'for mypy'  # because mypy *should* be complaning that this could be None
+            version = '.'.join([x for x in arm_ver_match.groups() if x is not None])
             if lang == 'c':
                 cls = ArmLtdClangCCompiler
             elif lang == 'cpp':
@@ -747,11 +745,9 @@ def detect_fortran_compiler(env: 'Environment', for_machine: MachineChoice) -> C
 
             if 'Arm C/C++/Fortran Compiler' in out:
                 cls = ArmLtdFlangFortranCompiler
-                arm_ver_match = re.search(r'version (\d+)\.(\d+) \(build number (\d+)\)', out)
-                arm_ver_major = arm_ver_match.group(1)
-                arm_ver_minor = arm_ver_match.group(2)
-                arm_ver_build = arm_ver_match.group(3)
-                version = '.'.join([arm_ver_major, arm_ver_minor, arm_ver_build])
+                arm_ver_match = re.search(r'version (\d+)\.(\d+)\.?(\d+)? \(build number (\d+)\)', out)
+                assert arm_ver_match is not None, 'for mypy'  # because mypy *should* be complaning that this could be None
+                version = '.'.join([x for x in arm_ver_match.groups() if x is not None])
                 linker = guess_nix_linker(env, compiler, cls, version, for_machine)
                 return cls(
                     ccache + compiler, version, for_machine, is_cross, info,

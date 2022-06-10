@@ -49,14 +49,14 @@ from ..mesonlib import (
 )
 from ..mesonlib import get_compiler_for_source, has_path_sep, OptionKey
 from .backends import CleanTrees
-from ..build import GeneratedList, InvalidArguments, ExtractedObjects
-from ..interpreter import Interpreter
+from ..build import GeneratedList, InvalidArguments
 
 if T.TYPE_CHECKING:
     from .._typing import ImmutableListProtocol
+    from ..build import ExtractedObjects
+    from ..interpreter import Interpreter
     from ..linkers import DynamicLinker, StaticLinker
     from ..compilers.cs import CsCompiler
-    from ..interpreter.interpreter import SourceOutputs
 
 
 FORTRAN_INCLUDE_PAT = r"^\s*#?include\s*['\"](\w+\.\w+)['\"]"
