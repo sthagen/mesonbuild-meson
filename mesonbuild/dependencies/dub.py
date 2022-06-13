@@ -97,7 +97,8 @@ class DubDependency(ExternalDependency):
 
         # A command that might be useful in case of missing DUB package
         def dub_build_deep_command() -> str:
-            cmd = ['dub', 'run', 'dub-build-deep', '--yes', '--', main_pack_spec,
+            cmd = [
+                'dub', 'run', 'dub-build-deep', '--yes', '--', main_pack_spec,
                 '--arch=' + dub_arch, '--compiler=' + self.compiler.get_exelist()[-1],
                 '--build=' + dub_buildtype
             ]
@@ -185,7 +186,7 @@ class DubDependency(ExternalDependency):
         for tgt in description['targets']:
             targets[tgt['rootPackage']] = tgt
 
-        if not name in targets:
+        if name not in targets:
             self.is_found = False
             if self.pkg['targetType'] == 'sourceLibrary':
                 # source libraries have no associated targets,
@@ -230,13 +231,13 @@ class DubDependency(ExternalDependency):
             self.compile_args.append('-I' + path)
 
         for path in bs['stringImportPaths']:
-            if not 'import_dir' in d_feature_args[self.compiler.id]:
+            if 'import_dir' not in d_feature_args[self.compiler.id]:
                 break
             flag = d_feature_args[self.compiler.id]['import_dir']
             self.compile_args.append(f'{flag}={path}')
 
         for ver in bs['versions']:
-            if not 'version' in d_feature_args[self.compiler.id]:
+            if 'version' not in d_feature_args[self.compiler.id]:
                 break
             flag = d_feature_args[self.compiler.id]['version']
             self.compile_args.append(f'{flag}={ver}')
@@ -260,7 +261,7 @@ class DubDependency(ExternalDependency):
         is_windows = self.env.machines.host.is_windows()
         if is_windows:
             winlibs = ['kernel32', 'user32', 'gdi32', 'winspool', 'shell32', 'ole32',
-                'oleaut32', 'uuid', 'comdlg32', 'advapi32', 'ws2_32']
+                       'oleaut32', 'uuid', 'comdlg32', 'advapi32', 'ws2_32']
 
         for lib in bs['libs']:
             if os.name != 'nt':
@@ -370,7 +371,6 @@ class DubDependency(ExternalDependency):
                 compatibilities = set.union(compatibilities, comps)
 
         return (None, compatibilities)
-
 
     def _call_dubbin(self, args: T.List[str], env: T.Optional[T.Dict[str, str]] = None) -> T.Tuple[int, str, str]:
         assert isinstance(self.dubbin, ExternalProgram)
