@@ -358,6 +358,7 @@ class Vs2010Backend(backends.Backend):
 
     def generate_solution(self, sln_filename, projlist):
         default_projlist = self.get_build_by_default_targets()
+        default_projlist.update(self.get_testlike_targets())
         sln_filename_tmp = sln_filename + '~'
         # Note using the utf-8 BOM requires the blank line, otherwise Visual Studio Version Selector fails.
         # Without the BOM, VSVS fails if there is a blank line.
@@ -877,7 +878,7 @@ class Vs2010Backend(backends.Backend):
         # Prefix to use to access the source tree's subdir from the vcxproj dir
         proj_to_src_dir = os.path.join(proj_to_src_root, self.get_target_dir(target))
         (sources, headers, objects, languages) = self.split_sources(target.sources)
-        if self.is_unity(target):
+        if target.is_unity:
             sources = self.generate_unity_files(target, sources)
         compiler = self._get_cl_compiler(target)
         build_args = compiler.get_buildtype_args(self.buildtype)

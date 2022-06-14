@@ -792,7 +792,7 @@ class NinjaBackend(backends.Backend):
         # Generate rules for building the remaining source files in this target
         outname = self.get_target_filename(target)
         obj_list = []
-        is_unity = self.is_unity(target)
+        is_unity = target.is_unity
         header_deps = []
         unity_src = []
         unity_deps = [] # Generated sources that must be built before compiling a Unity target.
@@ -1527,7 +1527,7 @@ class NinjaBackend(backends.Backend):
             # Outputted header
             hname = os.path.join(self.get_target_dir(target), target.vala_header)
             args += ['--header', hname]
-            if self.is_unity(target):
+            if target.is_unity:
                 # Without this the declarations will get duplicated in the .c
                 # files and cause a build failure when all of them are
                 # #include-d in one .c file.
@@ -3272,14 +3272,22 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
         self.add_build(elem)
 
     def generate_ending(self):
-        targetlist = []
-        for t in self.get_build_by_default_targets().values():
-            # Add the first output of each target to the 'all' target so that
-            # they are all built
-            targetlist.append(os.path.join(self.get_target_dir(t), t.get_outputs()[0]))
+        for targ, deps in [
+                ('all', self.get_build_by_default_targets()),
+                ('meson-test-prereq', self.get_testlike_targets()),
+                ('meson-benchmark-prereq', self.get_testlike_targets(True))]:
+            targetlist = []
+            # These must also be built by default.
+            # XXX: Sometime in the future these should be built only before running tests.
+            if targ == 'all':
+                targetlist.extend(['meson-test-prereq', 'meson-benchmark-prereq'])
+            for t in deps.values():
+                # Add the first output of each target to the 'all' target so that
+                # they are all built
+                targetlist.append(os.path.join(self.get_target_dir(t), t.get_outputs()[0]))
 
-        elem = NinjaBuildElement(self.all_outputs, 'all', 'phony', targetlist)
-        self.add_build(elem)
+            elem = NinjaBuildElement(self.all_outputs, targ, 'phony', targetlist)
+            self.add_build(elem)
 
         elem = self.create_phony_target(self.all_outputs, 'clean', 'CUSTOM_COMMAND', 'PHONY')
         elem.add_item('COMMAND', self.ninja_command + ['-t', 'clean'])

@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from __future__ import annotations
 
 from collections import OrderedDict
 from dataclasses import dataclass, InitVar
@@ -455,6 +456,10 @@ class Backend:
         obj_list = self._flatten_object_list(target, target.get_objects(), proj_dir_to_build_root)
         return list(dict.fromkeys(obj_list))
 
+    def determine_ext_objs(self, objects: build.ExtractedObjects, proj_dir_to_build_root: str = '') -> T.List[str]:
+        obj_list = self._flatten_object_list(objects.target, [objects], proj_dir_to_build_root)
+        return list(dict.fromkeys(obj_list))
+
     def _flatten_object_list(self, target: build.BuildTarget,
                              objects: T.Sequence[T.Union[str, 'File', build.ExtractedObjects]],
                              proj_dir_to_build_root: str) -> T.List[str]:
@@ -476,7 +481,7 @@ class Backend:
             elif isinstance(obj, build.ExtractedObjects):
                 if obj.recursive:
                     obj_list += self._flatten_object_list(obj.target, obj.objlist, proj_dir_to_build_root)
-                obj_list += self.determine_ext_objs(obj, proj_dir_to_build_root)
+                obj_list += self._determine_ext_objs(obj, proj_dir_to_build_root)
             else:
                 raise MesonException('Unknown data type in object list.')
         return obj_list
@@ -807,7 +812,7 @@ class Backend:
         machine = self.environment.machines[target.for_machine]
         return self.canonicalize_filename(gen_source) + '.' + machine.get_object_suffix()
 
-    def determine_ext_objs(self, extobj: 'build.ExtractedObjects', proj_dir_to_build_root: str) -> T.List[str]:
+    def _determine_ext_objs(self, extobj: 'build.ExtractedObjects', proj_dir_to_build_root: str) -> T.List[str]:
         result: T.List[str] = []
 
         # Merge sources and generated sources
@@ -835,7 +840,7 @@ class Backend:
         # With unity builds, sources don't map directly to objects,
         # we only support extracting all the objects in this mode,
         # so just return all object files.
-        if self.is_unity(extobj.target):
+        if extobj.target.is_unity:
             compsrcs = classify_unity_sources(extobj.target.compilers.values(), sources)
             sources = []
             unity_size = extobj.target.get_option(OptionKey('unity_size'))
@@ -1244,10 +1249,12 @@ class Backend:
         for name, b in self.build.get_targets().items():
             if b.build_by_default:
                 result[name] = b
-        # Get all targets used as test executables and arguments. These must
-        # also be built by default. XXX: Sometime in the future these should be
-        # built only before running tests.
-        for t in self.build.get_tests():
+        return result
+
+    def get_testlike_targets(self, benchmark: bool = False) -> T.OrderedDict[str, T.Union[build.BuildTarget, build.CustomTarget]]:
+        result: T.OrderedDict[str, T.Union[build.BuildTarget, build.CustomTarget]] = OrderedDict()
+        targets = self.build.get_benchmarks() if benchmark else self.build.get_tests()
+        for t in targets:
             exe = t.exe
             if isinstance(exe, (build.CustomTarget, build.BuildTarget)):
                 result[exe.get_id()] = exe
@@ -1277,10 +1284,6 @@ class Backend:
             libs.extend(self.get_custom_target_provided_by_generated_source(t))
         return libs
 
-    def is_unity(self, target: build.BuildTarget) -> bool:
-        optval = target.get_option(OptionKey('unity'))
-        return optval == 'on' or (optval == 'subprojects' and target.subproject != '')
-
     def get_custom_target_sources(self, target: build.CustomTarget) -> T.List[str]:
         '''
         Custom target sources can be of various object types; strings, File,
@@ -1298,8 +1301,7 @@ class Backend:
             elif isinstance(i, build.GeneratedList):
                 fname = [os.path.join(self.get_target_private_dir(target), p) for p in i.get_outputs()]
             elif isinstance(i, build.ExtractedObjects):
-                outputs = i.get_outputs(self)
-                fname = self.get_extracted_obj_paths(i.target, outputs)
+                fname = self.determine_ext_objs(i)
             elif isinstance(i, programs.ExternalProgram):
                 assert i.found(), "This shouldn't be possible"
                 assert i.path is not None, 'for mypy'
@@ -1310,9 +1312,6 @@ class Backend:
                 fname = [os.path.join(self.environment.get_build_dir(), f) for f in fname]
             srcs += fname
         return srcs
-
-    def get_extracted_obj_paths(self, target: build.BuildTarget, outputs: T.List[str]) -> T.List[str]:
-        return [os.path.join(self.get_target_private_dir(target), p) for p in outputs]
 
     def get_custom_target_depend_files(self, target: build.CustomTarget, absolute_paths: bool = False) -> T.List[str]:
         deps: T.List[str] = []

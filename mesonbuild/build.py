@@ -447,12 +447,6 @@ class ExtractedObjects(HoldableObject):
                                      'in Unity builds. You can only extract all '
                                      'the object files for each compiler at once.')
 
-    def get_outputs(self, backend: 'Backend') -> T.List[str]:
-        return [
-            backend.object_filename_from_source(self.target, source)
-            for source in self.get_sources(self.srclist, self.genlist)
-        ]
-
 
 @dataclass(eq=False, order=False)
 class StructuredSources(HoldableObject):
@@ -753,8 +747,6 @@ class BuildTarget(Target):
                  sources: T.List['SourceOutputs'], structured_sources: T.Optional[StructuredSources],
                  objects, environment: environment.Environment, compilers: T.Dict[str, 'Compiler'], kwargs):
         super().__init__(name, subdir, subproject, True, for_machine, environment)
-        unity_opt = environment.coredata.get_option(OptionKey('unity'))
-        self.is_unity = unity_opt == 'on' or (unity_opt == 'subprojects' and subproject != '')
         self.all_compilers = compilers
         self.compilers = OrderedDict() # type: OrderedDict[str, Compiler]
         self.objects: T.List[T.Union[str, 'File', 'ExtractedObjects']] = []
@@ -809,6 +801,11 @@ class BuildTarget(Target):
 
     def __str__(self):
         return f"{self.name}"
+
+    @property
+    def is_unity(self) -> bool:
+        unity_opt = self.get_option(OptionKey('unity'))
+        return unity_opt == 'on' or (unity_opt == 'subprojects' and self.subproject != '')
 
     def validate_install(self):
         if self.for_machine is MachineChoice.BUILD and self.need_install:
@@ -2875,7 +2872,7 @@ def get_sources_string_names(sources, backend):
         elif isinstance(s, (BuildTarget, CustomTarget, CustomTargetIndex, GeneratedList)):
             names += s.get_outputs()
         elif isinstance(s, ExtractedObjects):
-            names += s.get_outputs(backend)
+            names += backend.determine_ext_objs(s)
         elif isinstance(s, File):
             names.append(s.fname)
         else:
