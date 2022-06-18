@@ -6,7 +6,7 @@ import itertools
 
 from pathlib import Path
 from . import build, minstall, dependencies
-from .mesonlib import MesonException, RealPathAction, is_windows, setup_vsenv, OptionKey, quote_arg
+from .mesonlib import MesonException, RealPathAction, is_windows, setup_vsenv, OptionKey, quote_arg, get_wine_shortpath
 from . import mlog
 
 import typing as T
@@ -28,57 +28,17 @@ def get_windows_shell() -> str:
     result = subprocess.check_output(command)
     return result.decode().strip()
 
-def get_wine_shortpath(build_dir: str, winecmd: str, wine_paths: T.List[str]) -> T.List[str]:
-    '''
-    WINEPATH size is limited to 1024 bytes which can easily be exceeded when
-    adding the path to every dll inside build directory. See
-    https://bugs.winehq.org/show_bug.cgi?id=45810.
-
-    To shorthen it as much as possible we use path relative to builddir
-    where possible and convert absolute paths to Windows shortpath (e.g.
-    "/usr/x86_64-w64-mingw32/lib" to "Z:\\usr\\X86_~FWL\\lib").
-    '''
-    rel_paths = []
-    abs_paths = []
-    builddir = Path(build_dir)
-    for p in wine_paths:
-        try:
-            rel = Path(p).relative_to(builddir)
-            rel_paths.append(str(rel))
-        except ValueError:
-            abs_paths.append(p)
-    if not abs_paths:
-        return rel_paths
-    with tempfile.NamedTemporaryFile('w', suffix='.bat', encoding='utf-8', delete=False) as bat_file:
-        bat_file.write('''
-        @ECHO OFF
-        for %%x in (%*) do (
-            echo|set /p=;%~sx
-        )
-        ''')
-    try:
-        stdout = subprocess.check_output([winecmd, 'cmd', '/C', bat_file.name] + abs_paths,
-                                         encoding='utf-8', stderr=subprocess.DEVNULL)
-        return rel_paths + [p for p in set(stdout.split(';')) if p]
-    except subprocess.CalledProcessError:
-        return rel_paths + abs_paths
-    finally:
-        os.unlink(bat_file.name)
-
-def reduce_winepath(build_dir: str, env: T.Dict[str, str]) -> None:
+def reduce_winepath(env: T.Dict[str, str]) -> None:
     winepath = env.get('WINEPATH')
     if not winepath:
         return
     winecmd = shutil.which('wine64') or shutil.which('wine')
     if not winecmd:
         return
-    winepath = ';'.join(get_wine_shortpath(build_dir, winecmd, winepath.split(';')))
-    if len(winepath) > 1024:
-        mlog.warning(f'WINEPATH exceeds 1024 characters which could cause issues:\n{winepath}')
-    env['WINEPATH'] = winepath
+    env['WINEPATH'] = get_wine_shortpath([winecmd], winepath.split(';'))
     mlog.log('Meson detected wine and has set WINEPATH accordingly')
 
-def get_env(b: build.Build, build_dir: str) -> T.Tuple[T.Dict[str, str], T.Set[str]]:
+def get_env(b: build.Build) -> T.Tuple[T.Dict[str, str], T.Set[str]]:
     extra_env = build.EnvironmentVariables()
     extra_env.set('MESON_DEVENV', ['1'])
     extra_env.set('MESON_PROJECT_NAME', [b.project_name])
@@ -89,7 +49,7 @@ def get_env(b: build.Build, build_dir: str) -> T.Tuple[T.Dict[str, str], T.Set[s
         env = i.get_env(env)
         varnames |= i.get_names()
 
-    reduce_winepath(build_dir, env)
+    reduce_winepath(env)
 
     return env, varnames
 
@@ -162,7 +122,7 @@ def run(options: argparse.Namespace) -> int:
         raise MesonException(f'Directory {options.wd!r} does not seem to be a Meson build directory.')
     b = build.load(options.wd)
 
-    devenv, varnames = get_env(b, options.wd)
+    devenv, varnames = get_env(b)
     if options.dump:
         if options.command:
             raise MesonException('--dump option does not allow running other command.')
