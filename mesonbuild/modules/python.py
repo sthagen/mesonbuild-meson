@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from __future__ import annotations
 
 from pathlib import Path
 import functools
@@ -26,6 +27,7 @@ from ..coredata import UserFeatureOption
 from ..build import known_shmod_kwargs
 from ..dependencies import DependencyMethods, PkgConfigDependency, NotFoundDependency, SystemDependency, ExtraFrameworkDependency
 from ..dependencies.base import process_method_kw
+from ..dependencies.detect import get_dep_identifier
 from ..environment import detect_cpu_family
 from ..interpreter import ExternalProgramHolder, extract_required_kwarg, permitted_dependency_kwargs
 from ..interpreter.type_checking import NoneType
@@ -514,16 +516,26 @@ class PythonInstallation(ExternalProgramHolder):
 
             kwargs['install_dir'] = os.path.join(self.platlib_install_path, subdir)
 
-        # On macOS and some Linux distros (Debian) distutils doesn't link
-        # extensions against libpython. We call into distutils and mirror its
-        # behavior. See https://github.com/mesonbuild/meson/issues/4117
-        if not self.link_libpython:
-            new_deps = []
-            for dep in mesonlib.extract_as_list(kwargs, 'dependencies'):
-                if isinstance(dep, _PythonDependencyBase):
+        new_deps = []
+        has_pydep = False
+        for dep in mesonlib.extract_as_list(kwargs, 'dependencies'):
+            if isinstance(dep, _PythonDependencyBase):
+                has_pydep = True
+                # On macOS and some Linux distros (Debian) distutils doesn't link
+                # extensions against libpython. We call into distutils and mirror its
+                # behavior. See https://github.com/mesonbuild/meson/issues/4117
+                if not self.link_libpython:
                     dep = dep.get_partial_dependency(compile_args=True)
-                new_deps.append(dep)
-            kwargs['dependencies'] = new_deps
+            new_deps.append(dep)
+        if not has_pydep:
+            pydep = self._dependency_method_impl({})
+            if not pydep.found():
+                raise mesonlib.MesonException('Python dependency not found')
+            new_deps.append(pydep)
+            FeatureNew.single_use('python_installation.extension_module with implicit dependency on python',
+                                  '0.63.0', self.subproject, 'use python_installation.dependency()',
+                                  self.current_node)
+        kwargs['dependencies'] = new_deps
 
         # msys2's python3 has "-cpython-36m.dll", we have to be clever
         # FIXME: explain what the specific cleverness is here
@@ -539,31 +551,41 @@ class PythonInstallation(ExternalProgramHolder):
 
         return self.interpreter.func_shared_module(None, args, kwargs)
 
+    def _dependency_method_impl(self, kwargs: TYPE_kwargs) -> Dependency:
+        for_machine = self.interpreter.machine_from_native_kwarg(kwargs)
+        identifier = get_dep_identifier(self._full_path(), kwargs)
+
+        dep = self.interpreter.coredata.deps[for_machine].get(identifier)
+        if dep is not None:
+            return dep
+
+        new_kwargs = kwargs.copy()
+        new_kwargs['required'] = False
+        methods = process_method_kw({DependencyMethods.PKGCONFIG, DependencyMethods.SYSTEM}, kwargs)
+        # it's theoretically (though not practically) possible to not bind dep, let's ensure it is.
+        dep: Dependency = NotFoundDependency('python', self.interpreter.environment)
+        for d in python_factory(self.interpreter.environment, for_machine, new_kwargs, methods, self):
+            dep = d()
+            if dep.found():
+                break
+
+        self.interpreter.coredata.deps[for_machine].put(identifier, dep)
+        return dep
+
     @disablerIfNotFound
     @permittedKwargs(permitted_dependency_kwargs | {'embed'})
     @FeatureNewKwargs('python_installation.dependency', '0.53.0', ['embed'])
     @noPosargs
     def dependency_method(self, args: T.List['TYPE_var'], kwargs: 'TYPE_kwargs') -> 'Dependency':
         disabled, required, feature = extract_required_kwarg(kwargs, self.subproject)
-        # it's theoretically (though not practically) possible for the else clse
-        # to not bind dep, let's ensure it is.
-        dep: 'Dependency' = NotFoundDependency('python', self.interpreter.environment)
         if disabled:
             mlog.log('Dependency', mlog.bold('python'), 'skipped: feature', mlog.bold(feature), 'disabled')
+            return NotFoundDependency('python', self.interpreter.environment)
         else:
-            new_kwargs = kwargs.copy()
-            new_kwargs['required'] = False
-            methods = process_method_kw({DependencyMethods.PKGCONFIG, DependencyMethods.SYSTEM}, kwargs)
-            for d in python_factory(self.interpreter.environment,
-                                    MachineChoice.BUILD if kwargs.get('native', False) else MachineChoice.HOST,
-                                    new_kwargs, methods, self):
-                dep = d()
-                if dep.found():
-                    break
+            dep = self._dependency_method_impl(kwargs)
             if required and not dep.found():
                 raise mesonlib.MesonException('Python dependency not found')
-
-        return dep
+            return dep
 
     @typed_pos_args('install_data', varargs=(str, mesonlib.File))
     @typed_kwargs('python_installation.install_sources', _PURE_KW, _SUBDIR_KW,
