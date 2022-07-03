@@ -14,12 +14,19 @@
 
 # This class contains the basic functionality needed to run any interpreter
 # or an interpreter-based tool.
+from __future__ import annotations
 
-from .common import CMakeException, CMakeTarget, TargetOptions, CMakeConfiguration, language_map, cmake_get_generator_args, check_cmake_args
+from functools import lru_cache
+from os import environ
+from pathlib import Path
+import re
+import typing as T
+
+from .common import CMakeException, CMakeTarget, language_map, cmake_get_generator_args, check_cmake_args
 from .fileapi import CMakeFileAPI
 from .executor import CMakeExecutor
 from .toolchain import CMakeToolchain, CMakeExecScope
-from .traceparser import CMakeTraceParser, CMakeGeneratorTarget
+from .traceparser import CMakeTraceParser
 from .tracetargets import resolve_cmake_trace_targets
 from .. import mlog, mesonlib
 from ..mesonlib import MachineChoice, OrderedSet, path_is_in_root, relative_to_if_possible, OptionKey
@@ -27,12 +34,6 @@ from ..mesondata import DataFile
 from ..compilers.compilers import assembler_suffixes, lang_suffixes, header_suffixes, obj_suffixes, lib_suffixes, is_header
 from ..programs import ExternalProgram
 from ..coredata import FORBIDDEN_TARGET_NAMES
-from functools import lru_cache
-from pathlib import Path
-import typing as T
-import re
-from os import environ
-
 from ..mparser import (
     Token,
     BaseNode,
@@ -51,6 +52,8 @@ from ..mparser import (
 
 
 if T.TYPE_CHECKING:
+    from .common import CMakeConfiguration, TargetOptions
+    from .traceparser import CMakeGeneratorTarget
     from .._typing import ImmutableListProtocol
     from ..build import Build
     from ..backend.backends import Backend
