@@ -231,7 +231,13 @@ class CMakeTraceParser:
 
         for ctgt in self.custom_targets:
             ctgt.outputs = pathlist_gen(ctgt._outputs_str)
+            temp = ctgt.command
             ctgt.command = [strlist_gen(x) for x in ctgt.command]
+            for command, src in zip(ctgt.command, temp):
+                if command[0] == "":
+                    raise CMakeException(
+                        "We evaluated the cmake variable '{}' to an empty string, which is not a valid path to an executable.".format(src[0])
+                    )
             ctgt.working_dir = Path(parse_generator_expressions(str(ctgt.working_dir), self)) if ctgt.working_dir is not None else None
 
         # Postprocess
