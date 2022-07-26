@@ -42,7 +42,7 @@ from ..compilers import (
     PGICCompiler,
     VisualStudioLikeCompiler,
 )
-from ..linkers import ArLinker, RSPFileSyntax
+from ..linkers import ArLinker, AppleArLinker, RSPFileSyntax
 from ..mesonlib import (
     File, LibType, MachineChoice, MesonException, OrderedSet, PerMachine,
     ProgressBar, quote_arg
@@ -975,7 +975,9 @@ class NinjaBackend(backends.Backend):
         all_suffixes = set(compilers.lang_suffixes['cpp']) | set(compilers.lang_suffixes['fortran'])
         selected_sources = []
         for source in compiled_sources:
-            ext = os.path.splitext(source)[1][1:].lower()
+            ext = os.path.splitext(source)[1][1:]
+            if ext != 'C':
+                ext = ext.lower()
             if ext in all_suffixes:
                 selected_sources.append(source)
         return selected_sources
@@ -2026,7 +2028,7 @@ class NinjaBackend(backends.Backend):
             if static_linker is None:
                 continue
             rule = 'STATIC_LINKER{}'.format(self.get_rule_suffix(for_machine))
-            cmdlist = []
+            cmdlist: T.List[T.Union[str, NinjaCommandArg]] = []
             args = ['$in']
             # FIXME: Must normalize file names with pathlib.Path before writing
             #        them out to fix this properly on Windows. See:
@@ -2040,6 +2042,17 @@ class NinjaBackend(backends.Backend):
             cmdlist += static_linker.get_exelist()
             cmdlist += ['$LINK_ARGS']
             cmdlist += NinjaCommandArg.list(static_linker.get_output_args('$out'), Quoting.none)
+            # The default ar on MacOS (at least through version 12), does not
+            # add extern'd variables to the symbol table by default, and
+            # requires that apple's ranlib be called with a special flag
+            # instead after linking
+            if isinstance(static_linker, AppleArLinker):
+                # This is a bit of a hack, but we assume that that we won't need
+                # an rspfile on MacOS, otherwise the arguments are passed to
+                # ranlib, not to ar
+                cmdlist.extend(args)
+                args = []
+                cmdlist.extend(['&&', 'ranlib', '-c', '$out'])
             description = 'Linking static target $out'
             if num_pools > 0:
                 pool = 'pool = link_pool'
@@ -2706,7 +2719,9 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
         if not self.should_use_dyndeps_for_target(target):
             return
         extension = os.path.splitext(src.fname)[1][1:]
-        if not (extension.lower() in compilers.lang_suffixes['fortran'] or extension in compilers.lang_suffixes['cpp']):
+        if extension != 'C':
+            extension = extension.lower()
+        if not (extension in compilers.lang_suffixes['fortran'] or extension in compilers.lang_suffixes['cpp']):
             return
         dep_scan_file = self.get_dep_scan_file_for(target)
         element.add_item('dyndep', dep_scan_file)
