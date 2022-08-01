@@ -14,9 +14,10 @@
 
 from __future__ import annotations
 
+from .. import mlog
 from ..mesonlib import (
     EnvironmentException, OptionKey,
-    Popen_safe, search_version
+    Popen_safe, join_args, search_version
 )
 from .linkers import (
     AppleDynamicLinker,
@@ -51,8 +52,8 @@ defaults['gcc_static_linker'] = ['gcc-ar']
 defaults['clang_static_linker'] = ['llvm-ar']
 
 def __failed_to_detect_linker(compiler: T.List[str], args: T.List[str], stdout: str, stderr: str) -> 'T.NoReturn':
-    msg = 'Unable to detect linker for compiler "{} {}"\nstdout: {}\nstderr: {}'.format(
-        ' '.join(compiler), ' '.join(args), stdout, stderr)
+    msg = 'Unable to detect linker for compiler `{}`\nstdout: {}\nstderr: {}'.format(
+        join_args(compiler + args), stdout, stderr)
     raise EnvironmentException(msg)
 
 
@@ -152,7 +153,13 @@ def guess_nix_linker(env: 'Environment', compiler: T.List[str], comp_class: T.Ty
         override = comp_class.use_linker_args(value[0], comp_version)
         check_args += override
 
-    _, o, e = Popen_safe(compiler + check_args)
+    mlog.debug('-----')
+    mlog.debug(f'Detecting linker via: {join_args(compiler + check_args)}')
+    p, o, e = Popen_safe(compiler + check_args)
+    mlog.debug(f'linker returned {p}')
+    mlog.debug(f'linker stdout:\n{o}')
+    mlog.debug(f'linker stderr:\n{e}')
+
     v = search_version(o + e)
     linker: DynamicLinker
     if 'LLD' in o.split('\n')[0]:
@@ -179,18 +186,24 @@ def guess_nix_linker(env: 'Environment', compiler: T.List[str], comp_class: T.Ty
             v = search_version(o)
 
         linker = LLVMDynamicLinker(compiler, for_machine, comp_class.LINKER_PREFIX, override, version=v)
-    # first is for apple clang, second is for real gcc, the third is icc
+    # first might be apple clang, second is for real gcc, the third is icc
     elif e.endswith('(use -v to see invocation)\n') or 'macosx_version' in e or 'ld: unknown option:' in e:
         if isinstance(comp_class.LINKER_PREFIX, str):
-            _, _, e = Popen_safe(compiler + [comp_class.LINKER_PREFIX + '-v'] + extra_args)
+            cmd = compiler + [comp_class.LINKER_PREFIX + '-v'] + extra_args
         else:
-            _, _, e = Popen_safe(compiler + comp_class.LINKER_PREFIX + ['-v'] + extra_args)
-        for line in e.split('\n'):
+            cmd = compiler + comp_class.LINKER_PREFIX + ['-v'] + extra_args
+        mlog.debug('-----')
+        mlog.debug(f'Detecting Apple linker via: {join_args(cmd)}')
+        _, newo, newerr = Popen_safe(cmd)
+        mlog.debug(f'linker stdout:\n{newo}')
+        mlog.debug(f'linker stderr:\n{newerr}')
+
+        for line in newerr.split('\n'):
             if 'PROJECT:ld' in line:
                 v = line.split('-')[1]
                 break
         else:
-            v = 'unknown version'
+            __failed_to_detect_linker(compiler, check_args, o, e)
         linker = AppleDynamicLinker(compiler, for_machine, comp_class.LINKER_PREFIX, override, version=v)
     elif 'GNU' in o or 'GNU' in e:
         cls: T.Type[GnuDynamicLinker]
