@@ -223,9 +223,16 @@ class QtPkgConfigDependency(_QtBase, PkgConfigDependency, metaclass=abc.ABCMeta)
             if prefix:
                 self.bindir = os.path.join(prefix, 'bin')
 
+        self.libexecdir = self.get_pkgconfig_host_libexecs(self)
+
     @staticmethod
     @abc.abstractmethod
     def get_pkgconfig_host_bins(core: PkgConfigDependency) -> T.Optional[str]:
+        pass
+
+    @staticmethod
+    @abc.abstractmethod
+    def get_pkgconfig_host_libexecs(core: PkgConfigDependency) -> T.Optional[str]:
         pass
 
     @abc.abstractmethod
@@ -405,6 +412,10 @@ class Qt4PkgConfigDependency(QtPkgConfigDependency):
     def get_private_includes(self, mod_inc_dir: str, module: str) -> T.List[str]:
         return []
 
+    @staticmethod
+    def get_pkgconfig_host_libexecs(core: PkgConfigDependency) -> str:
+        return None
+
 
 class Qt5PkgConfigDependency(QtPkgConfigDependency):
 
@@ -412,15 +423,31 @@ class Qt5PkgConfigDependency(QtPkgConfigDependency):
     def get_pkgconfig_host_bins(core: PkgConfigDependency) -> str:
         return core.get_pkgconfig_variable('host_bins', [], None)
 
+    @staticmethod
+    def get_pkgconfig_host_libexecs(core: PkgConfigDependency) -> str:
+        return None
+
     def get_private_includes(self, mod_inc_dir: str, module: str) -> T.List[str]:
         return _qt_get_private_includes(mod_inc_dir, module, self.version)
 
 
 class Qt6PkgConfigDependency(QtPkgConfigDependency):
 
+    def __init__(self, name: str, env: 'Environment', kwargs: T.Dict[str, T.Any]):
+        super().__init__(name, env, kwargs)
+        if not self.libexecdir:
+            mlog.debug(f'detected Qt6 {self.version} pkg-config dependency does not '
+                       'have proper tools support, ignoring')
+            self.is_found = False
+
     @staticmethod
     def get_pkgconfig_host_bins(core: PkgConfigDependency) -> str:
-        return core.get_pkgconfig_variable('host_bins', [], None)
+        return core.get_pkgconfig_variable('bindir', [], None)
+
+    @staticmethod
+    def get_pkgconfig_host_libexecs(core: PkgConfigDependency) -> str:
+        # Qt6 pkg-config for Qt defines libexecdir from 6.3+
+        return core.get_pkgconfig_variable('libexecdir', [], None)
 
     def get_private_includes(self, mod_inc_dir: str, module: str) -> T.List[str]:
         return _qt_get_private_includes(mod_inc_dir, module, self.version)
