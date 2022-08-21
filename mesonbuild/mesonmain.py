@@ -121,11 +121,13 @@ class CommandLineParser:
         return 0
 
     def run(self, args):
+        implicit_setup_command_notice = False
         pending_python_deprecation_notice = False
         # If first arg is not a known command, assume user wants to run the setup
         # command.
         known_commands = list(self.commands.keys()) + ['-h', '--help']
         if not args or args[0] not in known_commands:
+            implicit_setup_command_notice = True
             args = ['setup'] + args
 
         # Hidden commands have their own parser instead of using the global one
@@ -190,6 +192,9 @@ class CommandLineParser:
                 mlog.exception(e)
             return 2
         finally:
+            if implicit_setup_command_notice:
+                mlog.warning('Running the setup command as `meson [options]` instead of '
+                             '`meson setup [options]` is ambiguous and deprecated.', fatal=False)
             if pending_python_deprecation_notice:
                 mlog.notice('You are using Python 3.6 which is EOL. Starting with v0.62.0, '
                             'Meson will require Python 3.7 or newer', fatal=False)
@@ -250,7 +255,7 @@ def run(original_args, mainfile):
         if args[1] == 'regenerate':
             # Rewrite "meson --internal regenerate" command line to
             # "meson --reconfigure"
-            args = ['--reconfigure'] + args[2:]
+            args = ['setup', '--reconfigure'] + args[2:]
         else:
             return run_script_command(args[1], args[2:])
 

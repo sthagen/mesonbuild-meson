@@ -85,8 +85,6 @@ from .type_checking import (
     VARIABLES_KW,
     NoneType,
     in_set_validator,
-    variables_validator,
-    variables_convertor,
     env_convertor_with_method
 )
 from . import primitives as P_OBJ
@@ -599,22 +597,6 @@ class Interpreter(InterpreterBase, HoldableObject):
                 dep = df.lookup(kwargs, force_fallback=True)
                 self.build.stdlibs[for_machine][l] = dep
 
-    def _import_module(self, modname: str, required: bool) -> NewExtensionModule:
-        if modname in self.modules:
-            return self.modules[modname]
-        try:
-            module = importlib.import_module('mesonbuild.modules.' + modname)
-        except ImportError:
-            if required:
-                raise InvalidArguments(f'Module "{modname}" does not exist')
-            ext_module = NotFoundExtensionModule()
-        else:
-            ext_module = module.initialize(self)
-            assert isinstance(ext_module, (ExtensionModule, NewExtensionModule))
-            self.build.modules.append(modname)
-        self.modules[modname] = ext_module
-        return ext_module
-
     @typed_pos_args('import', str)
     @typed_kwargs(
         'import',
@@ -627,49 +609,67 @@ class Interpreter(InterpreterBase, HoldableObject):
         modname = args[0]
         disabled, required, _ = extract_required_kwarg(kwargs, self.subproject)
         if disabled:
-            return NotFoundExtensionModule()
+            return NotFoundExtensionModule(modname)
 
-        if modname.startswith('unstable-'):
-            plainname = modname.split('-', 1)[1]
-            try:
-                # check if stable module exists
-                mod = self._import_module(plainname, required)
-                # XXX: this is actually not helpful, since it doesn't do a version check
-                mlog.warning(f'Module {modname} is now stable, please use the {plainname} module instead.')
-                return mod
-            except InvalidArguments:
-                mlog.warning(f'Module {modname} has no backwards or forwards compatibility and might not exist in future releases.', location=node)
-                modname = 'unstable_' + plainname
-        return self._import_module(modname, required)
+        expect_unstable = False
+        # Some tests use "unstable_" instead of "unstable-", and that happens to work because
+        # of implementation details
+        if modname.startswith(('unstable-', 'unstable_')):
+            if modname.startswith('unstable_'):
+                mlog.deprecation(f'Importing unstable modules as "{modname}" instead of "{modname.replace("_", "-", 1)}"',
+                                 location=node)
+            real_modname = modname[len('unstable') + 1:]  # + 1 to handle the - or _
+            expect_unstable = True
+        else:
+            real_modname = modname
+
+        if real_modname in self.modules:
+            return self.modules[real_modname]
+        try:
+            module = importlib.import_module(f'mesonbuild.modules.{real_modname}')
+        except ImportError:
+            if required:
+                raise InvalidArguments(f'Module "{modname}" does not exist')
+            ext_module = NotFoundExtensionModule(real_modname)
+        else:
+            ext_module = module.initialize(self)
+            assert isinstance(ext_module, (ExtensionModule, NewExtensionModule))
+            self.build.modules.append(real_modname)
+        if ext_module.INFO.added:
+            FeatureNew.single_use(f'module {ext_module.INFO.name}', ext_module.INFO.added, self.subproject, location=node)
+        if ext_module.INFO.deprecated:
+            FeatureDeprecated.single_use(f'module {ext_module.INFO.name}', ext_module.INFO.deprecated, self.subproject, location=node)
+        if expect_unstable and not ext_module.INFO.unstable and ext_module.INFO.stabilized is None:
+            raise InvalidArguments(f'Module {ext_module.INFO.name} has never been unstable, remove "unstable-" prefix.')
+        if ext_module.INFO.stabilized is not None:
+            if expect_unstable:
+                FeatureDeprecated.single_use(
+                    f'module {ext_module.INFO.name} has been stabilized',
+                    ext_module.INFO.stabilized, self.subproject,
+                    'drop "unstable-" prefix from the module name',
+                    location=node)
+            else:
+                FeatureNew.single_use(
+                    f'module {ext_module.INFO.name} as stable module',
+                    ext_module.INFO.stabilized, self.subproject,
+                    f'Consider either adding "unstable-" to the module name, or updating the meson required version to ">= {ext_module.INFO.stabilized}"',
+                    location=node)
+        elif ext_module.INFO.unstable:
+            if not expect_unstable:
+                if required:
+                    raise InvalidArguments(f'Module "{ext_module.INFO.name}" has not been stabilized, and must be imported as unstable-{ext_module.INFO.name}')
+                ext_module = NotFoundExtensionModule(real_modname)
+            else:
+                mlog.warning(f'Module {ext_module.INFO.name} has no backwards or forwards compatibility and might not exist in future releases.', location=node)
+
+        self.modules[real_modname] = ext_module
+        return ext_module
 
     @typed_pos_args('files', varargs=str)
     @noKwargs
     def func_files(self, node: mparser.FunctionNode, args: T.Tuple[T.List[str]], kwargs: 'TYPE_kwargs') -> T.List[mesonlib.File]:
         return self.source_strings_to_files(args[0])
 
-    # Used by pkgconfig.generate()
-    def extract_variables(self, kwargs: T.Dict[str, T.Union[T.Dict[str, str], T.List[str], str]],
-                          argname: str = 'variables', list_new: bool = False,
-                          dict_new: bool = False) -> T.Dict[str, str]:
-        variables = kwargs.get(argname, {})
-        if isinstance(variables, dict):
-            if dict_new and variables:
-                FeatureNew.single_use(f'{argname} as dictionary', '0.56.0', self.subproject, location=self.current_node)
-        else:
-            variables = mesonlib.stringlistify(variables)
-            if list_new:
-                FeatureNew.single_use(f'{argname} as list of strings', '0.56.0', self.subproject, location=self.current_node)
-
-        invalid_msg = variables_validator(variables)
-        if invalid_msg is not None:
-            raise InterpreterException(invalid_msg)
-
-        variables = variables_convertor(variables)
-        for k, v in variables.items():
-            if not isinstance(v, str):
-                raise InterpreterException('variables values must be strings.')
-
-        return variables
 
     @noPosargs
     @typed_kwargs(
@@ -2428,7 +2428,10 @@ class Interpreter(InterpreterBase, HoldableObject):
             'configuration',
             (ContainerTypeInfo(dict, (str, int, bool)), build.ConfigurationData, NoneType),
         ),
-        KwargInfo('copy', bool, default=False, since='0.47.0'),
+        KwargInfo(
+            'copy', bool, default=False, since='0.47.0',
+            deprecated='0.64.0', deprecated_message='Use fs.copy instead',
+        ),
         KwargInfo('encoding', str, default='utf-8', since='0.47.0'),
         KwargInfo('format', str, default='meson', since='0.46.0',
                   validator=in_set_validator({'meson', 'cmake', 'cmake@'})),
@@ -2753,7 +2756,7 @@ class Interpreter(InterpreterBase, HoldableObject):
             for i in d.get_include_dirs():
                 for lang in kwargs['language']:
                     comp = self.coredata.compilers[for_machine][lang]
-                    for idir in i.to_string_list(self.environment.get_source_dir()):
+                    for idir in i.to_string_list(self.environment.get_source_dir(), self.environment.get_build_dir()):
                         compile_args.extend(comp.get_include_args(idir, system_incdir))
 
             self._add_project_arguments(node, self.build.projects_args[for_machine], compile_args, kwargs)

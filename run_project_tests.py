@@ -471,7 +471,7 @@ def _compare_output(expected: T.List[T.Dict[str, str]], output: str, desc: str) 
                     sub = r'\\'
                 else:
                     sub = r'\\\\'
-                expected_line = re.sub(r'/(?=.*(WARNING|ERROR))', sub, expected_line)
+                expected_line = re.sub(r'/(?=.*(WARNING|ERROR|DEPRECATION))', sub, expected_line)
 
             m = OutputMatch(how, expected_line, count)
             if count == 0:
@@ -635,7 +635,7 @@ def _run_test(test: TestDef,
               should_fail: str) -> TestResult:
     gen_start = time.time()
     # Configure in-process
-    gen_args = []  # type: T.List[str]
+    gen_args = ['setup']
     if 'prefix' not in test.do_not_set_opts:
         gen_args += ['--prefix', 'x:/usr'] if mesonlib.is_windows() else ['--prefix', '/usr']
     if 'libdir' not in test.do_not_set_opts:
