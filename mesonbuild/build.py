@@ -628,7 +628,7 @@ class Target(HoldableObject):
             # False (which means we want this specific output out of many
             # outputs to not be installed).
             custom_install_dir = True
-            default_install_dir_name = None
+            install_dir_names = [getattr(i, 'optname', None) for i in outdirs]
         else:
             custom_install_dir = False
             # if outdirs is empty we need to set to something, otherwise we set
@@ -637,8 +637,9 @@ class Target(HoldableObject):
                 outdirs[0] = default_install_dir
             else:
                 outdirs = [default_install_dir]
+            install_dir_names = [default_install_dir_name] * len(outdirs)
 
-        return outdirs, default_install_dir_name, custom_install_dir
+        return outdirs, install_dir_names, custom_install_dir
 
     def get_basename(self) -> str:
         return self.name
@@ -1415,9 +1416,17 @@ You probably should put it in link_with instead.''')
                         mlog.warning(f'Try to link an installed static library target {self.name} with a'
                                      'custom target that is not installed, this might cause problems'
                                      'when you try to use this static library')
-                elif t.is_internal():
+                elif t.is_internal() and not t.uses_rust():
                     # When we're a static library and we link_with to an
                     # internal/convenience library, promote to link_whole.
+                    #
+                    # There are cases we cannot do this, however. In Rust, for
+                    # example, this can't be done with Rust ABI libraries, though
+                    # it could be done with C ABI libraries, though there are
+                    # several meson issues that need to be fixed:
+                    # https://github.com/mesonbuild/meson/issues/10722
+                    # https://github.com/mesonbuild/meson/issues/10723
+                    # https://github.com/mesonbuild/meson/issues/10724
                     return self.link_whole(t)
             if not isinstance(t, (Target, CustomTargetIndex)):
                 raise InvalidArguments(f'{t!r} is not a target.')
@@ -1457,11 +1466,13 @@ You probably should put it in link_with instead.''')
                     raise InvalidArguments(msg + ' This is not possible in a cross build.')
                 else:
                     mlog.warning(msg + ' This will fail in cross build.')
+            # When we're a static library and we link_whole: to another static
+            # library, we need to add that target's objects to ourselves.
+            # Otherwise add it to the link_whole_targets, but not both.
             if isinstance(self, StaticLibrary):
-                # When we're a static library and we link_whole: to another static
-                # library, we need to add that target's objects to ourselves.
                 self.objects += t.extract_all_objects_recurse()
-            self.link_whole_targets.append(t)
+            else:
+                self.link_whole_targets.append(t)
 
     def extract_all_objects_recurse(self) -> T.List[T.Union[str, 'ExtractedObjects']]:
         objs = [self.extract_all_objects()]
@@ -1624,6 +1635,9 @@ You probably should put it in link_with instead.''')
 
     def uses_rust(self) -> bool:
         return 'rust' in self.compilers
+
+    def uses_fortran(self) -> bool:
+        return 'fortran' in self.compilers
 
     def get_using_msvc(self) -> bool:
         '''
@@ -2917,7 +2931,7 @@ def load(build_dir: str) -> Build:
             f"Build data file {filename!r} references functions or classes that don't "
             "exist. This probably means that it was generated with an old "
             "version of meson. Try running from the source directory "
-            f"meson {build_dir} --wipe")
+            f"meson setup {build_dir} --wipe")
     if not isinstance(obj, Build):
         raise MesonException(load_fail_msg)
     return obj

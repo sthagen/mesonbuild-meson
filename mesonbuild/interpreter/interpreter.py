@@ -445,6 +445,7 @@ class Interpreter(InterpreterBase, HoldableObject):
             str: P_OBJ.StringHolder,
             P_OBJ.MesonVersionString: P_OBJ.MesonVersionStringHolder,
             P_OBJ.DependencyVariableString: P_OBJ.DependencyVariableStringHolder,
+            P_OBJ.OptionString: P_OBJ.OptionStringHolder,
 
             # Meson types
             mesonlib.File: OBJ.FileHolder,
@@ -1094,6 +1095,8 @@ class Interpreter(InterpreterBase, HoldableObject):
             opt.name = optname
             return opt
         elif isinstance(opt, coredata.UserOption):
+            if isinstance(opt.value, str):
+                return P_OBJ.OptionString(opt.value, f'{{{optname}}}')
             return opt.value
         return opt
 
@@ -1340,7 +1343,7 @@ class Interpreter(InterpreterBase, HoldableObject):
             self.summary_impl('Subprojects', all_subprojects,
                               {'bool_yn': True,
                                'list_sep': ' ',
-                              })
+                               })
         # Add automatic section with all user defined options
         if self.user_defined_options:
             values = collections.OrderedDict()
@@ -1826,20 +1829,22 @@ class Interpreter(InterpreterBase, HoldableObject):
 
         self._validate_custom_target_outputs(len(kwargs['input']) > 1, kwargs['output'], "vcs_tag")
 
+        cmd = self.environment.get_build_command() + \
+            ['--internal',
+             'vcstagger',
+             '@INPUT0@',
+             '@OUTPUT0@',
+             fallback,
+             source_dir,
+             replace_string,
+             regex_selector] + vcs_cmd
+
         tg = build.CustomTarget(
             kwargs['output'][0],
             self.subdir,
             self.subproject,
             self.environment,
-            self.environment.get_build_command() +
-                ['--internal',
-                'vcstagger',
-                '@INPUT0@',
-                '@OUTPUT0@',
-                fallback,
-                source_dir,
-                replace_string,
-                regex_selector] + vcs_cmd,
+            cmd,
             self.source_strings_to_files(kwargs['input']),
             kwargs['output'],
             build_by_default=True,
@@ -1891,6 +1896,7 @@ class Interpreter(InterpreterBase, HoldableObject):
                            kwargs: 'kwargs.CustomTarget') -> build.CustomTarget:
         if kwargs['depfile'] and ('@BASENAME@' in kwargs['depfile'] or '@PLAINNAME@' in kwargs['depfile']):
             FeatureNew.single_use('substitutions in custom_target depfile', '0.47.0', self.subproject, location=node)
+        install_mode = self._warn_kwarg_install_mode_sticky(kwargs['install_mode'])
 
         # Don't mutate the kwargs
 
@@ -1973,7 +1979,7 @@ class Interpreter(InterpreterBase, HoldableObject):
             feed=kwargs['feed'],
             install=kwargs['install'],
             install_dir=kwargs['install_dir'],
-            install_mode=kwargs['install_mode'],
+            install_mode=install_mode,
             install_tag=kwargs['install_tag'],
             backend=self.backend)
         self.add_target(tg.name, tg)
@@ -2126,6 +2132,7 @@ class Interpreter(InterpreterBase, HoldableObject):
     def func_install_headers(self, node: mparser.BaseNode,
                              args: T.Tuple[T.List['mesonlib.FileOrString']],
                              kwargs: 'kwargs.FuncInstallHeaders') -> build.Headers:
+        install_mode = self._warn_kwarg_install_mode_sticky(kwargs['install_mode'])
         source_files = self.source_strings_to_files(args[0])
         install_subdir = kwargs['subdir']
         if install_subdir is not None:
@@ -2147,7 +2154,7 @@ class Interpreter(InterpreterBase, HoldableObject):
 
         for childdir in dirs:
             h = build.Headers(dirs[childdir], os.path.join(install_subdir, childdir), kwargs['install_dir'],
-                              kwargs['install_mode'], self.subproject)
+                              install_mode, self.subproject)
             ret_headers.append(h)
             self.build.headers.append(h)
 
@@ -2163,6 +2170,7 @@ class Interpreter(InterpreterBase, HoldableObject):
     def func_install_man(self, node: mparser.BaseNode,
                          args: T.Tuple[T.List['mesonlib.FileOrString']],
                          kwargs: 'kwargs.FuncInstallMan') -> build.Man:
+        install_mode = self._warn_kwarg_install_mode_sticky(kwargs['install_mode'])
         # We just need to narrow this, because the input is limited to files and
         # Strings as inputs, so only Files will be returned
         sources = self.source_strings_to_files(args[0])
@@ -2174,7 +2182,7 @@ class Interpreter(InterpreterBase, HoldableObject):
             if not 1 <= num <= 9:
                 raise InvalidArguments('Man file must have a file extension of a number between 1 and 9')
 
-        m = build.Man(sources, kwargs['install_dir'], kwargs['install_mode'],
+        m = build.Man(sources, kwargs['install_dir'], install_mode,
                       self.subproject, kwargs['locale'])
         self.build.man.append(m)
 
@@ -2318,6 +2326,21 @@ class Interpreter(InterpreterBase, HoldableObject):
                                    'permissions arg to be a string or false')
         return FileMode(*install_mode)
 
+
+    # This is either ignored on basically any OS nowadays, or silently gets
+    # ignored (Solaris) or triggers an "illegal operation" error (FreeBSD).
+    # It was likely added "because it exists", but should never be used. In
+    # theory it is useful for directories, but we never apply modes to
+    # directories other than in install_emptydir.
+    def _warn_kwarg_install_mode_sticky(self, mode: FileMode) -> None:
+        if mode.perms > 0 and mode.perms & stat.S_ISVTX:
+            mlog.deprecation('install_mode with the sticky bit on a file does not do anything and will '
+                             f'be ignored since Meson 0.64.0', location=self.current_node)
+            perms = stat.filemode(mode.perms - stat.S_ISVTX)[1:]
+            return FileMode(perms, mode.owner, mode.group)
+        else:
+            return mode
+
     @typed_pos_args('install_data', varargs=(str, mesonlib.File))
     @typed_kwargs(
         'install_data',
@@ -2339,14 +2362,9 @@ class Interpreter(InterpreterBase, HoldableObject):
                     '"rename" and "sources" argument lists must be the same length if "rename" is given. '
                     f'Rename has {len(rename)} elements and sources has {len(sources)}.')
 
-        install_dir_name = kwargs['install_dir']
-        if install_dir_name:
-            if not os.path.isabs(install_dir_name):
-                install_dir_name = os.path.join('{datadir}', install_dir_name)
-        else:
-            install_dir_name = '{datadir}'
-        return self.install_data_impl(sources, kwargs['install_dir'], kwargs['install_mode'],
-                                      rename, kwargs['install_tag'], install_dir_name,
+        install_mode = self._warn_kwarg_install_mode_sticky(kwargs['install_mode'])
+        return self.install_data_impl(sources, kwargs['install_dir'], install_mode,
+                                      rename, kwargs['install_tag'],
                                       preserve_path=kwargs['preserve_path'])
 
     def install_data_impl(self, sources: T.List[mesonlib.File], install_dir: T.Optional[str],
@@ -2358,7 +2376,9 @@ class Interpreter(InterpreterBase, HoldableObject):
 
         """Just the implementation with no validation."""
         idir = install_dir or ''
-        idir_name = install_dir_name or idir
+        idir_name = install_dir_name or idir or '{datadir}'
+        if isinstance(idir_name, P_OBJ.OptionString):
+            idir_name = idir_name.optname
         dirs = collections.defaultdict(list)
         ret_data = []
         if preserve_path:
@@ -2399,12 +2419,13 @@ class Interpreter(InterpreterBase, HoldableObject):
             FeatureNew.single_use('install_subdir with empty directory', '0.47.0', self.subproject, location=node)
             FeatureDeprecated.single_use('install_subdir with empty directory', '0.60.0', self.subproject,
                                          'It worked by accident and is buggy. Use install_emptydir instead.', node)
+        install_mode = self._warn_kwarg_install_mode_sticky(kwargs['install_mode'])
 
         idir = build.InstallDir(
             self.subdir,
             args[0],
             kwargs['install_dir'],
-            kwargs['install_mode'],
+            install_mode,
             exclude,
             kwargs['strip_directory'],
             self.subproject,
@@ -2469,6 +2490,8 @@ class Interpreter(InterpreterBase, HoldableObject):
 
         if kwargs['capture'] and not kwargs['command']:
             raise InvalidArguments('configure_file: "capture" keyword requires "command" keyword.')
+
+        install_mode = self._warn_kwarg_install_mode_sticky(kwargs['install_mode'])
 
         fmt = kwargs['format']
         output_format = kwargs['output_format']
@@ -2591,10 +2614,12 @@ class Interpreter(InterpreterBase, HoldableObject):
             if not idir:
                 raise InterpreterException(
                     '"install_dir" must be specified when "install" in a configure_file is true')
+            idir_name = idir
+            if isinstance(idir_name, P_OBJ.OptionString):
+                idir_name = idir_name.optname
             cfile = mesonlib.File.from_built_file(ofile_path, ofile_fname)
-            install_mode = kwargs['install_mode']
             install_tag = kwargs['install_tag']
-            self.build.data.append(build.Data([cfile], idir, idir, install_mode, self.subproject,
+            self.build.data.append(build.Data([cfile], idir, idir_name, install_mode, self.subproject,
                                               install_tag=install_tag, data_type='configure'))
         return mesonlib.File.from_built_file(self.subdir, output)
 
@@ -2845,6 +2870,9 @@ class Interpreter(InterpreterBase, HoldableObject):
         ret = os.path.join(*parts).replace('\\', '/')
         if isinstance(parts[0], P_OBJ.DependencyVariableString) and '..' not in other:
             return P_OBJ.DependencyVariableString(ret)
+        elif isinstance(parts[0], P_OBJ.OptionString):
+            name = os.path.join(parts[0].optname, other)
+            return P_OBJ.OptionString(ret, name)
         else:
             return ret
 
