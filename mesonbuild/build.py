@@ -55,6 +55,7 @@ if T.TYPE_CHECKING:
     from .mesonlib import FileMode, FileOrString
     from .modules import ModuleState
     from .mparser import BaseNode
+    from .wrap import WrapMode
 
     GeneratedTypes = T.Union['CustomTarget', 'CustomTargetIndex', 'GeneratedList']
     LibTypes = T.Union['SharedLibrary', 'StaticLibrary', 'CustomTarget', 'CustomTargetIndex']
@@ -203,6 +204,7 @@ class InstallDir(HoldableObject):
     source_subdir: str
     installable_subdir: str
     install_dir: str
+    install_dir_name: str
     install_mode: 'FileMode'
     exclude: T.Tuple[T.Set[str], T.Set[str]]
     strip_directory: bool
