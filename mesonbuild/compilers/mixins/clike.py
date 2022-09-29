@@ -285,7 +285,7 @@ class CLikeCompiler(Compiler):
 
     def _sanity_check_impl(self, work_dir: str, environment: 'Environment',
                            sname: str, code: str) -> None:
-        mlog.debug('Sanity testing ' + self.get_display_language() + ' compiler:', ' '.join(self.exelist))
+        mlog.debug('Sanity testing ' + self.get_display_language() + ' compiler:', mesonlib.join_args(self.exelist))
         mlog.debug(f'Is cross compiler: {self.is_cross!s}.')
 
         source_name = os.path.join(work_dir, sname)
@@ -294,7 +294,7 @@ class CLikeCompiler(Compiler):
         if self.is_cross:
             binname += '_cross'
             if self.exe_wrapper is None:
-                # Linking cross built apps is painful. You can't really
+                # Linking cross built C/C++ apps is painful. You can't really
                 # tell if you should use -nostdlib or not and for example
                 # on OSX the compiler binary is the same but you need
                 # a ton of compiler flags to differentiate between
@@ -314,7 +314,7 @@ class CLikeCompiler(Compiler):
         # after which all further arguments will be passed directly to the linker
         cmdlist = self.exelist + [sname] + self.get_output_args(binname) + extra_flags
         pc, stdo, stde = mesonlib.Popen_safe(cmdlist, cwd=work_dir)
-        mlog.debug('Sanity check compiler command line:', ' '.join(cmdlist))
+        mlog.debug('Sanity check compiler command line:', mesonlib.join_args(cmdlist))
         mlog.debug('Sanity check compile stdout:')
         mlog.debug(stdo)
         mlog.debug('-----\nSanity check compile stderr:')
@@ -330,12 +330,12 @@ class CLikeCompiler(Compiler):
             cmdlist = self.exe_wrapper.get_command() + [binary_name]
         else:
             cmdlist = [binary_name]
-        mlog.debug('Running test binary command: ' + ' '.join(cmdlist))
+        mlog.debug('Running test binary command: ', mesonlib.join_args(cmdlist))
         try:
-            pe = subprocess.Popen(cmdlist)
+            # fortran code writes to stdout
+            pe = subprocess.run(cmdlist, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except Exception as e:
             raise mesonlib.EnvironmentException(f'Could not invoke sanity test executable: {e!s}.')
-        pe.wait()
         if pe.returncode != 0:
             raise mesonlib.EnvironmentException(f'Executables created by {self.language} compiler {self.name_string()} are not runnable.')
 
@@ -1158,6 +1158,8 @@ class CLikeCompiler(Compiler):
                 trial = self._get_file_from_list(env, trials)
                 if not trial:
                     continue
+                if libname.startswith('lib') and trial.name.startswith(libname):
+                    mlog.warning(f'find_library({libname!r}) starting in "lib" only works by accident and is not portable')
                 return [trial.as_posix()]
         return None
 

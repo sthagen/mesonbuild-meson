@@ -93,7 +93,7 @@ def open_wrapdburl(urlstring: str, allow_insecure: bool = False, have_opt: bool 
         raise WrapException(f'SSL module not available in {sys.executable}: Cannot contact the WrapDB.{insecure_msg}')
     else:
         # following code is only for those without Python SSL
-        global SSL_WARNING_PRINTED
+        global SSL_WARNING_PRINTED  # pylint: disable=global-statement
         if not SSL_WARNING_PRINTED:
             mlog.warning(f'SSL module not available in {sys.executable}: WrapDB traffic not authenticated.')
             SSL_WARNING_PRINTED = True
@@ -124,20 +124,21 @@ class PackageDefinition:
         self.basename = os.path.basename(fname)
         self.has_wrap = self.basename.endswith('.wrap')
         self.name = self.basename[:-5] if self.has_wrap else self.basename
-        self.directory = self.name
         # must be lowercase for consistency with dep=variable assignment
         self.provided_deps[self.name.lower()] = None
+        # What the original file name was before redirection
         self.original_filename = fname
         self.redirected = False
         if self.has_wrap:
             self.parse_wrap()
+            with open(fname, 'r', encoding='utf-8') as file:
+                self.wrapfile_hash = hashlib.sha256(file.read().encode('utf-8')).hexdigest()
         self.directory = self.values.get('directory', self.name)
         if os.path.dirname(self.directory):
             raise WrapException('Directory key must be a name and not a path')
         if self.type and self.type not in ALL_TYPES:
             raise WrapException(f'Unknown wrap type {self.type!r}')
         self.filesdir = os.path.join(os.path.dirname(self.filename), 'packagefiles')
-        # What the original file name was before redirection
 
     def parse_wrap(self) -> None:
         try:
@@ -220,6 +221,14 @@ class PackageDefinition:
             return self.values[key]
         except KeyError:
             raise WrapException(f'Missing key {key!r} in {self.basename}')
+
+    def get_hashfile(self, subproject_directory: str) -> str:
+        return os.path.join(subproject_directory, '.meson-subproject-wrap-hash.txt')
+
+    def update_hash_cache(self, subproject_directory: str) -> None:
+        if self.has_wrap:
+            with open(self.get_hashfile(subproject_directory), 'w', encoding='utf-8') as file:
+                file.write(self.wrapfile_hash + '\n')
 
 def get_directory(subdir_root: str, packagename: str) -> str:
     fname = os.path.join(subdir_root, packagename + '.wrap')
@@ -337,10 +346,13 @@ class Resolver:
         self.directory = self.wrap.directory
 
         if self.wrap.has_wrap:
-            # We have a .wrap file, source code will be placed into main
-            # project's subproject_dir even if the wrap file comes from another
-            # subproject.
-            self.dirname = os.path.join(self.subdir_root, self.directory)
+            # We have a .wrap file, use directory relative to the location of
+            # the wrap file if it exists, otherwise source code will be placed
+            # into main project's subproject_dir even if the wrap file comes
+            # from another subproject.
+            self.dirname = os.path.join(os.path.dirname(self.wrap.filename), self.wrap.directory)
+            if not os.path.exists(self.dirname):
+                self.dirname = os.path.join(self.subdir_root, self.directory)
             # Check if the wrap comes from the main project.
             main_fname = os.path.join(self.subdir_root, self.wrap.basename)
             if self.wrap.filename != main_fname:
@@ -359,16 +371,16 @@ class Resolver:
             self.dirname = self.wrap.filename
         rel_path = os.path.relpath(self.dirname, self.source_dir)
 
-        meson_file = os.path.join(self.dirname, 'meson.build')
-        cmake_file = os.path.join(self.dirname, 'CMakeLists.txt')
-
-        if method not in ['meson', 'cmake']:
+        if method == 'meson':
+            buildfile = os.path.join(self.dirname, 'meson.build')
+        elif method == 'cmake':
+            buildfile = os.path.join(self.dirname, 'CMakeLists.txt')
+        else:
             raise WrapException('Only the methods "meson" and "cmake" are supported')
 
         # The directory is there and has meson.build? Great, use it.
-        if method == 'meson' and os.path.exists(meson_file):
-            return rel_path
-        if method == 'cmake' and os.path.exists(cmake_file):
+        if os.path.exists(buildfile):
+            self.validate()
             return rel_path
 
         # Check if the subproject is a git submodule
@@ -398,10 +410,13 @@ class Resolver:
                 raise
 
         # A meson.build or CMakeLists.txt file is required in the directory
-        if method == 'meson' and not os.path.exists(meson_file):
-            raise WrapException('Subproject exists but has no meson.build file')
-        if method == 'cmake' and not os.path.exists(cmake_file):
-            raise WrapException('Subproject exists but has no CMakeLists.txt file')
+        if not os.path.exists(buildfile):
+            raise WrapException(f'Subproject exists but has no {os.path.basename(buildfile)} file')
+
+        # At this point, the subproject has been successfully resolved for the
+        # first time so save off the hash of the entire wrap file for future
+        # reference.
+        self.wrap.update_hash_cache(self.dirname)
 
         return rel_path
 
@@ -503,6 +518,26 @@ class Resolver:
             push_url = self.wrap.values.get('push-url')
             if push_url:
                 verbose_git(['remote', 'set-url', '--push', 'origin', push_url], self.dirname, check=True)
+
+    def validate(self) -> None:
+        # This check is only for subprojects with wraps.
+        if not self.wrap.has_wrap:
+            return
+
+        # Retrieve original hash, if it exists.
+        hashfile = self.wrap.get_hashfile(self.dirname)
+        if os.path.isfile(hashfile):
+            with open(hashfile, 'r', encoding='utf-8') as file:
+                expected_hash = file.read().strip()
+        else:
+            # If stored hash doesn't exist then don't warn.
+            return
+
+        actual_hash = self.wrap.wrapfile_hash
+
+        # Compare hashes and warn the user if they don't match.
+        if expected_hash != actual_hash:
+            mlog.warning(f'Subproject {self.wrap.name}\'s revision may be out of date; its wrap file has changed since it was first configured')
 
     def is_git_full_commit_id(self, revno: str) -> bool:
         result = False

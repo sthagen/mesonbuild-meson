@@ -114,7 +114,7 @@ class Runner:
         self.wrap_resolver = copy.copy(r)
         self.wrap_resolver.dirname = os.path.join(r.subdir_root, self.wrap.directory)
         self.wrap_resolver.wrap = self.wrap
-        self.run_method: T.Callable[[], bool] = self.options.subprojects_func.__get__(self) # type: ignore
+        self.run_method: T.Callable[[], bool] = self.options.subprojects_func.__get__(self)
         self.log_queue: T.List[T.Tuple[mlog.TV_LoggableList, T.Any]] = []
 
     def log(self, *args: mlog.TV_Loggable, **kwargs: T.Any) -> None:
@@ -394,19 +394,22 @@ class Runner:
 
     def update(self) -> bool:
         self.log(f'Updating {self.wrap.name}...')
+        success = False
         if self.wrap.type == 'file':
-            return self.update_file()
+            success = self.update_file()
         elif self.wrap.type == 'git':
-            return self.update_git()
+            success = self.update_git()
         elif self.wrap.type == 'hg':
-            return self.update_hg()
+            success = self.update_hg()
         elif self.wrap.type == 'svn':
-            return self.update_svn()
+            success = self.update_svn()
         elif self.wrap.type is None:
             self.log('  -> Cannot update subproject with no wrap file')
         else:
             self.log('  -> Cannot update', self.wrap.type, 'subproject')
-        return True
+        if success:
+            self.wrap.update_hash_cache(self.wrap_resolver.dirname)
+        return success
 
     def checkout(self) -> bool:
         options = T.cast('CheckoutArguments', self.options)

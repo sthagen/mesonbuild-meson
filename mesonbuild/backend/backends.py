@@ -34,7 +34,8 @@ from .. import mlog
 from ..compilers import LANGUAGES_USING_LDFLAGS, detect
 from ..mesonlib import (
     File, MachineChoice, MesonException, OrderedSet,
-    classify_unity_sources, OptionKey, join_args
+    classify_unity_sources, OptionKey, join_args,
+    ExecutableSerialisation
 )
 
 if T.TYPE_CHECKING:
@@ -185,27 +186,6 @@ class SubdirInstallData(InstallDataBase):
         super().__init__(path, install_path, install_path_name, install_mode, subproject, tag, data_type)
         self.exclude = exclude
 
-@dataclass(eq=False)
-class ExecutableSerialisation:
-
-    # XXX: should capture and feed default to False, instead of None?
-
-    cmd_args: T.List[str]
-    env: T.Optional[build.EnvironmentVariables] = None
-    exe_wrapper: T.Optional['programs.ExternalProgram'] = None
-    workdir: T.Optional[str] = None
-    extra_paths: T.Optional[T.List] = None
-    capture: T.Optional[bool] = None
-    feed: T.Optional[bool] = None
-    tag: T.Optional[str] = None
-    verbose: bool = False
-
-    def __post_init__(self) -> None:
-        if self.exe_wrapper is not None:
-            assert isinstance(self.exe_wrapper, programs.ExternalProgram)
-        self.pickled = False
-        self.skip_if_destdir = False
-        self.subproject = ''
 
 @dataclass(eq=False)
 class TestSerialisation:
@@ -839,7 +819,7 @@ class Backend:
         # Filter out headers and all non-source files
         sources: T.List['FileOrString'] = []
         for s in raw_sources:
-            if self.environment.is_source(s) and not self.environment.is_header(s):
+            if self.environment.is_source(s):
                 sources.append(s)
             elif self.environment.is_object(s):
                 result.append(s.relative_name())
@@ -1540,6 +1520,10 @@ class Backend:
             return 'devel'
         elif localedir in dest_path.parents:
             return 'i18n'
+        elif 'installed-tests' in dest_path.parts:
+            return 'tests'
+        elif 'systemtap' in dest_path.parts:
+            return 'systemtap'
         mlog.debug('Failed to guess install tag for', dest_path)
         return None
 
@@ -1550,7 +1534,7 @@ class Backend:
             outdirs, install_dir_names, custom_install_dir = t.get_install_dir()
             # Sanity-check the outputs and install_dirs
             num_outdirs, num_out = len(outdirs), len(t.get_outputs())
-            if num_outdirs != 1 and num_outdirs != num_out:
+            if num_outdirs not in {1, num_out}:
                 m = 'Target {!r} has {} outputs: {!r}, but only {} "install_dir"s were found.\n' \
                     "Pass 'false' for outputs that should not be installed and 'true' for\n" \
                     'using the default installation directory for an output.'

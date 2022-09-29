@@ -94,6 +94,9 @@ def determine_worker_count() -> int:
     return num_workers
 
 def add_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument('--maxfail', default=0, type=int,
+                        help='Number of failing tests before aborting the '
+                        'test run. (default: 0, to disable aborting on failure)')
     parser.add_argument('--repeat', default=1, dest='repeat', type=int,
                         help='Number of times to run the tests.')
     parser.add_argument('--no-rebuild', default=False, action='store_true',
@@ -882,7 +885,7 @@ class TestRun:
         self._num = None       # type: T.Optional[int]
         self.name = name
         self.timeout = timeout
-        self.results = list()  # type: T.List[TAPParser.Test]
+        self.results = []      # type: T.List[TAPParser.Test]
         self.returncode = None  # type: T.Optional[int]
         self.starttime = None  # type: T.Optional[float]
         self.duration = None   # type: T.Optional[float]
@@ -1902,7 +1905,7 @@ class TestHarness:
     async def _run_tests(self, runners: T.List[SingleTestRunner]) -> None:
         semaphore = asyncio.Semaphore(self.options.num_processes)
         futures = deque()  # type: T.Deque[asyncio.Future]
-        running_tests = dict()  # type: T.Dict[asyncio.Future, str]
+        running_tests = {}  # type: T.Dict[asyncio.Future, str]
         interrupted = False
         ctrlc_times = deque(maxlen=MAX_CTRLC)  # type: T.Deque[float]
 
@@ -1912,6 +1915,9 @@ class TestHarness:
                     return
                 res = await test.run(self)
                 self.process_test_result(res)
+                maxfail = self.options.maxfail
+                if maxfail and self.fail_count >= maxfail and res.res.is_bad():
+                    cancel_all_tests()
 
         def test_done(f: asyncio.Future) -> None:
             if not f.cancelled():
@@ -2007,9 +2013,9 @@ def rebuild_deps(ninja: T.List[str], wd: str, tests: T.List[TestSerialisation]) 
 
     assert len(ninja) > 0
 
-    depends = set()            # type: T.Set[str]
-    targets = set()            # type: T.Set[str]
-    intro_targets = dict()     # type: T.Dict[str, T.List[str]]
+    depends = set()        # type: T.Set[str]
+    targets = set()        # type: T.Set[str]
+    intro_targets = {}     # type: T.Dict[str, T.List[str]]
     for target in load_info_file(get_infodir(wd), kind='targets'):
         intro_targets[target['id']] = [
             convert_path_to_target(f)

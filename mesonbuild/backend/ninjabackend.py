@@ -36,13 +36,7 @@ from .. import build
 from .. import mlog
 from .. import compilers
 from ..arglist import CompilerArgs
-from ..compilers import (
-    Compiler, CCompiler,
-    FortranCompiler,
-    mixins,
-    PGICCompiler,
-    VisualStudioLikeCompiler,
-)
+from ..compilers import Compiler
 from ..linkers import ArLinker, AppleArLinker, RSPFileSyntax
 from ..mesonlib import (
     File, LibType, MachineChoice, MesonException, OrderedSet, PerMachine,
@@ -60,6 +54,7 @@ if T.TYPE_CHECKING:
     from ..interpreter import Interpreter
     from ..linkers import DynamicLinker, StaticLinker
     from ..compilers.cs import CsCompiler
+    from ..compilers.fortran import FortranCompiler
 
     RUST_EDITIONS = Literal['2015', '2018', '2021']
 
@@ -516,12 +511,12 @@ class NinjaBackend(backends.Backend):
             # Have to detect the dependency format
 
             # IFort on windows is MSVC like, but doesn't have /showincludes
-            if isinstance(compiler, FortranCompiler):
+            if compiler.language == 'fortran':
                 continue
-            if isinstance(compiler, PGICCompiler) and mesonlib.is_windows():
+            if compiler.id == 'pgi' and mesonlib.is_windows():
                 # for the purpose of this function, PGI doesn't act enough like MSVC
                 return open(tempfilename, 'a', encoding='utf-8')
-            if isinstance(compiler, VisualStudioLikeCompiler):
+            if compiler.get_argument_syntax() == 'msvc':
                 break
         else:
             # None of our compilers are MSVC, we're done.
@@ -712,14 +707,14 @@ class NinjaBackend(backends.Backend):
     def get_target_generated_sources(self, target: build.BuildTarget) -> T.MutableMapping[str, File]:
         """
         Returns a dictionary with the keys being the path to the file
-        (relative to the build directory) of that type and the value
-        being the GeneratorList or CustomTarget that generated it.
+        (relative to the build directory) and the value being the File object
+        representing the same path.
         """
         srcs: T.MutableMapping[str, File] = OrderedDict()
         for gensrc in target.get_generated_sources():
             for s in gensrc.get_outputs():
-                f = self.get_target_generated_dir(target, gensrc, s)
-                srcs[f] = s
+                rel_src = self.get_target_generated_dir(target, gensrc, s)
+                srcs[rel_src] = File.from_built_relative(rel_src)
         return srcs
 
     def get_target_sources(self, target: build.BuildTarget) -> T.MutableMapping[str, File]:
@@ -886,9 +881,8 @@ class NinjaBackend(backends.Backend):
         # same time, also deal with generated sources that need to be compiled.
         generated_source_files = []
         for rel_src in generated_sources.keys():
-            dirpart, fnamepart = os.path.split(rel_src)
-            raw_src = File(True, dirpart, fnamepart)
-            if self.environment.is_source(rel_src) and not self.environment.is_header(rel_src):
+            raw_src = File.from_built_relative(rel_src)
+            if self.environment.is_source(rel_src):
                 if is_unity and self.get_target_source_can_unity(target, rel_src):
                     unity_deps.append(raw_src)
                     abs_src = os.path.join(self.environment.get_build_dir(), rel_src)
@@ -948,8 +942,7 @@ class NinjaBackend(backends.Backend):
         # often contain duplicate symbols and will fail to compile properly
         vala_generated_source_files = []
         for src in transpiled_sources:
-            dirpart, fnamepart = os.path.split(src)
-            raw_src = File(True, dirpart, fnamepart)
+            raw_src = File.from_built_relative(src)
             # Generated targets are ordered deps because the must exist
             # before the sources compiling them are used. After the first
             # compile we get precise dependency info from dep files.
@@ -1332,8 +1325,7 @@ class NinjaBackend(backends.Backend):
         generated_sources = self.get_target_generated_sources(target)
         gen_src_list = []
         for rel_src in generated_sources.keys():
-            dirpart, fnamepart = os.path.split(rel_src)
-            raw_src = File(True, dirpart, fnamepart)
+            raw_src = File.from_built_relative(rel_src)
             if rel_src.endswith('.java'):
                 gen_src_list.append(raw_src)
 
@@ -2325,7 +2317,7 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
         command = compiler.get_exelist()
         args = ['$ARGS'] + depargs + NinjaCommandArg.list(compiler.get_output_args('$out'), Quoting.none) + compiler.get_compile_only_args() + ['$in']
         description = f'Compiling {compiler.get_display_language()} object $out'
-        if isinstance(compiler, VisualStudioLikeCompiler):
+        if compiler.get_argument_syntax() == 'msvc':
             deps = 'msvc'
             depfile = None
         else:
@@ -2336,18 +2328,18 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
                                 deps=deps, depfile=depfile))
 
     def generate_pch_rule_for(self, langname, compiler):
-        if langname != 'c' and langname != 'cpp':
+        if langname not in {'c', 'cpp'}:
             return
         rule = self.compiler_to_pch_rule_name(compiler)
         depargs = compiler.get_dependency_gen_args('$out', '$DEPFILE')
 
-        if isinstance(compiler, VisualStudioLikeCompiler):
+        if compiler.get_argument_syntax() == 'msvc':
             output = []
         else:
             output = NinjaCommandArg.list(compiler.get_output_args('$out'), Quoting.none)
         command = compiler.get_exelist() + ['$ARGS'] + depargs + output + compiler.get_compile_only_args() + ['$in']
         description = 'Precompiling header $in'
-        if isinstance(compiler, VisualStudioLikeCompiler):
+        if compiler.get_argument_syntax() == 'msvc':
             deps = 'msvc'
             depfile = None
         else:
@@ -2931,8 +2923,8 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
                 msg = f'Precompiled header of {target.get_basename()!r} must not be in the same ' \
                       'directory as source, please put it in a subdirectory.'
                 raise InvalidArguments(msg)
-            compiler = target.compilers[lang]
-            if isinstance(compiler, VisualStudioLikeCompiler):
+            compiler: Compiler = target.compilers[lang]
+            if compiler.get_argument_syntax() == 'msvc':
                 (commands, dep, dst, objs, src) = self.generate_msvc_pch_command(target, compiler, pch)
                 extradep = os.path.join(self.build_to_src, target.get_source_subdir(), pch[0])
             elif compiler.id == 'intel':
@@ -3026,7 +3018,7 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
 
     def get_link_whole_args(self, linker, target):
         use_custom = False
-        if isinstance(linker, mixins.visualstudio.MSVCCompiler):
+        if linker.id == 'msvc':
             # Expand our object lists manually if we are on pre-Visual Studio 2015 Update 2
             # (incidentally, the "linker" here actually refers to cl.exe)
             if mesonlib.version_compare(linker.version, '<19.00.23918'):
@@ -3046,6 +3038,7 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
 
     @lru_cache(maxsize=None)
     def guess_library_absolute_path(self, linker, libname, search_dirs, patterns) -> Path:
+        from ..compilers.c import CCompiler
         for d in search_dirs:
             for p in patterns:
                 trial = CCompiler._get_trials_from_pattern(p, d, libname)
@@ -3558,7 +3551,7 @@ def _scan_fortran_file_deps(src: Path, srcdir: Path, dirname: Path, tdeps, compi
 
                     ancestor_child = '_'.join(parents)
                     if ancestor_child not in tdeps:
-                        raise MesonException("submodule {} relies on ancestor module {} that was not found.".format(submodmatch.group(2).lower(), ancestor_child.split('_')[0]))
+                        raise MesonException("submodule {} relies on ancestor module {} that was not found.".format(submodmatch.group(2).lower(), ancestor_child.split('_', maxsplit=1)[0]))
                     submodsrcfile = srcdir / tdeps[ancestor_child].fname  # type: Path
                     if not submodsrcfile.is_file():
                         if submodsrcfile.name != src.name:  # generated source file

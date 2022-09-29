@@ -58,6 +58,7 @@ if T.TYPE_CHECKING:
         gio_querymodules: T.List[str]
         gtk_update_icon_cache: bool
         update_desktop_database: bool
+        update_mime_database: bool
 
     class CompileSchemas(TypedDict):
 
@@ -269,8 +270,6 @@ class VapiTarget(build.CustomTarget):
 # https://bugzilla.gnome.org/show_bug.cgi?id=774368
 gresource_dep_needed_version = '>= 2.51.1'
 
-native_glib_version: T.Optional[str] = None
-
 class GnomeModule(ExtensionModule):
 
     INFO = ModuleInfo('gnome')
@@ -284,7 +283,9 @@ class GnomeModule(ExtensionModule):
         self.install_gio_querymodules: T.List[str] = []
         self.install_gtk_update_icon_cache = False
         self.install_update_desktop_database = False
+        self.install_update_mime_database = False
         self.devenv: T.Optional[build.EnvironmentVariables] = None
+        self.native_glib_version: T.Optional[str] = None
         self.methods.update({
             'post_install': self.post_install,
             'compile_resources': self.compile_resources,
@@ -300,19 +301,17 @@ class GnomeModule(ExtensionModule):
             'generate_vapi': self.generate_vapi,
         })
 
-    @staticmethod
-    def _get_native_glib_version(state: 'ModuleState') -> str:
-        global native_glib_version
-        if native_glib_version is None:
+    def _get_native_glib_version(self, state: 'ModuleState') -> str:
+        if self.native_glib_version is None:
             glib_dep = PkgConfigDependency('glib-2.0', state.environment,
                                            {'native': True, 'required': False})
             if glib_dep.found():
-                native_glib_version = glib_dep.get_version()
+                self.native_glib_version = glib_dep.get_version()
             else:
                 mlog.warning('Could not detect glib version, assuming 2.54. '
                              'You may get build errors if your glib is older.')
-                native_glib_version = '2.54'
-        return native_glib_version
+                self.native_glib_version = '2.54'
+        return self.native_glib_version
 
     @mesonlib.run_once
     def __print_gresources_warning(self, state: 'ModuleState') -> None:
@@ -335,6 +334,7 @@ class GnomeModule(ExtensionModule):
         KwargInfo('gio_querymodules', ContainerTypeInfo(list, str), default=[], listify=True),
         KwargInfo('gtk_update_icon_cache', bool, default=False),
         KwargInfo('update_desktop_database', bool, default=False, since='0.59.0'),
+        KwargInfo('update_mime_database', bool, default=False, since='0.64.0'),
     )
     @noPosargs
     @FeatureNew('gnome.post_install', '0.57.0')
@@ -371,6 +371,13 @@ class GnomeModule(ExtensionModule):
             prog = state.find_program('update-desktop-database')
             appdir = os.path.join(datadir_abs, 'applications')
             script = state.backend.get_executable_serialisation([prog, '-q', appdir])
+            script.skip_if_destdir = True
+            rv.append(script)
+        if kwargs['update_mime_database'] and not self.install_update_mime_database:
+            self.install_update_mime_database = True
+            prog = state.find_program('update-mime-database')
+            appdir = os.path.join(datadir_abs, 'mime')
+            script = state.backend.get_executable_serialisation([prog, appdir])
             script.skip_if_destdir = True
             rv.append(script)
         return ModuleReturnValue(None, rv)
@@ -507,6 +514,7 @@ class GnomeModule(ExtensionModule):
             extra_depends=depends,
             install=kwargs['install'],
             install_dir=[kwargs['install_dir']] if kwargs['install_dir'] else [],
+            install_tag=['runtime'],
         )
 
         if gresource: # Only one target for .gresource files
@@ -526,6 +534,7 @@ class GnomeModule(ExtensionModule):
             extra_depends=depends,
             install=install_header,
             install_dir=[install_dir],
+            install_tag=['devel'],
         )
         rv = [target_c, target_h]
         return ModuleReturnValue(rv, rv)
@@ -1358,7 +1367,7 @@ class GnomeModule(ExtensionModule):
                 l_subdir,
                 state.subproject,
                 state.environment,
-                [itstool, '-m', os.path.join(l_subdir, gmo_file), '-o', '@OUTDIR@', '@INPUT@'],
+                [itstool, '-m', os.path.join(l_subdir, gmo_file), '--lang', l, '-o', '@OUTDIR@', '@INPUT@'],
                 sources_files,
                 sources,
                 extra_depends=[gmotarget],
@@ -1674,6 +1683,7 @@ class GnomeModule(ExtensionModule):
             extra_depends=depends,
             install=install_header,
             install_dir=[install_dir],
+            install_tag=['devel'],
         )
         targets.append(hfile_custom_target)
 
@@ -1920,6 +1930,7 @@ class GnomeModule(ExtensionModule):
             capture=True,
             install=install,
             install_dir=[_install_dir],
+            install_tag=['devel'],
             extra_depends=depends,
             # https://github.com/mesonbuild/meson/issues/973
             absolute_paths=True,
@@ -1985,6 +1996,7 @@ class GnomeModule(ExtensionModule):
             [header_file],
             install=install_header,
             install_dir=[kwargs['install_dir']] if kwargs['install_dir'] else [],
+            install_tag=['devel'],
             capture=capture,
             depend_files=kwargs['depend_files'],
         )
@@ -2131,6 +2143,7 @@ class GnomeModule(ExtensionModule):
             extra_depends=vapi_depends,
             install=kwargs['install'],
             install_dir=[install_dir],
+            install_tag=['devel'],
         )
 
         # So to try our best to get this to just work we need:
