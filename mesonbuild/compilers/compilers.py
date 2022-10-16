@@ -254,7 +254,8 @@ msvc_winlibs = ['kernel32.lib', 'user32.lib', 'gdi32.lib',
                 'winspool.lib', 'shell32.lib', 'ole32.lib', 'oleaut32.lib',
                 'uuid.lib', 'comdlg32.lib', 'advapi32.lib']  # type: T.List[str]
 
-clike_optimization_args = {'0': [],
+clike_optimization_args = {'plain': [],
+                           '0': [],
                            'g': [],
                            '1': ['-O1'],
                            '2': ['-O2'],
@@ -262,7 +263,8 @@ clike_optimization_args = {'0': [],
                            's': ['-Os'],
                            }  # type: T.Dict[str, T.List[str]]
 
-cuda_optimization_args = {'0': [],
+cuda_optimization_args = {'plain': [],
+                          '0': [],
                           'g': ['-O0'],
                           '1': ['-O1'],
                           '2': ['-O2'],
@@ -279,11 +281,12 @@ clike_debug_args = {False: [],
 base_options: 'KeyedOptionDictType' = {
     OptionKey('b_pch'): coredata.UserBooleanOption('Use precompiled headers', True),
     OptionKey('b_lto'): coredata.UserBooleanOption('Use link time optimization', False),
-    OptionKey('b_lto'): coredata.UserBooleanOption('Use link time optimization', False),
     OptionKey('b_lto_threads'): coredata.UserIntegerOption('Use multiple threads for Link Time Optimization', (None, None, 0)),
     OptionKey('b_lto_mode'): coredata.UserComboOption('Select between different LTO modes.',
                                                       ['default', 'thin'],
                                                       'default'),
+    OptionKey('b_thinlto_cache'): coredata.UserBooleanOption('Use LLVM ThinLTO caching for faster incremental builds', False),
+    OptionKey('b_thinlto_cache_dir'): coredata.UserStringOption('Directory to store ThinLTO cache objects', ''),
     OptionKey('b_sanitize'): coredata.UserComboOption('Code sanitizer to use',
                                                       ['none', 'address', 'thread', 'undefined', 'memory', 'leak', 'address,undefined'],
                                                       'none'),
@@ -381,13 +384,19 @@ def get_base_compile_args(options: 'KeyedOptionDictType', compiler: 'Compiler') 
     return args
 
 def get_base_link_args(options: 'KeyedOptionDictType', linker: 'Compiler',
-                       is_shared_module: bool) -> T.List[str]:
+                       is_shared_module: bool, build_dir: str) -> T.List[str]:
     args = []  # type: T.List[str]
     try:
         if options[OptionKey('b_lto')].value:
+            thinlto_cache_dir = None
+            if get_option_value(options, OptionKey('b_thinlto_cache'), False):
+                thinlto_cache_dir = get_option_value(options, OptionKey('b_thinlto_cache_dir'), '')
+                if thinlto_cache_dir == '':
+                    thinlto_cache_dir = os.path.join(build_dir, 'meson-private', 'thinlto-cache')
             args.extend(linker.get_lto_link_args(
                 threads=get_option_value(options, OptionKey('b_lto_threads'), 0),
-                mode=get_option_value(options, OptionKey('b_lto_mode'), 'default')))
+                mode=get_option_value(options, OptionKey('b_lto_mode'), 'default'),
+                thinlto_cache_dir=thinlto_cache_dir))
     except KeyError:
         pass
     try:
@@ -973,7 +982,8 @@ class Compiler(HoldableObject, metaclass=abc.ABCMeta):
     def get_lto_compile_args(self, *, threads: int = 0, mode: str = 'default') -> T.List[str]:
         return []
 
-    def get_lto_link_args(self, *, threads: int = 0, mode: str = 'default') -> T.List[str]:
+    def get_lto_link_args(self, *, threads: int = 0, mode: str = 'default',
+                          thinlto_cache_dir: T.Optional[str] = None) -> T.List[str]:
         return self.linker.get_lto_args()
 
     def sanitizer_compile_args(self, value: str) -> T.List[str]:
