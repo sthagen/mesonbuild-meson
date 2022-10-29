@@ -70,12 +70,14 @@ lang_suffixes = {
     'swift': ('swift',),
     'java': ('java',),
     'cython': ('pyx', ),
+    'nasm': ('asm',),
+    'masm': ('masm',),
 }
 all_languages = lang_suffixes.keys()
 c_cpp_suffixes = {'h'}
 cpp_suffixes = set(lang_suffixes['cpp']) | c_cpp_suffixes
 c_suffixes = set(lang_suffixes['c']) | c_cpp_suffixes
-assembler_suffixes = {'s', 'S'}
+assembler_suffixes = {'s', 'S', 'asm', 'masm'}
 llvm_ir_suffixes = {'ll'}
 all_suffixes = set(itertools.chain(*lang_suffixes.values(), assembler_suffixes, llvm_ir_suffixes, c_cpp_suffixes))
 source_suffixes = all_suffixes - header_suffixes
@@ -494,12 +496,14 @@ class Compiler(HoldableObject, metaclass=abc.ABCMeta):
     language: str
     id: str
     warn_args: T.Dict[str, T.List[str]]
+    mode: str = 'COMPILER'
 
-    def __init__(self, exelist: T.List[str], version: str,
+    def __init__(self, ccache: T.List[str], exelist: T.List[str], version: str,
                  for_machine: MachineChoice, info: 'MachineInfo',
                  linker: T.Optional['DynamicLinker'] = None,
                  full_version: T.Optional[str] = None, is_cross: bool = False):
-        self.exelist = exelist
+        self.exelist = ccache + exelist
+        self.exelist_no_ccache = exelist
         # In case it's been overridden by a child class already
         if not hasattr(self, 'file_suffixes'):
             self.file_suffixes = lang_suffixes[self.language]
@@ -513,6 +517,7 @@ class Compiler(HoldableObject, metaclass=abc.ABCMeta):
         self.linker = linker
         self.info = info
         self.is_cross = is_cross
+        self.modes: T.List[Compiler] = []
 
     def __repr__(self) -> str:
         repr_str = "<{0}: v{1} `{2}`>"
@@ -530,6 +535,9 @@ class Compiler(HoldableObject, metaclass=abc.ABCMeta):
 
     def get_id(self) -> str:
         return self.id
+
+    def get_modes(self) -> T.List[Compiler]:
+        return self.modes
 
     def get_linker_id(self) -> str:
         # There is not guarantee that we have a dynamic linker instance, as
@@ -586,8 +594,8 @@ class Compiler(HoldableObject, metaclass=abc.ABCMeta):
     def symbols_have_underscore_prefix(self, env: 'Environment') -> bool:
         raise EnvironmentException('%s does not support symbols_have_underscore_prefix ' % self.get_id())
 
-    def get_exelist(self) -> T.List[str]:
-        return self.exelist.copy()
+    def get_exelist(self, ccache: bool = True) -> T.List[str]:
+        return self.exelist.copy() if ccache else self.exelist_no_ccache.copy()
 
     def get_linker_exelist(self) -> T.List[str]:
         return self.linker.get_exelist()
@@ -808,7 +816,7 @@ class Compiler(HoldableObject, metaclass=abc.ABCMeta):
             if extra_args:
                 commands += extra_args
             # Generate full command-line with the exelist
-            command_list = self.get_exelist() + commands.to_native()
+            command_list = self.get_exelist(ccache=not no_ccache) + commands.to_native()
             mlog.debug('Running compile:')
             mlog.debug('Working directory: ', tmpdirname)
             mlog.debug('Command line: ', ' '.join(command_list), '\n')
@@ -1050,6 +1058,9 @@ class Compiler(HoldableObject, metaclass=abc.ABCMeta):
     def get_preprocess_only_args(self) -> T.List[str]:
         raise EnvironmentException('This compiler does not have a preprocessor')
 
+    def get_preprocess_to_file_args(self) -> T.List[str]:
+        return self.get_preprocess_only_args()
+
     def get_default_include_dirs(self) -> T.List[str]:
         # TODO: This is a candidate for returning an immutable list
         return []
@@ -1138,7 +1149,7 @@ class Compiler(HoldableObject, metaclass=abc.ABCMeta):
     def get_include_args(self, path: str, is_system: bool) -> T.List[str]:
         return []
 
-    def depfile_for_object(self, objfile: str) -> str:
+    def depfile_for_object(self, objfile: str) -> T.Optional[str]:
         return objfile + '.' + self.get_depfile_suffix()
 
     def get_depfile_suffix(self) -> str:
@@ -1290,6 +1301,10 @@ class Compiler(HoldableObject, metaclass=abc.ABCMeta):
     def needs_static_linker(self) -> bool:
         raise NotImplementedError(f'There is no static linker for {self.language}')
 
+    def get_preprocessor(self) -> Compiler:
+        """Get compiler's preprocessor.
+        """
+        raise EnvironmentException(f'{self.get_id()} does not support preprocessor')
 
 def get_global_options(lang: str,
                        comp: T.Type[Compiler],

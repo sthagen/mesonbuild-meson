@@ -101,6 +101,7 @@ import typing as T
 import textwrap
 import importlib
 import copy
+import itertools
 
 if T.TYPE_CHECKING:
     import argparse
@@ -165,11 +166,14 @@ class Summary:
                 elif isinstance(i, (ExternalProgram, Dependency)):
                     FeatureNew.single_use('dependency or external program in summary', '0.57.0', subproject)
                     formatted_values.append(i.summary_value())
+                elif isinstance(i, Disabler):
+                    FeatureNew.single_use('disabler in summary', '0.64.0', subproject)
+                    formatted_values.append(mlog.red('NO'))
                 elif isinstance(i, coredata.UserOption):
                     FeatureNew.single_use('feature option in summary', '0.58.0', subproject)
                     formatted_values.append(i.printable_value())
                 else:
-                    m = 'Summary value in section {!r}, key {!r}, must be string, integer, boolean, dependency or external program'
+                    m = 'Summary value in section {!r}, key {!r}, must be string, integer, boolean, dependency, disabler, or external program'
                     raise InterpreterException(m.format(section, k))
             self.sections[section][k] = (formatted_values, list_sep)
             self.max_key_len = max(self.max_key_len, len(k))
@@ -1422,6 +1426,8 @@ class Interpreter(InterpreterBase, HoldableObject):
         if 'vala' in langs and 'c' not in langs:
             FeatureNew.single_use('Adding Vala language without C', '0.59.0', self.subproject, location=self.current_node)
             args.append('c')
+        if 'nasm' in langs:
+            FeatureNew.single_use('Adding NASM language', '0.64.0', self.subproject, location=self.current_node)
 
         success = True
         for lang in sorted(args, key=compilers.sort_clink):
@@ -3050,6 +3056,7 @@ Try setting b_lundef to false instead.'''.format(self.coredata.options[OptionKey
     @FeatureNew('both_libraries', '0.46.0')
     def build_both_libraries(self, node, args, kwargs):
         shared_lib = self.build_target(node, args, kwargs, build.SharedLibrary)
+        static_lib = self.build_target(node, args, kwargs, build.StaticLibrary)
 
         # Check if user forces non-PIC static library.
         pic = True
@@ -3071,16 +3078,16 @@ Try setting b_lundef to false instead.'''.format(self.coredata.options[OptionKey
             reuse_object_files = pic
 
         if reuse_object_files:
-            # Exclude sources from args and kwargs to avoid building them twice
-            static_args = [args[0]]
-            static_kwargs = kwargs.copy()
-            static_kwargs['sources'] = []
-            static_kwargs['objects'] = shared_lib.extract_all_objects()
-        else:
-            static_args = args
-            static_kwargs = kwargs
-
-        static_lib = self.build_target(node, static_args, static_kwargs, build.StaticLibrary)
+            # Replace sources with objects from the shared library to avoid
+            # building them twice. We post-process the static library instead of
+            # removing sources from args because sources could also come from
+            # any InternalDependency, see BuildTarget.add_deps().
+            static_lib.objects.append(build.ExtractedObjects(shared_lib, shared_lib.sources, shared_lib.generated, []))
+            static_lib.sources = []
+            static_lib.generated = []
+            # Compilers with no corresponding sources confuses the backend.
+            # Keep only the first compiler because it is the linker.
+            static_lib.compilers = dict(itertools.islice(static_lib.compilers.items(), 1))
 
         return build.BothLibraries(shared_lib, static_lib)
 
@@ -3098,7 +3105,7 @@ Try setting b_lundef to false instead.'''.format(self.coredata.options[OptionKey
     def build_target(self, node: mparser.BaseNode, args, kwargs, targetclass):
         @FeatureNewKwargs('build target', '0.42.0', ['rust_crate_type', 'build_rpath', 'implicit_include_directories'])
         @FeatureNewKwargs('build target', '0.41.0', ['rust_args'])
-        @FeatureNewKwargs('build target', '0.40.0', ['build_by_default'])
+        @FeatureNewKwargs('build target', '0.38.0', ['build_by_default'])
         @FeatureNewKwargs('build target', '0.48.0', ['gnu_symbol_visibility'])
         def build_target_decorator_caller(self, node, args, kwargs):
             return True

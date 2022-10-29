@@ -27,6 +27,7 @@ import itertools
 import os
 import re
 import subprocess
+import copy
 import typing as T
 from pathlib import Path
 
@@ -145,6 +146,8 @@ class CLikeCompiler(Compiler):
             self.exe_wrapper = None
         else:
             self.exe_wrapper = exe_wrapper
+        # Lazy initialized in get_preprocessor()
+        self.preprocessor: T.Optional[Compiler] = None
 
     def compiler_args(self, args: T.Optional[T.Iterable[str]] = None) -> CLikeCompilerArgs:
         # This is correct, mypy just doesn't understand co-operative inheritance
@@ -175,9 +178,6 @@ class CLikeCompiler(Compiler):
 
     def get_depfile_suffix(self) -> str:
         return 'd'
-
-    def get_exelist(self) -> T.List[str]:
-        return self.exelist.copy()
 
     def get_preprocess_only_args(self) -> T.List[str]:
         return ['-E', '-P']
@@ -1191,7 +1191,7 @@ class CLikeCompiler(Compiler):
         if self.id != 'clang':
             raise mesonlib.MesonException('Cannot find framework path with non-clang compiler')
         # Construct the compiler command-line
-        commands = self.get_exelist() + ['-v', '-E', '-']
+        commands = self.get_exelist(ccache=False) + ['-v', '-E', '-']
         commands += self.get_always_args()
         # Add CFLAGS/CXXFLAGS/OBJCFLAGS/OBJCXXFLAGS from the env
         commands += env.coredata.get_external_args(self.for_machine, self.language)
@@ -1328,3 +1328,18 @@ class CLikeCompiler(Compiler):
 
     def get_disable_assert_args(self) -> T.List[str]:
         return ['-DNDEBUG']
+
+    @functools.lru_cache(maxsize=None)
+    def can_compile(self, src: 'mesonlib.FileOrString') -> bool:
+        # Files we preprocess can be anything, e.g. .in
+        if self.mode == 'PREPROCESSOR':
+            return True
+        return super().can_compile(src)
+
+    def get_preprocessor(self) -> Compiler:
+        if not self.preprocessor:
+            self.preprocessor = copy.copy(self)
+            self.preprocessor.exelist = self.exelist + self.get_preprocess_to_file_args()
+            self.preprocessor.mode = 'PREPROCESSOR'
+            self.modes.append(self.preprocessor)
+        return self.preprocessor

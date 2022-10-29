@@ -35,7 +35,7 @@ class PlatformAgnosticTests(BasePlatformTests):
         Tests that find_program() with a relative path does not find the program
         in current workdir.
         '''
-        testdir = os.path.join(self.unit_test_dir, '101 relative find program')
+        testdir = os.path.join(self.unit_test_dir, '100 relative find program')
         self.init(testdir, workdir=testdir)
 
     def test_invalid_option_names(self):
@@ -71,11 +71,11 @@ class PlatformAgnosticTests(BasePlatformTests):
         interp.process(fname)
 
     def test_python_dependency_without_pkgconfig(self):
-        testdir = os.path.join(self.unit_test_dir, '103 python without pkgconfig')
+        testdir = os.path.join(self.unit_test_dir, '102 python without pkgconfig')
         self.init(testdir, override_envvars={'PKG_CONFIG': 'notfound'})
 
     def test_debug_function_outputs_to_meson_log(self):
-        testdir = os.path.join(self.unit_test_dir, '105 debug function')
+        testdir = os.path.join(self.unit_test_dir, '104 debug function')
         log_msg = 'This is an example debug output, should only end up in debug log'
         output = self.init(testdir)
 
@@ -88,7 +88,7 @@ class PlatformAgnosticTests(BasePlatformTests):
             self.assertIn(log_msg, file.read())
 
     def test_new_subproject_reconfigure(self):
-        testdir = os.path.join(self.unit_test_dir, '108 new subproject on reconfigure')
+        testdir = os.path.join(self.unit_test_dir, '107 new subproject on reconfigure')
         self.init(testdir)
         self.build()
 
@@ -98,7 +98,16 @@ class PlatformAgnosticTests(BasePlatformTests):
         self.setconf('-Dfoo=enabled')
         self.build('reconfigure')
 
+    def check_connectivity(self):
+        import urllib
+        try:
+            with urllib.request.urlopen('https://wrapdb.mesonbuild.com') as p:
+                pass
+        except urllib.error.URLError as e:
+            self.skipTest('No internet connectivity: ' + str(e))
+
     def test_update_wrapdb(self):
+        self.check_connectivity()
         # Write the project into a temporary directory because it will add files
         # into subprojects/ and we don't want to pollute meson source tree.
         with tempfile.TemporaryDirectory() as testdir:
