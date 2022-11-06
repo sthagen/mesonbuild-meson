@@ -101,7 +101,6 @@ import typing as T
 import textwrap
 import importlib
 import copy
-import itertools
 
 if T.TYPE_CHECKING:
     import argparse
@@ -2634,6 +2633,13 @@ class Interpreter(InterpreterBase, HoldableObject):
 
     def extract_incdirs(self, kwargs, key: str = 'include_directories'):
         prospectives = extract_as_list(kwargs, key)
+        if key == 'include_directories':
+            for i in prospectives:
+                if isinstance(i, str):
+                    FeatureNew.single_use('include_directories kwarg of type string', '0.50.0', self.subproject,
+                                          f'Use include_directories({i!r}) instead', location=self.current_node)
+                    break
+
         result = []
         for p in prospectives:
             if isinstance(p, build.IncludeDirs):
@@ -3086,8 +3092,8 @@ Try setting b_lundef to false instead.'''.format(self.coredata.options[OptionKey
             static_lib.sources = []
             static_lib.generated = []
             # Compilers with no corresponding sources confuses the backend.
-            # Keep only the first compiler because it is the linker.
-            static_lib.compilers = dict(itertools.islice(static_lib.compilers.items(), 1))
+            # Keep only compilers used for linking
+            static_lib.compilers = {k: v for k, v in static_lib.compilers.items() if k in compilers.clink_langs}
 
         return build.BothLibraries(shared_lib, static_lib)
 

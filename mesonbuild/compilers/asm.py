@@ -7,6 +7,16 @@ from .compilers import Compiler
 if T.TYPE_CHECKING:
     from ..environment import Environment
 
+nasm_optimization_args = {
+    'plain': [],
+    '0': ['-O0'],
+    'g': ['-O0'],
+    '1': ['-O1'],
+    '2': ['-Ox'],
+    '3': ['-Ox'],
+    's': ['-Ox'],
+}  # type: T.Dict[str, T.List[str]]
+
 
 class NasmCompiler(Compiler):
     language = 'nasm'
@@ -38,7 +48,7 @@ class NasmCompiler(Compiler):
         return ['-o', outputname]
 
     def get_optimization_args(self, optimization_level: str) -> T.List[str]:
-        return [f'-O{optimization_level}']
+        return nasm_optimization_args[optimization_level]
 
     def get_debug_args(self, is_debug: bool) -> T.List[str]:
         if is_debug:
@@ -75,6 +85,9 @@ class NasmCompiler(Compiler):
             if i[:2] == '-I':
                 parameter_list[idx] = i[:2] + os.path.normpath(os.path.join(build_dir, i[2:]))
         return parameter_list
+
+    def get_crt_compile_args(self, crt_val: str, buildtype: str) -> T.List[str]:
+        return []
 
 class YasmCompiler(NasmCompiler):
     id = 'yasm'
