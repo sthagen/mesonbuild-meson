@@ -15,7 +15,7 @@
 '''This module provides helper functions for generating documentation using hotdoc'''
 
 import os
-from collections import OrderedDict
+import subprocess
 
 from mesonbuild import mesonlib
 from mesonbuild import mlog, build
@@ -52,7 +52,7 @@ class HotdocTargetBuilder:
         self.name = name
         self.state = state
         self.interpreter = interpreter
-        self.include_paths = OrderedDict()
+        self.include_paths = mesonlib.OrderedSet()
 
         self.builddir = state.environment.get_build_dir()
         self.sourcedir = state.environment.get_source_dir()
@@ -196,7 +196,7 @@ class HotdocTargetBuilder:
                 self.process_dependencies(dep.get_target_dependencies())
                 self._subprojects.extend(dep.subprojects)
                 self.process_dependencies(dep.subprojects)
-                self.add_include_path(os.path.join(self.builddir, dep.hotdoc_conf.subdir))
+                self.include_paths.add(os.path.join(self.builddir, dep.hotdoc_conf.subdir))
                 self.cmd += ['--extra-assets=' + p for p in dep.extra_assets]
                 self.add_extension_paths(dep.extra_extension_paths)
             elif isinstance(dep, (build.CustomTarget, build.BuildTarget)):
@@ -277,17 +277,13 @@ class HotdocTargetBuilder:
             if arg in self.kwargs:
                 raise InvalidArguments(f'Argument "{arg}" is forbidden.')
 
-    def add_include_path(self, path):
-        self.include_paths[path] = path
-
     def make_targets(self):
         self.check_forbidden_args()
         self.process_known_arg("--index", value_processor=self.ensure_file)
         self.process_known_arg("--project-version")
         self.process_known_arg("--sitemap", value_processor=self.ensure_file)
         self.process_known_arg("--html-extra-theme", value_processor=self.ensure_dir)
-        self.process_known_arg(None, "include_paths",
-                               value_processor=lambda x: [self.add_include_path(self.ensure_dir(v)) for v in x])
+        self.include_paths.update(self.ensure_dir(v) for v in self.kwargs.pop('include_paths'))
         self.process_known_arg('--c-include-directories', argname="dependencies", value_processor=self.process_dependencies)
         self.process_gi_c_source_roots()
         self.process_extra_assets()
@@ -306,13 +302,13 @@ class HotdocTargetBuilder:
             f.write('{}')
 
         self.cmd += ['--conf-file', hotdoc_config_path]
-        self.add_include_path(os.path.join(self.builddir, self.subdir))
-        self.add_include_path(os.path.join(self.sourcedir, self.subdir))
+        self.include_paths.add(os.path.join(self.builddir, self.subdir))
+        self.include_paths.add(os.path.join(self.sourcedir, self.subdir))
 
         depfile = os.path.join(self.builddir, self.subdir, self.name + '.deps')
         self.cmd += ['--deps-file-dest', depfile]
 
-        for path in self.include_paths.keys():
+        for path in self.include_paths:
             self.cmd.extend(['--include-path', path])
 
         if self.state.environment.coredata.get_option(mesonlib.OptionKey('werror', subproject=self.state.subproject)):
@@ -392,12 +388,14 @@ class HotDocModule(ExtensionModule):
         self.hotdoc = ExternalProgram('hotdoc')
         if not self.hotdoc.found():
             raise MesonException('hotdoc executable not found')
+        version = self.hotdoc.get_version(interpreter)
+        if not mesonlib.version_compare(version, f'>={MIN_HOTDOC_VERSION}'):
+            raise MesonException(f'hotdoc {MIN_HOTDOC_VERSION} required but not found.)')
 
-        try:
-            from hotdoc.run_hotdoc import run  # noqa: F401
-            self.hotdoc.run_hotdoc = run
-        except Exception as e:
-            raise MesonException(f'hotdoc {MIN_HOTDOC_VERSION} required but not found. ({e})')
+        def run_hotdoc(cmd):
+            return subprocess.run(self.hotdoc.get_command() + cmd, stdout=subprocess.DEVNULL).returncode
+
+        self.hotdoc.run_hotdoc = run_hotdoc
         self.methods.update({
             'has_extensions': self.has_extensions,
             'generate_doc': self.generate_doc,

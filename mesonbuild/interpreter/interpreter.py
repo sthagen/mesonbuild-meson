@@ -664,7 +664,7 @@ class Interpreter(InterpreterBase, HoldableObject):
                     raise InvalidArguments(f'Module "{ext_module.INFO.name}" has not been stabilized, and must be imported as unstable-{ext_module.INFO.name}')
                 ext_module = NotFoundExtensionModule(real_modname)
             else:
-                mlog.warning(f'Module {ext_module.INFO.name} has no backwards or forwards compatibility and might not exist in future releases.', location=node)
+                mlog.warning(f'Module {ext_module.INFO.name} has no backwards or forwards compatibility and might not exist in future releases.', location=node, fatal=False)
 
         self.modules[real_modname] = ext_module
         return ext_module
@@ -1872,7 +1872,7 @@ class Interpreter(InterpreterBase, HoldableObject):
         """
         for out in outputs:
             if has_multi_in and ('@PLAINNAME@' in out or '@BASENAME@' in out):
-                raise InvalidArguments(f'{name}: output cannot containe "@PLAINNAME@" or "@BASENAME@" '
+                raise InvalidArguments(f'{name}: output cannot contain "@PLAINNAME@" or "@BASENAME@" '
                                        'when there is more than one input (we can\'t know which to use)')
 
     @typed_pos_args('custom_target', optargs=[str])
@@ -2459,7 +2459,7 @@ class Interpreter(InterpreterBase, HoldableObject):
         ),
         KwargInfo(
             'copy', bool, default=False, since='0.47.0',
-            deprecated='0.64.0', deprecated_message='Use fs.copy instead',
+            deprecated='0.64.0', deprecated_message='Use fs.copyfile instead',
         ),
         KwargInfo('encoding', str, default='utf-8', since='0.47.0'),
         KwargInfo('format', str, default='meson', since='0.46.0',

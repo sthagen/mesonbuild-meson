@@ -36,7 +36,7 @@ from .mesonlib import (
     extract_as_list, typeslistify, stringlistify, classify_unity_sources,
     get_filenames_templates_dict, substitute_values, has_path_sep,
     OptionKey, PerMachineDefaultable, OptionOverrideProxy,
-    MesonBugException, EnvironmentVariables
+    MesonBugException, EnvironmentVariables, pickle_load,
 )
 from .compilers import (
     is_object, clink_langs, sort_clink, all_languages,
@@ -388,7 +388,7 @@ class IncludeDirs(HoldableObject):
         """Convert IncludeDirs object to a list of strings.
 
         :param sourcedir: The absolute source directory
-        :param builddir: The absolute build directory, option, buid dir will not
+        :param builddir: The absolute build directory, option, build dir will not
             be added if this is unset
         :returns: A list of strings (without compiler argument)
         """
@@ -1784,7 +1784,7 @@ class Executable(BuildTarget):
     typename = 'executable'
 
     def __init__(self, name: str, subdir: str, subproject: str, for_machine: MachineChoice,
-                 sources: T.List[File], structured_sources: T.Optional['StructuredSources'],
+                 sources: T.List[SourceOutputs], structured_sources: T.Optional['StructuredSources'],
                  objects, environment: environment.Environment, compilers: T.Dict[str, 'Compiler'],
                  kwargs):
         key = OptionKey('b_pie')
@@ -1913,7 +1913,7 @@ class StaticLibrary(BuildTarget):
     typename = 'static library'
 
     def __init__(self, name: str, subdir: str, subproject: str, for_machine: MachineChoice,
-                 sources: T.List[File], structured_sources: T.Optional['StructuredSources'],
+                 sources: T.List[SourceOutputs], structured_sources: T.Optional['StructuredSources'],
                  objects, environment: environment.Environment, compilers: T.Dict[str, 'Compiler'],
                  kwargs):
         self.prelink = kwargs.get('prelink', False)
@@ -1985,7 +1985,7 @@ class SharedLibrary(BuildTarget):
     typename = 'shared library'
 
     def __init__(self, name: str, subdir: str, subproject: str, for_machine: MachineChoice,
-                 sources: T.List[File], structured_sources: T.Optional['StructuredSources'],
+                 sources: T.List[SourceOutputs], structured_sources: T.Optional['StructuredSources'],
                  objects, environment: environment.Environment, compilers: T.Dict[str, 'Compiler'],
                  kwargs):
         self.soversion = None
@@ -2324,7 +2324,7 @@ class SharedModule(SharedLibrary):
     typename = 'shared module'
 
     def __init__(self, name: str, subdir: str, subproject: str, for_machine: MachineChoice,
-                 sources: T.List[File], structured_sources: T.Optional['StructuredSources'],
+                 sources: T.List[SourceOutputs], structured_sources: T.Optional['StructuredSources'],
                  objects, environment: environment.Environment,
                  compilers: T.Dict[str, 'Compiler'], kwargs):
         if 'version' in kwargs:
@@ -2562,7 +2562,7 @@ class CustomTarget(Target, CommandBase):
 
     def is_internal(self) -> bool:
         '''
-        Returns True iif this is a not installed static library.
+        Returns True if this is a not installed static library.
         '''
         if len(self.outputs) != 1:
             return False
@@ -2694,7 +2694,7 @@ class Jar(BuildTarget):
     typename = 'jar'
 
     def __init__(self, name: str, subdir: str, subproject: str, for_machine: MachineChoice,
-                 sources: T.List[File], structured_sources: T.Optional['StructuredSources'],
+                 sources: T.List[SourceOutputs], structured_sources: T.Optional['StructuredSources'],
                  objects, environment: environment.Environment, compilers: T.Dict[str, 'Compiler'],
                  kwargs):
         super().__init__(name, subdir, subproject, for_machine, sources, structured_sources, objects,
@@ -2805,7 +2805,7 @@ class CustomTargetIndex(HoldableObject):
 
     def is_internal(self) -> bool:
         '''
-        Returns True iif this is a not installed static library
+        Returns True if this is a not installed static library
         '''
         suf = os.path.splitext(self.output)[-1]
         return suf in {'.a', '.lib'} and not self.should_install()
@@ -2900,24 +2900,11 @@ def get_sources_string_names(sources, backend):
 
 def load(build_dir: str) -> Build:
     filename = os.path.join(build_dir, 'meson-private', 'build.dat')
-    load_fail_msg = f'Build data file {filename!r} is corrupted. Try with a fresh build tree.'
-    nonexisting_fail_msg = f'No such build data file as "{filename!r}".'
     try:
-        with open(filename, 'rb') as f:
-            obj = pickle.load(f)
+        return pickle_load(filename, 'Build data', Build)
     except FileNotFoundError:
-        raise MesonException(nonexisting_fail_msg)
-    except (pickle.UnpicklingError, EOFError):
-        raise MesonException(load_fail_msg)
-    except AttributeError:
-        raise MesonException(
-            f"Build data file {filename!r} references functions or classes that don't "
-            "exist. This probably means that it was generated with an old "
-            "version of meson. Try running from the source directory "
-            f"meson setup {build_dir} --wipe")
-    if not isinstance(obj, Build):
-        raise MesonException(load_fail_msg)
-    return obj
+        raise MesonException(f'No such build data file as {filename!r}.')
+
 
 def save(obj: Build, filename: str) -> None:
     with open(filename, 'wb') as f:

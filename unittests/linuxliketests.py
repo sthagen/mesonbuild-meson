@@ -182,7 +182,7 @@ class LinuxlikeTests(BasePlatformTests):
             for name in {'ct', 'ct0'}:
                 ct_dep = PkgConfigDependency(name, env, kwargs)
                 self.assertTrue(ct_dep.found())
-                self.assertIn('-lct', ct_dep.get_link_args())
+                self.assertIn('-lct', ct_dep.get_link_args(raw=True))
 
     def test_pkgconfig_gen_deps(self):
         '''
@@ -345,12 +345,12 @@ class LinuxlikeTests(BasePlatformTests):
         testdir = os.path.join(self.framework_test_dir, '4 qt')
         self.init(testdir, extra_args=['-Dmethod=pkg-config'])
         # Confirm that the dependency was found with pkg-config
-        mesonlog = self.get_meson_log()
+        mesonlog = self.get_meson_log_raw()
         if qt4 == 0:
-            self.assertRegex('\n'.join(mesonlog),
+            self.assertRegex(mesonlog,
                              r'Run-time dependency qt4 \(modules: Core\) found: YES 4.* \(pkg-config\)')
         if qt5 == 0:
-            self.assertRegex('\n'.join(mesonlog),
+            self.assertRegex(mesonlog,
                              r'Run-time dependency qt5 \(modules: Core\) found: YES 5.* \(pkg-config\)')
 
     @skip_if_not_base_option('b_sanitize')
@@ -380,8 +380,8 @@ class LinuxlikeTests(BasePlatformTests):
         testdir = os.path.join(self.framework_test_dir, '4 qt')
         self.init(testdir, extra_args=['-Dmethod=qmake'])
         # Confirm that the dependency was found with qmake
-        mesonlog = self.get_meson_log()
-        self.assertRegex('\n'.join(mesonlog),
+        mesonlog = self.get_meson_log_raw()
+        self.assertRegex(mesonlog,
                          r'Run-time dependency qt5 \(modules: Core\) found: YES .* \(qmake\)\n')
 
     def test_qt6dependency_qmake_detection(self):
@@ -400,8 +400,8 @@ class LinuxlikeTests(BasePlatformTests):
         testdir = os.path.join(self.framework_test_dir, '4 qt')
         self.init(testdir, extra_args=['-Dmethod=qmake'])
         # Confirm that the dependency was found with qmake
-        mesonlog = self.get_meson_log()
-        self.assertRegex('\n'.join(mesonlog),
+        mesonlog = self.get_meson_log_raw()
+        self.assertRegex(mesonlog,
                          r'Run-time dependency qt6 \(modules: Core\) found: YES .* \(qmake\)\n')
 
     def glob_sofiles_without_privdir(self, g):
@@ -1820,3 +1820,11 @@ class LinuxlikeTests(BasePlatformTests):
                 default_symlinks.append(symlink)
                 os.symlink(default_dirs[i], symlink)
             self.assertFalse(cpp.compiler_args([f'-isystem{symlink}' for symlink in default_symlinks]).to_native())
+
+    def test_freezing(self):
+        testdir = os.path.join(self.unit_test_dir, '109 freeze')
+        self.init(testdir)
+        self.build()
+        with self.assertRaises(subprocess.CalledProcessError) as e:
+            self.run_tests()
+        self.assertNotIn('Traceback', e.exception.output)
