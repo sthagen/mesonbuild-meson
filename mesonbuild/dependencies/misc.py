@@ -145,7 +145,7 @@ class ThreadDependency(SystemDependency):
         self.is_found = True
         # Happens if you are using a language with threads
         # concept without C, such as plain Cuda.
-        if self.clib_compiler is None:
+        if not self.clib_compiler:
             self.compile_args = []
             self.link_args = []
         else:
@@ -214,7 +214,7 @@ class Python3DependencySystem(SystemDependency):
                 return None
         elif pyplat == 'win32':
             return '32'
-        elif pyplat in ('win64', 'win-amd64'):
+        elif pyplat in {'win64', 'win-amd64'}:
             return '64'
         mlog.log(f'Unknown Windows Python platform {pyplat!r}')
         return None

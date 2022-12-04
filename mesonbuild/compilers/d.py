@@ -36,6 +36,7 @@ from .compilers import (
     CompileCheckMode,
 )
 from .mixins.gnu import GnuCompiler
+from .mixins.gnu import gnu_common_warning_args
 
 if T.TYPE_CHECKING:
     from ..dependencies import Dependency
@@ -314,7 +315,9 @@ class DmdLikeCompilerMixin(CompilerMixinBase):
                 continue
             if arg.startswith('-fstack-protector'):
                 continue
-            if arg.startswith('-D'):
+            if arg.startswith('-D') and not (arg == '-D' or arg.startswith(('-Dd', '-Df'))):
+                # ignore all '-D*' flags (like '-D_THREAD_SAFE')
+                # unless they are related to documentation
                 continue
             if arg.startswith('-Wl,'):
                 # Translate linker arguments here.
@@ -460,7 +463,7 @@ class DmdLikeCompilerMixin(CompilerMixinBase):
 
         if crt_val in self.mscrt_args:
             return self.mscrt_args[crt_val]
-        assert crt_val in ['from_buildtype', 'static_from_buildtype']
+        assert crt_val in {'from_buildtype', 'static_from_buildtype'}
 
         dbg = 'mdd'
         rel = 'md'
@@ -805,7 +808,10 @@ class GnuDCompiler(GnuCompiler, DCompiler):
         self.warn_args = {'0': [],
                           '1': default_warn_args,
                           '2': default_warn_args + ['-Wextra'],
-                          '3': default_warn_args + ['-Wextra', '-Wpedantic']}
+                          '3': default_warn_args + ['-Wextra', '-Wpedantic'],
+                          'everything': (default_warn_args + ['-Wextra', '-Wpedantic'] +
+                                         self.supported_warn_args(gnu_common_warning_args))}
+
         self.base_options = {
             OptionKey(o) for o in [
              'b_colorout', 'b_sanitize', 'b_staticpic', 'b_vscrt',

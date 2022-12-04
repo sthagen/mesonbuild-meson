@@ -40,7 +40,7 @@ def mpi_factory(env: 'Environment',
 
     candidates: T.List['DependencyGenerator'] = []
     compiler = detect_compiler('mpi', env, for_machine, language)
-    if compiler is None:
+    if not compiler:
         return []
     compiler_is_intel = compiler.get_id() in {'intel', 'intel-cl'}
 
@@ -136,7 +136,7 @@ class _MPIConfigToolDependency(ConfigToolDependency):
         for f in args:
             if self._is_link_arg(f):
                 result.append(f)
-                if f in ('-L', '-Xlinker'):
+                if f in {'-L', '-Xlinker'}:
                     include_next = True
             elif include_next:
                 include_next = False

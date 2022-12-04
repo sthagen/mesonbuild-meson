@@ -209,8 +209,8 @@ class NinjaRule:
             return NinjaCommandArg(c)
 
         self.name = rule
-        self.command = list(map(strToCommandArg, command))  # includes args which never go into a rspfile
-        self.args = list(map(strToCommandArg, args))  # args which will go into a rspfile, if used
+        self.command = [strToCommandArg(c) for c in command]  # includes args which never go into a rspfile
+        self.args = [strToCommandArg(a) for a in args]  # args which will go into a rspfile, if used
         self.description = description
         self.deps = deps  # depstyle 'gcc' or 'msvc'
         self.depfile = depfile
@@ -3535,7 +3535,7 @@ def _scan_fortran_file_deps(src: Path, srcdir: Path, dirname: Path, tdeps, compi
                 submodmatch = submodre.match(line)
                 if submodmatch is not None:
                     parents = submodmatch.group(1).lower().split(':')
-                    assert len(parents) in (1, 2), (
+                    assert len(parents) in {1, 2}, (
                         'submodule ancestry must be specified as'
                         f' ancestor:parent but Meson found {parents}')
 

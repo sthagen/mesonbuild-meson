@@ -27,8 +27,8 @@ jobs:
   unittests-appleclang:
     runs-on: macos-latest
     steps:
-    - uses: actions/checkout@v2
-    - uses: actions/setup-python@v2
+    - uses: actions/checkout@v3
+    - uses: actions/setup-python@v4
       with:
         python-version: '3.x'
     - run: |
@@ -66,7 +66,7 @@ jobs:
       MESON_CI_JOBNAME: ${{ matrix.NAME }}
 
     steps:
-    - uses: actions/checkout@v2
+    - uses: actions/checkout@v3
     # Avoid picking up an older version of LLVM that does not work.
     - run: brew update
     # github actions overwrites brew's python. Force it to reassert itself, by running in a separate step.
@@ -100,8 +100,8 @@ jobs:
   Qt4macos:
     runs-on: macos-latest
     steps:
-    - uses: actions/checkout@v2
-    - uses: actions/setup-python@v2
+    - uses: actions/checkout@v3
+    - uses: actions/setup-python@v4
       with:
         python-version: '3.x'
     - run: python -m pip install -e .
@@ -113,13 +113,13 @@ jobs:
     - run: ln -sfn /usr/local/Cellar/qt@4/4.8.7_6.reinstall /usr/local/Cellar/qt@4/4.8.7_6
     - run: meson setup "test cases/frameworks/4 qt" build -Drequired=qt4
     - run: meson compile -C build
-    - uses: actions/upload-artifact@v1
+    - uses: actions/upload-artifact@v3
       if: failure()
       with:
         name: Qt4_Mac_build
         path: build/meson-logs/meson-log.txt
     - run: meson test -C build -v
-    - uses: actions/upload-artifact@v1
+    - uses: actions/upload-artifact@v3
       if: failure()
       with:
         name: Qt4_Mac_test

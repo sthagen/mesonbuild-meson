@@ -26,12 +26,13 @@ import abc
 import platform, subprocess, operator, os, shlex, shutil, re
 import collections
 from functools import lru_cache, wraps, total_ordering
-from itertools import tee, filterfalse
+from itertools import tee
 from tempfile import TemporaryDirectory, NamedTemporaryFile
 import typing as T
 import textwrap
 import copy
 import pickle
+import errno
 
 from mesonbuild import mlog
 from .core import MesonException, HoldableObject
@@ -870,7 +871,7 @@ def version_compare_many(vstr1: str, conditions: T.Union[str, T.Iterable[str]]) 
             not_found.append(req)
         else:
             found.append(req)
-    return not_found == [], not_found, found
+    return not not_found, not_found, found
 
 
 # determine if the minimum version satisfying the condition |condition| exceeds
@@ -1001,7 +1002,7 @@ def get_library_dirs() -> T.List[str]:
         return unixdirs
     # FIXME: this needs to be further genericized for aarch64 etc.
     machine = platform.machine()
-    if machine in ('i386', 'i486', 'i586', 'i686'):
+    if machine in {'i386', 'i486', 'i586', 'i686'}:
         plat = 'i386'
     elif machine.startswith('arm'):
         plat = 'arm'
@@ -1398,7 +1399,7 @@ def partition(pred: T.Callable[[_T], object], iterable: T.Iterable[_T]) -> T.Tup
     ([0, 2, 4, 6, 8], [1, 3, 5, 7, 9])
     """
     t1, t2 = tee(iterable)
-    return filterfalse(pred, t1), filter(pred, t2)
+    return (t for t in t1 if not pred(t)), (t for t in t2 if pred(t))
 
 
 def Popen_safe(args: T.List[str], write: T.Optional[str] = None,
@@ -1413,12 +1414,19 @@ def Popen_safe(args: T.List[str], write: T.Optional[str] = None,
     # If write is not None, set stdin to PIPE so data can be sent.
     if write is not None:
         stdin = subprocess.PIPE
-    if not sys.stdout.encoding or encoding.upper() != 'UTF-8':
-        p, o, e = Popen_safe_legacy(args, write=write, stdin=stdin, stdout=stdout, stderr=stderr, **kwargs)
-    else:
-        p = subprocess.Popen(args, universal_newlines=True, encoding=encoding, close_fds=False,
-                             stdin=stdin, stdout=stdout, stderr=stderr, **kwargs)
-        o, e = p.communicate(write)
+
+    try:
+        if not sys.stdout.encoding or encoding.upper() != 'UTF-8':
+            p, o, e = Popen_safe_legacy(args, write=write, stdin=stdin, stdout=stdout, stderr=stderr, **kwargs)
+        else:
+            p = subprocess.Popen(args, universal_newlines=True, encoding=encoding, close_fds=False,
+                                 stdin=stdin, stdout=stdout, stderr=stderr, **kwargs)
+            o, e = p.communicate(write)
+    except OSError as oserr:
+        if oserr.errno == errno.ENOEXEC:
+            raise MesonException(f'Failed running {args[0]!r}, binary or interpreter not executable.\n'
+                                 'Possibly wrong architecture or the executable bit is not set.')
+        raise
     # Sometimes the command that we run will call another command which will be
     # without the above stdin workaround, so set the console mode again just in
     # case.

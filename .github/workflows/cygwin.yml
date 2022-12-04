@@ -18,6 +18,9 @@ on:
       - ".github/workflows/cygwin.yml"
       - "run*tests.py"
 
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: windows-latest
@@ -43,7 +46,7 @@ jobs:
 
       - run: git config --global core.autocrlf input
 
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v3
 
       - uses: cygwin/cygwin-install-action@master
         with:
@@ -93,7 +96,7 @@ jobs:
           SKIP_STATIC_BOOST: 1
         shell: C:\cygwin\bin\bash.exe --noprofile --norc -o igncr -eo pipefail '{0}'
 
-      - uses: actions/upload-artifact@v2
+      - uses: actions/upload-artifact@v3
         with:
           name: ${{ matrix.NAME }}
           path: meson-test-run.*

@@ -56,6 +56,8 @@ class CudaModule(NewExtensionModule):
 
         cuda_version = args[0]
         driver_version_table = [
+            {'cuda_version': '>=11.8.0',   'windows': '522.06', 'linux': '520.61.05'},
+            {'cuda_version': '>=11.7.1',   'windows': '516.31', 'linux': '515.48.07'},
             {'cuda_version': '>=11.7.0',   'windows': '516.01', 'linux': '515.43.04'},
             {'cuda_version': '>=11.6.1',   'windows': '511.65', 'linux': '510.47.03'},
             {'cuda_version': '>=11.6.0',   'windows': '511.23', 'linux': '510.39.01'},
@@ -246,11 +248,20 @@ class CudaModule(NewExtensionModule):
                 cuda_hi_limit_gpu_architecture = '8.6'        # noqa: E221
 
         if version_compare(cuda_version, '>=11.1'):
-            cuda_common_gpu_architectures += ['8.6', '8.6+PTX']  # noqa: E221
+            cuda_common_gpu_architectures += ['8.6']             # noqa: E221
             cuda_all_gpu_architectures    += ['8.6']             # noqa: E221
 
-            if version_compare(cuda_version, '<12.0'):
-                cuda_hi_limit_gpu_architecture = '9.0'        # noqa: E221
+            if version_compare(cuda_version, '<11.8'):
+                cuda_common_gpu_architectures += ['8.6+PTX']  # noqa: E221
+                cuda_hi_limit_gpu_architecture = '8.7'        # noqa: E221
+
+        if version_compare(cuda_version, '>=11.8'):
+            cuda_known_gpu_architectures  += ['Orin', 'Lovelace', 'Hopper']  # noqa: E221
+            cuda_common_gpu_architectures += ['8.9', '9.0', '9.0+PTX']       # noqa: E221
+            cuda_all_gpu_architectures    += ['8.7', '8.9', '9.0']           # noqa: E221
+
+            if version_compare(cuda_version, '<12'):
+                cuda_hi_limit_gpu_architecture = '9.1'        # noqa: E221
 
         if not cuda_arch_list:
             cuda_arch_list = 'Auto'
@@ -301,6 +312,9 @@ class CudaModule(NewExtensionModule):
                     'Xavier':        (['7.2'],             []),
                     'Turing':        (['7.5'],             ['7.5']),
                     'Ampere':        (['8.0'],             ['8.0']),
+                    'Orin':          (['8.7'],             []),
+                    'Lovelace':      (['8.9'],             ['8.9']),
+                    'Hopper':        (['9.0'],             ['9.0']),
                 }.get(arch_name, (None, None))
 
             if arch_bin is None:
@@ -325,7 +339,7 @@ class CudaModule(NewExtensionModule):
 
             if version_compare(arch, '<' + cuda_lo_limit_gpu_architecture):
                 continue
-            if version_compare(arch, '>=' + cuda_hi_limit_gpu_architecture):
+            if cuda_hi_limit_gpu_architecture and version_compare(arch, '>=' + cuda_hi_limit_gpu_architecture):
                 continue
 
             if codev:
@@ -347,7 +361,7 @@ class CudaModule(NewExtensionModule):
 
             if version_compare(arch, '<' + cuda_lo_limit_gpu_architecture):
                 continue
-            if version_compare(arch, '>=' + cuda_hi_limit_gpu_architecture):
+            if cuda_hi_limit_gpu_architecture and version_compare(arch, '>=' + cuda_hi_limit_gpu_architecture):
                 continue
 
             arch = arch.replace('.', '')
