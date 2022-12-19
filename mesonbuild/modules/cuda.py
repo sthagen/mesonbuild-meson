@@ -56,6 +56,7 @@ class CudaModule(NewExtensionModule):
 
         cuda_version = args[0]
         driver_version_table = [
+            {'cuda_version': '>=12.0.0',   'windows': '527.41', 'linux': '525.60.13'},
             {'cuda_version': '>=11.8.0',   'windows': '522.06', 'linux': '520.61.05'},
             {'cuda_version': '>=11.7.1',   'windows': '516.31', 'linux': '515.48.07'},
             {'cuda_version': '>=11.7.0',   'windows': '516.01', 'linux': '515.43.04'},
@@ -262,6 +263,14 @@ class CudaModule(NewExtensionModule):
 
             if version_compare(cuda_version, '<12'):
                 cuda_hi_limit_gpu_architecture = '9.1'        # noqa: E221
+
+        if version_compare(cuda_version, '>=12.0'):
+            # https://docs.nvidia.com/cuda/cuda-toolkit-release-notes/index.html#deprecated-features (Current)
+            # https://docs.nvidia.com/cuda/archive/12.0/cuda-toolkit-release-notes/index.html#deprecated-features (Eventual?)
+            cuda_lo_limit_gpu_architecture = '5.0'            # noqa: E221
+
+            if version_compare(cuda_version, '<13'):
+                cuda_hi_limit_gpu_architecture = '10.0'       # noqa: E221
 
         if not cuda_arch_list:
             cuda_arch_list = 'Auto'

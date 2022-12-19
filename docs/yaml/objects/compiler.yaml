@@ -78,13 +78,15 @@ methods:
   description: You have found a bug if you can see this!
   kwargs:
     prefix:
-      type: str
+      type: str | list[str]
       description: |
         Used to add `#include`s and other things that are required
-        for the symbol to be declared. System definitions should be
-        passed via compiler args (eg: `_GNU_SOURCE` is often required for
-        some symbols to be exposed on Linux, and it should be passed via
-        `args` keyword argument).
+        for the symbol to be declared. Since 1.0.0 an array is accepted
+        too. When an array is passed, the items are concatenated together
+        separated by a newline.
+        System definitions should be passed via compiler args
+        (eg: `_GNU_SOURCE` is often required for some symbols to be exposed
+        on Linux, and it should be passed via `args` keyword argument).
 
 - name: _no_builtin_args
   returns: void
@@ -135,7 +137,11 @@ methods:
       type: bool | feature
       default: false
       since: 0.50.0
-      description: If set to `true`, Meson will halt if the header check fails.
+      description:
+        When set to `true`, Meson will halt if the header check fails.
+
+        When set to a [`feature`](Build-options.md#features) option, the feature
+        will control if it is searched and whether to fail if not found.
 
 
 # Star of the actual functions
@@ -365,8 +371,10 @@ methods:
         be found. Otherwise, Meson will continue and the found method of the
         returned object will return `false`.
 
-        *(since 0.47.0)* The value of a [`feature`](Build-options.md#features)
-        option can also be passed here.
+        When set to a [`feature`](Build-options.md#features) option, the feature
+        will control if it is searched and whether to fail if not found.
+
+        *(since 0.47.0)* The value of a `feature` option can also be passed here.
 
     has_headers:
       type: list[str]
@@ -607,4 +615,3 @@ methods:
       type: list[str]
       description: |
         Extra flags to pass to the preprocessor
-

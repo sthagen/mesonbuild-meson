@@ -117,15 +117,15 @@ known_shmod_kwargs = known_build_target_kwargs | {'vs_module_defs'}
 known_stlib_kwargs = known_build_target_kwargs | {'pic', 'prelink'}
 known_jar_kwargs = known_exe_kwargs | {'main_class', 'java_resources'}
 
-def _process_install_tag(install_tag: T.Optional[T.Sequence[T.Optional[str]]],
+def _process_install_tag(install_tag: T.Optional[T.List[T.Optional[str]]],
                          num_outputs: int) -> T.List[T.Optional[str]]:
     _install_tag: T.List[T.Optional[str]]
     if not install_tag:
         _install_tag = [None] * num_outputs
     elif len(install_tag) == 1:
-        _install_tag = list(install_tag) * num_outputs
+        _install_tag = install_tag * num_outputs
     else:
-        _install_tag = list(install_tag)
+        _install_tag = install_tag
     return _install_tag
 
 
@@ -236,7 +236,6 @@ class Build:
         self.environment = environment
         self.projects = {}
         self.targets: 'T.OrderedDict[str, T.Union[CustomTarget, BuildTarget]]' = OrderedDict()
-        self.run_target_names: T.Set[T.Tuple[str, str]] = set()
         self.global_args: PerMachine[T.Dict[str, T.List[str]]] = PerMachine({}, {})
         self.global_link_args: PerMachine[T.Dict[str, T.List[str]]] = PerMachine({}, {})
         self.projects_args: PerMachine[T.Dict[str, T.Dict[str, T.List[str]]]] = PerMachine({}, {})
@@ -2417,9 +2416,9 @@ class CustomTarget(Target, CommandBase):
                  env: T.Optional[EnvironmentVariables] = None,
                  feed: bool = False,
                  install: bool = False,
-                 install_dir: T.Optional[T.Sequence[T.Union[str, Literal[False]]]] = None,
+                 install_dir: T.Optional[T.List[T.Union[str, Literal[False]]]] = None,
                  install_mode: T.Optional[FileMode] = None,
-                 install_tag: T.Optional[T.Sequence[T.Optional[str]]] = None,
+                 install_tag: T.Optional[T.List[T.Optional[str]]] = None,
                  absolute_paths: bool = False,
                  backend: T.Optional['Backend'] = None,
                  ):
