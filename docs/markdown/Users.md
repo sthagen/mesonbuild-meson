@@ -68,6 +68,7 @@ topic](https://github.com/topics/meson).
  - [HelenOS](http://helenos.org), a portable microkernel-based multiserver operating system
  - [HexChat](https://github.com/hexchat/hexchat), a cross-platform IRC client in C
  - [IGT](https://gitlab.freedesktop.org/drm/igt-gpu-tools), Linux kernel graphics driver test suite
+ - [i3](https://i3wm.org), improved tiling window manager
  - [inih](https://github.com/benhoyt/inih) (INI Not Invented Here), a small and simple .INI file parser written in C
  - [Irssi](https://github.com/irssi/irssi), a terminal chat client in C
  - [iSH](https://github.com/tbodt/ish), Linux shell for iOS
@@ -133,6 +134,7 @@ format files
  - [Planner](https://github.com/alainm23/planner), task manager with Todoist support designed for GNU/Linux
  - [Playerctl](https://github.com/acrisci/playerctl), mpris command-line controller and library for spotify, vlc, audacious, bmp, cmus, and others
  - [Polari](https://gitlab.gnome.org/GNOME/polari), an IRC client
+ - [PostgreSQL](https://www.postgresql.org/), an advanced open source relational database
  - [qboot](https://github.com/bonzini/qboot), a minimal x86 firmware for booting Linux kernels
  - [radare2](https://github.com/radare/radare2), unix-like reverse engineering framework and commandline tools (not the default)
  - [rmw](https://remove-to-waste.info), safe-remove utility for the command line
