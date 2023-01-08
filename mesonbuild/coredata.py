@@ -782,7 +782,8 @@ class CoreData:
                 try:
                     value.set_value(oldval.value)
                 except MesonException:
-                    mlog.warning(f'Old value(s) of {key} are no longer valid, resetting to default ({value.value}).')
+                    mlog.warning(f'Old value(s) of {key} are no longer valid, resetting to default ({value.value}).',
+                                 fatal=False)
 
     def is_cross_build(self, when_building_for: MachineChoice = MachineChoice.HOST) -> bool:
         if when_building_for == MachineChoice.BUILD:
@@ -1197,6 +1198,7 @@ BUILTIN_DIR_OPTIONS: 'MutableKeyedOptionDictType' = OrderedDict([
     (OptionKey('includedir'),      BuiltinOption(UserStringOption, 'Header file directory', 'include')),
     (OptionKey('infodir'),         BuiltinOption(UserStringOption, 'Info page directory', 'share/info')),
     (OptionKey('libdir'),          BuiltinOption(UserStringOption, 'Library directory', default_libdir())),
+    (OptionKey('licensedir'),      BuiltinOption(UserStringOption, 'Licenses directory', '')),
     (OptionKey('libexecdir'),      BuiltinOption(UserStringOption, 'Library executable directory', default_libexecdir())),
     (OptionKey('localedir'),       BuiltinOption(UserStringOption, 'Locale data directory', 'share/locale')),
     (OptionKey('localstatedir'),   BuiltinOption(UserStringOption, 'Localstate data directory', 'var')),

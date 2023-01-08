@@ -670,12 +670,14 @@ class Interpreter(InterpreterBase, HoldableObject):
         SOURCES_KW,
         VARIABLES_KW.evolve(since='0.54.0', since_values={list: '0.56.0'}),
         KwargInfo('version', (str, NoneType)),
+        KwargInfo('objects', ContainerTypeInfo(list, build.ExtractedObjects), listify=True, default=[], since='1.1.0'),
     )
     def func_declare_dependency(self, node, args, kwargs):
         deps = kwargs['dependencies']
         incs = self.extract_incdirs(kwargs)
         libs = kwargs['link_with']
         libs_whole = kwargs['link_whole']
+        objects = kwargs['objects']
         sources = self.source_strings_to_files(kwargs['sources'])
         compile_args = kwargs['compile_args']
         link_args = kwargs['link_args']
@@ -703,7 +705,8 @@ class Interpreter(InterpreterBase, HoldableObject):
 
         dep = dependencies.InternalDependency(version, incs, compile_args,
                                               link_args, libs, libs_whole, sources, deps,
-                                              variables, d_module_versions, d_import_dirs)
+                                              variables, d_module_versions, d_import_dirs,
+                                              objects)
         return dep
 
     @typed_pos_args('assert', bool, optargs=[str])
@@ -1132,7 +1135,8 @@ class Interpreter(InterpreterBase, HoldableObject):
             validator=_project_version_validator,
             convertor=lambda x: x[0] if isinstance(x, list) else x,
         ),
-        KwargInfo('license', ContainerTypeInfo(list, str), default=['unknown'], listify=True),
+        KwargInfo('license', (ContainerTypeInfo(list, str), NoneType), default=None, listify=True),
+        KwargInfo('license_files', ContainerTypeInfo(list, str), default=[], listify=True, since='1.1.0'),
         KwargInfo('subproject_dir', str, default='subprojects'),
     )
     def func_project(self, node: mparser.FunctionNode, args: T.Tuple[str, T.List[str]], kwargs: 'kwtypes.Project') -> None:
@@ -1198,8 +1202,20 @@ class Interpreter(InterpreterBase, HoldableObject):
 
         if self.build.project_version is None:
             self.build.project_version = self.project_version
-        proj_license = kwargs['license']
-        self.build.dep_manifest[proj_name] = build.DepManifest(self.project_version, proj_license)
+
+        if kwargs['license'] is None:
+            proj_license = ['unknown']
+            if kwargs['license_files']:
+                raise InvalidArguments('Project `license` name must be specified when `license_files` is set')
+        else:
+            proj_license = kwargs['license']
+        proj_license_files = []
+        for i in self.source_strings_to_files(kwargs['license_files']):
+            ifname = i.absolute_path(self.environment.source_dir,
+                                     self.environment.build_dir)
+            proj_license_files.append((ifname, i))
+        self.build.dep_manifest[proj_name] = build.DepManifest(self.project_version, proj_license,
+                                                               proj_license_files, self.subproject)
         if self.subproject in self.build.projects:
             raise InvalidCode('Second call to project().')
 
@@ -2892,10 +2908,12 @@ class Interpreter(InterpreterBase, HoldableObject):
             return
         if (self.coredata.options[OptionKey('b_lundef')].value and
                 self.coredata.options[OptionKey('b_sanitize')].value != 'none'):
-            mlog.warning('''Trying to use {} sanitizer on Clang with b_lundef.
-This will probably not work.
-Try setting b_lundef to false instead.'''.format(self.coredata.options[OptionKey('b_sanitize')].value),
-                         location=self.current_node)
+            value = self.coredata.options[OptionKey('b_sanitize')].value
+            mlog.warning(textwrap.dedent(f'''\
+                    Trying to use {value} sanitizer on Clang with b_lundef.
+                    This will probably not work.
+                    Try setting b_lundef to false instead.'''),
+                location=self.current_node)  # noqa: E128
 
     # Check that the indicated file is within the same subproject
     # as we currently are. This is to stop people doing
