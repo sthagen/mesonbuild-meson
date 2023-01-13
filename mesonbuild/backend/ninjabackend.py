@@ -512,8 +512,8 @@ class NinjaBackend(backends.Backend):
         for compiler in self.environment.coredata.compilers.host.values():
             # Have to detect the dependency format
 
-            # IFort on windows is MSVC like, but doesn't have /showincludes
-            if compiler.language == 'fortran':
+            # IFort / masm on windows is MSVC like, but doesn't have /showincludes
+            if compiler.language in {'fortran', 'masm'}:
                 continue
             if compiler.id == 'pgi' and mesonlib.is_windows():
                 # for the purpose of this function, PGI doesn't act enough like MSVC
@@ -523,8 +523,9 @@ class NinjaBackend(backends.Backend):
         else:
             # None of our compilers are MSVC, we're done.
             return open(tempfilename, 'a', encoding='utf-8')
+        filebase = 'incdetect.' + compilers.lang_suffixes[compiler.language][0]
         filename = os.path.join(self.environment.get_scratch_dir(),
-                                'incdetect.c')
+                                filebase)
         with open(filename, 'w', encoding='utf-8') as f:
             f.write(dedent('''\
                 #include<stdio.h>
@@ -536,7 +537,7 @@ class NinjaBackend(backends.Backend):
         # Python strings leads to failure. We _must_ do this detection
         # in raw byte mode and write the result in raw bytes.
         pc = subprocess.Popen(compiler.get_exelist() +
-                              ['/showIncludes', '/c', 'incdetect.c'],
+                              ['/showIncludes', '/c', filebase],
                               cwd=self.environment.get_scratch_dir(),
                               stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         (stdout, stderr) = pc.communicate()
@@ -2387,7 +2388,6 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
         generator = genlist.get_generator()
         subdir = genlist.subdir
         exe = generator.get_exe()
-        exe_arr = self.build_target_to_cmd_array(exe)
         infilelist = genlist.get_inputs()
         outfilelist = genlist.get_outputs()
         extra_dependencies = self.get_custom_target_depend_files(genlist)
@@ -2415,8 +2415,8 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
             if len(generator.outputs) > 1:
                 outfilelist = outfilelist[len(generator.outputs):]
             args = self.replace_paths(target, args, override_subdir=subdir)
-            cmdlist = exe_arr + self.replace_extra_args(args, genlist)
-            cmdlist, reason = self.as_meson_exe_cmdline(cmdlist[0], cmdlist[1:],
+            cmdlist, reason = self.as_meson_exe_cmdline(exe,
+                                                        self.replace_extra_args(args, genlist),
                                                         capture=outfiles[0] if generator.capture else None)
             abs_pdir = os.path.join(self.environment.get_build_dir(), self.get_target_dir(target))
             os.makedirs(abs_pdir, exist_ok=True)
