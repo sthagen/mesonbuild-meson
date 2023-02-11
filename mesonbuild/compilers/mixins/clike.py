@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from __future__ import annotations
 
 
 """Mixin classes to be shared between C and C++ compilers.
@@ -881,9 +882,7 @@ class CLikeCompiler(Compiler):
         if extra_args is None:
             extra_args = []
         # Create code that accesses all members
-        members = ''
-        for member in membernames:
-            members += f'foo.{member};\n'
+        members = ''.join(f'foo.{member};\n' for member in membernames)
         t = f'''{prefix}
         void bar(void) {{
             {typename} foo;

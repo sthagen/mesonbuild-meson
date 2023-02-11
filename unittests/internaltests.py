@@ -36,6 +36,7 @@ import mesonbuild.environment
 import mesonbuild.modules.gnome
 from mesonbuild import coredata
 from mesonbuild.compilers.c import ClangCCompiler, GnuCCompiler
+from mesonbuild.compilers.cpp import VisualStudioCPPCompiler
 from mesonbuild.compilers.d import DmdDCompiler
 from mesonbuild.interpreterbase import typed_pos_args, InvalidArguments, ObjectHolder
 from mesonbuild.interpreterbase import typed_pos_args, InvalidArguments, typed_kwargs, ContainerTypeInfo, KwargInfo
@@ -219,6 +220,28 @@ class InternalTests(unittest.TestCase):
         # Adding libbaz again does nothing
         l.append_direct('/libbaz.a')
         self.assertEqual(l, ['-Lfoodir', '-lfoo', '-Lbardir', '-lbar', '-lbar', '/libbaz.a'])
+
+
+    def test_compiler_args_class_visualstudio(self):
+        linker = mesonbuild.linkers.MSVCDynamicLinker(MachineChoice.HOST, [])
+        # Version just needs to be > 19.0.0
+        cc = VisualStudioCPPCompiler([], [], '20.00', MachineChoice.HOST, False, mock.Mock(), 'x64', linker=linker)
+
+        a = cc.compiler_args(cc.get_always_args())
+        self.assertEqual(a.to_native(copy=True), ['/nologo', '/showIncludes', '/utf-8', '/Zc:__cplusplus'])
+
+        # Ensure /source-charset: removes /utf-8
+        a.append('/source-charset:utf-8')
+        self.assertEqual(a.to_native(copy=True), ['/nologo', '/showIncludes', '/Zc:__cplusplus', '/source-charset:utf-8'])
+
+        # Ensure /execution-charset: removes /utf-8
+        a = cc.compiler_args(cc.get_always_args() + ['/execution-charset:utf-8'])
+        self.assertEqual(a.to_native(copy=True), ['/nologo', '/showIncludes', '/Zc:__cplusplus', '/execution-charset:utf-8'])
+
+        # Ensure /validate-charset- removes /utf-8
+        a = cc.compiler_args(cc.get_always_args() + ['/validate-charset-'])
+        self.assertEqual(a.to_native(copy=True), ['/nologo', '/showIncludes', '/Zc:__cplusplus', '/validate-charset-'])
+
 
     def test_compiler_args_class_gnuld(self):
         ## Test --start/end-group

@@ -11,8 +11,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
 from __future__ import annotations
+
 import enum
 import os
 import io
@@ -31,6 +31,8 @@ if T.TYPE_CHECKING:
 
     from .mparser import BaseNode
 
+    TV_Loggable = T.Union[str, 'AnsiDecorator', StringProtocol]
+    TV_LoggableList = T.List[TV_Loggable]
 
 """This is (mostly) a standalone module used to write logging
 information about Meson runs. Some output goes to screen,
@@ -152,9 +154,6 @@ class AnsiDecorator:
 
     def __str__(self) -> str:
         return self.get_text(colorize_console())
-
-TV_Loggable = T.Union[str, AnsiDecorator, 'StringProtocol']
-TV_LoggableList = T.List[TV_Loggable]
 
 class AnsiText:
     def __init__(self, *args: 'SizedStringProtocol'):
@@ -422,7 +421,13 @@ def exception(e: Exception, prefix: T.Optional[AnsiDecorator] = None) -> None:
     if prefix:
         args.append(prefix)
     args.append(str(e))
-    log(*args)
+
+    restore = log_disable_stdout
+    if restore:
+        enable()
+    log(*args, is_error=True)
+    if restore:
+        disable()
 
 # Format a list for logging purposes as a string. It separates
 # all but the last item with commas, and the last with 'and'.

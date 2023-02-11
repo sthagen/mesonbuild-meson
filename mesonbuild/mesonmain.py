@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from __future__ import annotations
 
 # Work around some pathlib bugs...
 
@@ -139,11 +140,11 @@ class CommandLineParser:
         parser.add_argument('script_args', nargs=argparse.REMAINDER)
 
     def run_runpython_command(self, options):
-        import runpy
+        sys.argv[1:] = options.script_args
         if options.eval_arg:
             exec(options.script_file)
         else:
-            sys.argv[1:] = options.script_args
+            import runpy
             sys.path.insert(0, os.path.dirname(options.script_file))
             runpy.run_path(options.script_file, run_name='__main__')
         return 0

@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from __future__ import annotations
 
 
 from . import coredata as cdata
@@ -103,7 +104,7 @@ def run(options):
                 print('      version: ' + repr(dep.get_version()))
 
             for for_machine in iter(MachineChoice):
-                items_list = list(sorted(v[for_machine].items()))
+                items_list = sorted(v[for_machine].items())
                 if items_list:
                     print(f'Cached dependencies for {for_machine.get_lower_case_name()} machine')
                     for dep_key, deps in items_list:

@@ -14,6 +14,7 @@
 
 # This class contains the basic functionality needed to run any interpreter
 # or an interpreter-based tool.
+from __future__ import annotations
 
 from .common import CMakeException
 from .generator import parse_generator_expressions
@@ -211,7 +212,7 @@ class CMakeTraceParser:
             p: {k: strlist_gen(v) for k, v in d.items()}
             for p, d in self.vars_by_file.items()
         }
-        self.explicit_headers = set(Path(parse_generator_expressions(str(x), self)) for x in self.explicit_headers)
+        self.explicit_headers = {Path(parse_generator_expressions(str(x), self)) for x in self.explicit_headers}
         self.cache = {
             k: CMakeCacheEntry(
                 strlist_gen(v.value),

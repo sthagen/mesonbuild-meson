@@ -13,6 +13,7 @@
 # limitations under the License.
 
 # A tool to run tests in many different ways.
+from __future__ import annotations
 
 from pathlib import Path
 from collections import deque
@@ -49,6 +50,15 @@ from .mesonlib import (MesonException, OrderedSet, RealPathAction,
 from .mintro import get_infodir, load_info_file
 from .programs import ExternalProgram
 from .backend.backends import TestProtocol, TestSerialisation
+
+if T.TYPE_CHECKING:
+    TYPE_TAPResult = T.Union['TAPParser.Test',
+                             'TAPParser.Error',
+                             'TAPParser.Version',
+                             'TAPParser.Plan',
+                             'TAPParser.UnknownLine',
+                             'TAPParser.Bailout']
+
 
 # GNU autotools interprets a return code of 77 from tests it executes to
 # mean that the test should be skipped.
@@ -271,13 +281,6 @@ class TestResult(enum.Enum):
         return str(self.colorize('>>> '))
 
 
-TYPE_TAPResult = T.Union['TAPParser.Test',
-                         'TAPParser.Error',
-                         'TAPParser.Version',
-                         'TAPParser.Plan',
-                         'TAPParser.UnknownLine',
-                         'TAPParser.Bailout']
-
 class TAPParser:
     class Plan(T.NamedTuple):
         num_tests: int
@@ -408,7 +411,7 @@ class TAPParser:
                     yield self.Error('more than one plan found')
                 else:
                     num_tests = int(m.group(1))
-                    skipped = (num_tests == 0)
+                    skipped = num_tests == 0
                     if m.group(2):
                         if m.group(2).upper().startswith('SKIP'):
                             if num_tests > 0:
@@ -1248,8 +1251,8 @@ class TestSubprocess:
         self._process = p
         self.stdout = stdout
         self.stderr = stderr
-        self.stdo_task = None            # type: T.Optional[asyncio.Future[str]]
-        self.stde_task = None            # type: T.Optional[asyncio.Future[str]]
+        self.stdo_task: T.Optional[asyncio.Task[None]] = None
+        self.stde_task: T.Optional[asyncio.Task[None]] = None
         self.postwait_fn = postwait_fn   # type: T.Callable[[], None]
         self.all_futures = []            # type: T.List[asyncio.Future]
         self.queue = None                # type: T.Optional[asyncio.Queue[T.Optional[str]]]

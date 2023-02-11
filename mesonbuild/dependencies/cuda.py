@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from __future__ import annotations
 
 import glob
 import re
@@ -28,7 +29,7 @@ if T.TYPE_CHECKING:
     from ..environment import Environment
     from ..compilers import Compiler
 
-TV_ResultTuple = T.Tuple[T.Optional[str], T.Optional[str], bool]
+    TV_ResultTuple = T.Tuple[T.Optional[str], T.Optional[str], bool]
 
 class CudaDependency(SystemDependency):
 
