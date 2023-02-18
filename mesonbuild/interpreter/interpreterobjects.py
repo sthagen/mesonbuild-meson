@@ -41,6 +41,8 @@ if T.TYPE_CHECKING:
 
         separator: str
 
+_ERROR_MSG_KW: KwargInfo[T.Optional[str]] = KwargInfo('error_message', (str, NoneType))
+
 
 def extract_required_kwarg(kwargs: 'kwargs.ExtractRequired',
                            subproject: 'SubProject',
@@ -97,6 +99,9 @@ class FeatureOptionHolder(ObjectHolder[coredata.UserFeatureOption]):
                              'auto': self.auto_method,
                              'require': self.require_method,
                              'disable_auto_if': self.disable_auto_if_method,
+                             'enable_auto_if': self.enable_auto_if_method,
+                             'disable_if': self.disable_if_method,
+                             'enable_if': self.enable_if_method,
                              })
 
     @property
@@ -107,6 +112,11 @@ class FeatureOptionHolder(ObjectHolder[coredata.UserFeatureOption]):
         disabled = copy.deepcopy(self.held_object)
         disabled.value = 'disabled'
         return disabled
+
+    def as_enabled(self) -> coredata.UserFeatureOption:
+        enabled = copy.deepcopy(self.held_object)
+        enabled.value = 'enabled'
+        return enabled
 
     @noPosargs
     @noKwargs
@@ -129,28 +139,63 @@ class FeatureOptionHolder(ObjectHolder[coredata.UserFeatureOption]):
     def auto_method(self, args: T.List[TYPE_var], kwargs: TYPE_kwargs) -> bool:
         return self.value == 'auto'
 
-    @FeatureNew('feature_option.require()', '0.59.0')
-    @typed_pos_args('feature_option.require', bool)
-    @typed_kwargs(
-        'feature_option.require',
-        KwargInfo('error_message', (str, NoneType))
-    )
-    def require_method(self, args: T.Tuple[bool], kwargs: 'kwargs.FeatureOptionRequire') -> coredata.UserFeatureOption:
-        if args[0]:
+    def _disable_if(self, condition: bool, message: T.Optional[str]) -> coredata.UserFeatureOption:
+        if not condition:
             return copy.deepcopy(self.held_object)
 
         if self.value == 'enabled':
             err_msg = f'Feature {self.held_object.name} cannot be enabled'
+            if message:
+                err_msg += f': {message}'
+            raise InterpreterException(err_msg)
+        return self.as_disabled()
+
+    @FeatureNew('feature_option.require()', '0.59.0')
+    @typed_pos_args('feature_option.require', bool)
+    @typed_kwargs(
+        'feature_option.require',
+        _ERROR_MSG_KW,
+    )
+    def require_method(self, args: T.Tuple[bool], kwargs: 'kwargs.FeatureOptionRequire') -> coredata.UserFeatureOption:
+        return self._disable_if(not args[0], kwargs['error_message'])
+
+    @FeatureNew('feature_option.disable_if()', '1.1.0')
+    @typed_pos_args('feature_option.disable_if', bool)
+    @typed_kwargs(
+        'feature_option.disable_if',
+        _ERROR_MSG_KW,
+    )
+    def disable_if_method(self, args: T.Tuple[bool], kwargs: 'kwargs.FeatureOptionRequire') -> coredata.UserFeatureOption:
+        return self._disable_if(args[0], kwargs['error_message'])
+
+    @FeatureNew('feature_option.enable_if()', '1.1.0')
+    @typed_pos_args('feature_option.enable_if', bool)
+    @typed_kwargs(
+        'feature_option.enable_if',
+        _ERROR_MSG_KW,
+    )
+    def enable_if_method(self, args: T.Tuple[bool], kwargs: 'kwargs.FeatureOptionRequire') -> coredata.UserFeatureOption:
+        if not args[0]:
+            return copy.deepcopy(self.held_object)
+
+        if self.value == 'disabled':
+            err_msg = f'Feature {self.held_object.name} cannot be disabled'
             if kwargs['error_message']:
                 err_msg += f': {kwargs["error_message"]}'
             raise InterpreterException(err_msg)
-        return self.as_disabled()
+        return self.as_enabled()
 
     @FeatureNew('feature_option.disable_auto_if()', '0.59.0')
     @noKwargs
     @typed_pos_args('feature_option.disable_auto_if', bool)
     def disable_auto_if_method(self, args: T.Tuple[bool], kwargs: TYPE_kwargs) -> coredata.UserFeatureOption:
         return copy.deepcopy(self.held_object) if self.value != 'auto' or not args[0] else self.as_disabled()
+
+    @FeatureNew('feature_option.enable_auto_if()', '1.1.0')
+    @noKwargs
+    @typed_pos_args('feature_option.enable_auto_if', bool)
+    def enable_auto_if_method(self, args: T.Tuple[bool], kwargs: TYPE_kwargs) -> coredata.UserFeatureOption:
+        return self.as_enabled() if self.value == 'auto' and args[0] else copy.deepcopy(self.held_object)
 
 
 class RunProcess(MesonInterpreterObject):
