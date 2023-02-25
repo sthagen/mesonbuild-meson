@@ -13,10 +13,7 @@
 # limitations under the License.
 from __future__ import annotations
 
-from pathlib import Path
 import copy
-import functools
-import json
 import os
 import shutil
 import typing as T
@@ -26,10 +23,9 @@ from .. import mesonlib
 from .. import mlog
 from ..coredata import UserFeatureOption
 from ..build import known_shmod_kwargs
-from ..dependencies import DependencyMethods, PkgConfigDependency, NotFoundDependency, SystemDependency, ExtraFrameworkDependency
-from ..dependencies.base import process_method_kw
+from ..dependencies import NotFoundDependency
 from ..dependencies.detect import get_dep_identifier
-from ..environment import detect_cpu_family
+from ..dependencies.python import BasicPythonExternalProgram, python_factory, _PythonDependencyBase
 from ..interpreter import ExternalProgramHolder, extract_required_kwarg, permitted_dependency_kwargs
 from ..interpreter import primitives as P_OBJ
 from ..interpreter.type_checking import NoneType, PRESERVE_PATH_KW
@@ -46,25 +42,10 @@ if T.TYPE_CHECKING:
 
     from . import ModuleState
     from ..build import SharedModule, Data
-    from ..dependencies import ExternalDependency, Dependency
-    from ..dependencies.factory import DependencyGenerator
-    from ..environment import Environment
+    from ..dependencies import Dependency
     from ..interpreter import Interpreter
     from ..interpreter.kwargs import ExtractRequired
     from ..interpreterbase.interpreterbase import TYPE_var, TYPE_kwargs
-
-    class PythonIntrospectionDict(TypedDict):
-
-        install_paths: T.Dict[str, str]
-        is_pypy: bool
-        is_venv: bool
-        link_libpython: bool
-        sysconfig_paths: T.Dict[str, str]
-        paths: T.Dict[str, str]
-        platform: str
-        suffix: str
-        variables: T.Dict[str, str]
-        version: str
 
     class PyInstallKw(TypedDict):
 
@@ -78,394 +59,19 @@ if T.TYPE_CHECKING:
         modules: T.List[str]
         pure: T.Optional[bool]
 
-    _Base = ExternalDependency
-else:
-    _Base = object
-
 
 mod_kwargs = {'subdir'}
 mod_kwargs.update(known_shmod_kwargs)
 mod_kwargs -= {'name_prefix', 'name_suffix'}
 
 
-class _PythonDependencyBase(_Base):
-
-    def __init__(self, python_holder: 'PythonInstallation', embed: bool):
-        self.embed = embed
-        self.version: str = python_holder.version
-        self.platform = python_holder.platform
-        self.variables = python_holder.variables
-        self.paths = python_holder.paths
-        self.link_libpython = python_holder.link_libpython
-        self.info: T.Optional[T.Dict[str, str]] = None
-        if mesonlib.version_compare(self.version, '>= 3.0'):
-            self.major_version = 3
-        else:
-            self.major_version = 2
-
-
-class PythonPkgConfigDependency(PkgConfigDependency, _PythonDependencyBase):
-
-    def __init__(self, name: str, environment: 'Environment',
-                 kwargs: T.Dict[str, T.Any], installation: 'PythonInstallation',
-                 libpc: bool = False):
-        if libpc:
-            mlog.debug(f'Searching for {name!r} via pkgconfig lookup in LIBPC')
-        else:
-            mlog.debug(f'Searching for {name!r} via fallback pkgconfig lookup in default paths')
-
-        PkgConfigDependency.__init__(self, name, environment, kwargs)
-        _PythonDependencyBase.__init__(self, installation, kwargs.get('embed', False))
-
-        if libpc and not self.is_found:
-            mlog.debug(f'"python-{self.version}" could not be found in LIBPC, this is likely due to a relocated python installation')
-
-        # The "-embed" version of python.pc was introduced in 3.8, and distutils
-        # extension linking was changed to be considered a non embed usage. Before
-        # then, this dependency always uses the embed=True file because that is the
-        # only one that exists,
-        #
-        # On macOS and some Linux distros (Debian) distutils doesn't link extensions
-        # against libpython, even on 3.7 and below. We call into distutils and
-        # mirror its behavior. See https://github.com/mesonbuild/meson/issues/4117
-        if not self.embed and not self.link_libpython and mesonlib.version_compare(self.version, '< 3.8'):
-            self.link_args = []
-
-
-class PythonFrameworkDependency(ExtraFrameworkDependency, _PythonDependencyBase):
-
-    def __init__(self, name: str, environment: 'Environment',
-                 kwargs: T.Dict[str, T.Any], installation: 'PythonInstallation'):
-        ExtraFrameworkDependency.__init__(self, name, environment, kwargs)
-        _PythonDependencyBase.__init__(self, installation, kwargs.get('embed', False))
-
-
-class PythonSystemDependency(SystemDependency, _PythonDependencyBase):
-
-    def __init__(self, name: str, environment: 'Environment',
-                 kwargs: T.Dict[str, T.Any], installation: 'PythonInstallation'):
-        SystemDependency.__init__(self, name, environment, kwargs)
-        _PythonDependencyBase.__init__(self, installation, kwargs.get('embed', False))
-
-        if mesonlib.is_windows():
-            self._find_libpy_windows(environment)
-        else:
-            self._find_libpy(installation, environment)
-
-    def _find_libpy(self, python_holder: 'PythonInstallation', environment: 'Environment') -> None:
-        if python_holder.is_pypy:
-            if self.major_version == 3:
-                libname = 'pypy3-c'
-            else:
-                libname = 'pypy-c'
-            libdir = os.path.join(self.variables.get('base'), 'bin')
-            libdirs = [libdir]
-        else:
-            libname = f'python{self.version}'
-            if 'DEBUG_EXT' in self.variables:
-                libname += self.variables['DEBUG_EXT']
-            if 'ABIFLAGS' in self.variables:
-                libname += self.variables['ABIFLAGS']
-            libdirs = []
-
-        largs = self.clib_compiler.find_library(libname, environment, libdirs)
-        if largs is not None:
-            self.link_args = largs
-
-        self.is_found = largs is not None or not self.link_libpython
-
-        inc_paths = mesonlib.OrderedSet([
-            self.variables.get('INCLUDEPY'),
-            self.paths.get('include'),
-            self.paths.get('platinclude')])
-
-        self.compile_args += ['-I' + path for path in inc_paths if path]
-
-    def _get_windows_python_arch(self) -> T.Optional[str]:
-        if self.platform == 'mingw':
-            pycc = self.variables.get('CC')
-            if pycc.startswith('x86_64'):
-                return '64'
-            elif pycc.startswith(('i686', 'i386')):
-                return '32'
-            else:
-                mlog.log(f'MinGW Python built with unknown CC {pycc!r}, please file a bug')
-                return None
-        elif self.platform == 'win32':
-            return '32'
-        elif self.platform in {'win64', 'win-amd64'}:
-            return '64'
-        mlog.log(f'Unknown Windows Python platform {self.platform!r}')
-        return None
-
-    def _get_windows_link_args(self) -> T.Optional[T.List[str]]:
-        if self.platform.startswith('win'):
-            vernum = self.variables.get('py_version_nodot')
-            verdot = self.variables.get('py_version_short')
-            imp_lower = self.variables.get('implementation_lower', 'python')
-            if self.static:
-                libpath = Path('libs') / f'libpython{vernum}.a'
-            else:
-                comp = self.get_compiler()
-                if comp.id == "gcc":
-                    if imp_lower == 'pypy' and verdot == '3.8':
-                        # The naming changed between 3.8 and 3.9
-                        libpath = Path('libpypy3-c.dll')
-                    elif imp_lower == 'pypy':
-                        libpath = Path(f'libpypy{verdot}-c.dll')
-                    else:
-                        libpath = Path(f'python{vernum}.dll')
-                else:
-                    libpath = Path('libs') / f'python{vernum}.lib'
-            # base_prefix to allow for virtualenvs.
-            lib = Path(self.variables.get('base_prefix')) / libpath
-        elif self.platform == 'mingw':
-            if self.static:
-                libname = self.variables.get('LIBRARY')
-            else:
-                libname = self.variables.get('LDLIBRARY')
-            lib = Path(self.variables.get('LIBDIR')) / libname
-        else:
-            raise mesonlib.MesonBugException(
-                'On a Windows path, but the OS doesn\'t appear to be Windows or MinGW.')
-        if not lib.exists():
-            mlog.log('Could not find Python3 library {!r}'.format(str(lib)))
-            return None
-        return [str(lib)]
-
-    def _find_libpy_windows(self, env: 'Environment') -> None:
-        '''
-        Find python3 libraries on Windows and also verify that the arch matches
-        what we are building for.
-        '''
-        pyarch = self._get_windows_python_arch()
-        if pyarch is None:
-            self.is_found = False
-            return
-        arch = detect_cpu_family(env.coredata.compilers.host)
-        if arch == 'x86':
-            arch = '32'
-        elif arch == 'x86_64':
-            arch = '64'
-        else:
-            # We can't cross-compile Python 3 dependencies on Windows yet
-            mlog.log(f'Unknown architecture {arch!r} for',
-                     mlog.bold(self.name))
-            self.is_found = False
-            return
-        # Pyarch ends in '32' or '64'
-        if arch != pyarch:
-            mlog.log('Need', mlog.bold(self.name), f'for {arch}-bit, but found {pyarch}-bit')
-            self.is_found = False
-            return
-        # This can fail if the library is not found
-        largs = self._get_windows_link_args()
-        if largs is None:
-            self.is_found = False
-            return
-        self.link_args = largs
-        # Compile args
-        inc_paths = mesonlib.OrderedSet([
-            self.variables.get('INCLUDEPY'),
-            self.paths.get('include'),
-            self.paths.get('platinclude')])
-
-        self.compile_args += ['-I' + path for path in inc_paths if path]
-
-        # https://sourceforge.net/p/mingw-w64/mailman/message/30504611/
-        if pyarch == '64' and self.major_version == 2:
-            self.compile_args += ['-DMS_WIN64']
-
-        self.is_found = True
-
-
-def python_factory(env: 'Environment', for_machine: 'MachineChoice',
-                   kwargs: T.Dict[str, T.Any], methods: T.List[DependencyMethods],
-                   installation: 'PythonInstallation') -> T.List['DependencyGenerator']:
-    # We can't use the factory_methods decorator here, as we need to pass the
-    # extra installation argument
-    embed = kwargs.get('embed', False)
-    candidates: T.List['DependencyGenerator'] = []
-    pkg_version = installation.variables.get('LDVERSION') or installation.version
-
-    if DependencyMethods.PKGCONFIG in methods:
-        pkg_libdir = installation.variables.get('LIBPC')
-        pkg_embed = '-embed' if embed and mesonlib.version_compare(installation.version, '>=3.8') else ''
-        pkg_name = f'python-{pkg_version}{pkg_embed}'
-
-        # If python-X.Y.pc exists in LIBPC, we will try to use it
-        def wrap_in_pythons_pc_dir(name: str, env: 'Environment', kwargs: T.Dict[str, T.Any],
-                                   installation: 'PythonInstallation') -> 'ExternalDependency':
-            if not pkg_libdir:
-                # there is no LIBPC, so we can't search in it
-                return NotFoundDependency('python', env)
-
-            old_pkg_libdir = os.environ.pop('PKG_CONFIG_LIBDIR', None)
-            old_pkg_path = os.environ.pop('PKG_CONFIG_PATH', None)
-            os.environ['PKG_CONFIG_LIBDIR'] = pkg_libdir
-            try:
-                return PythonPkgConfigDependency(name, env, kwargs, installation, True)
-            finally:
-                def set_env(name, value):
-                    if value is not None:
-                        os.environ[name] = value
-                    elif name in os.environ:
-                        del os.environ[name]
-                set_env('PKG_CONFIG_LIBDIR', old_pkg_libdir)
-                set_env('PKG_CONFIG_PATH', old_pkg_path)
-
-        candidates.append(functools.partial(wrap_in_pythons_pc_dir, pkg_name, env, kwargs, installation))
-        # We only need to check both, if a python install has a LIBPC. It might point to the wrong location,
-        # e.g. relocated / cross compilation, but the presence of LIBPC indicates we should definitely look for something.
-        if pkg_libdir is not None:
-            candidates.append(functools.partial(PythonPkgConfigDependency, pkg_name, env, kwargs, installation))
-
-    if DependencyMethods.SYSTEM in methods:
-        candidates.append(functools.partial(PythonSystemDependency, 'python', env, kwargs, installation))
-
-    if DependencyMethods.EXTRAFRAMEWORK in methods:
-        nkwargs = kwargs.copy()
-        if mesonlib.version_compare(pkg_version, '>= 3'):
-            # There is a python in /System/Library/Frameworks, but that's python 2.x,
-            # Python 3 will always be in /Library
-            nkwargs['paths'] = ['/Library/Frameworks']
-        candidates.append(functools.partial(PythonFrameworkDependency, 'Python', env, nkwargs, installation))
-
-    return candidates
-
-
-INTROSPECT_COMMAND = '''\
-import os.path
-import sysconfig
-import json
-import sys
-import distutils.command.install
-
-def get_distutils_paths(scheme=None, prefix=None):
-    import distutils.dist
-    distribution = distutils.dist.Distribution()
-    install_cmd = distribution.get_command_obj('install')
-    if prefix is not None:
-        install_cmd.prefix = prefix
-    if scheme:
-        install_cmd.select_scheme(scheme)
-    install_cmd.finalize_options()
-    return {
-        'data': install_cmd.install_data,
-        'include': os.path.dirname(install_cmd.install_headers),
-        'platlib': install_cmd.install_platlib,
-        'purelib': install_cmd.install_purelib,
-        'scripts': install_cmd.install_scripts,
-    }
-
-# On Debian derivatives, the Python interpreter shipped by the distribution uses
-# a custom install scheme, deb_system, for the system install, and changes the
-# default scheme to a custom one pointing to /usr/local and replacing
-# site-packages with dist-packages.
-# See https://github.com/mesonbuild/meson/issues/8739.
-# XXX: We should be using sysconfig, but Debian only patches distutils.
-
-if 'deb_system' in distutils.command.install.INSTALL_SCHEMES:
-    paths = get_distutils_paths(scheme='deb_system')
-    install_paths = get_distutils_paths(scheme='deb_system', prefix='')
-else:
-    paths = sysconfig.get_paths()
-    empty_vars = {'base': '', 'platbase': '', 'installed_base': ''}
-    install_paths = sysconfig.get_paths(vars=empty_vars)
-
-def links_against_libpython():
-    from distutils.core import Distribution, Extension
-    cmd = Distribution().get_command_obj('build_ext')
-    cmd.ensure_finalized()
-    return bool(cmd.get_libraries(Extension('dummy', [])))
-
-variables = sysconfig.get_config_vars()
-variables.update({'base_prefix': getattr(sys, 'base_prefix', sys.prefix)})
-
-if sys.version_info < (3, 0):
-    suffix = variables.get('SO')
-elif sys.version_info < (3, 8, 7):
-    # https://bugs.python.org/issue?@action=redirect&bpo=39825
-    from distutils.sysconfig import get_config_var
-    suffix = get_config_var('EXT_SUFFIX')
-else:
-    suffix = variables.get('EXT_SUFFIX')
-
-print(json.dumps({
-  'variables': variables,
-  'paths': paths,
-  'sysconfig_paths': sysconfig.get_paths(),
-  'install_paths': install_paths,
-  'version': sysconfig.get_python_version(),
-  'platform': sysconfig.get_platform(),
-  'is_pypy': '__pypy__' in sys.builtin_module_names,
-  'is_venv': sys.prefix != variables['base_prefix'],
-  'link_libpython': links_against_libpython(),
-  'suffix': suffix,
-}))
-'''
-
-
-class PythonExternalProgram(ExternalProgram):
-    def __init__(self, name: str, command: T.Optional[T.List[str]] = None,
-                 ext_prog: T.Optional[ExternalProgram] = None):
-        if ext_prog is None:
-            super().__init__(name, command=command, silent=True)
-        else:
-            self.name = name
-            self.command = ext_prog.command
-            self.path = ext_prog.path
-
-        # We want strong key values, so we always populate this with bogus data.
-        # Otherwise to make the type checkers happy we'd have to do .get() for
-        # everycall, even though we know that the introspection data will be
-        # complete
-        self.info: 'PythonIntrospectionDict' = {
-            'install_paths': {},
-            'is_pypy': False,
-            'is_venv': False,
-            'link_libpython': False,
-            'sysconfig_paths': {},
-            'paths': {},
-            'platform': 'sentinal',
-            'variables': {},
-            'version': '0.0',
-        }
-        self.pure: bool = True
-
-    def _check_version(self, version: str) -> bool:
-        if self.name == 'python2':
-            return mesonlib.version_compare(version, '< 3.0')
-        elif self.name == 'python3':
-            return mesonlib.version_compare(version, '>= 3.0')
-        return True
-
+class PythonExternalProgram(BasicPythonExternalProgram):
     def sanity(self, state: T.Optional['ModuleState'] = None) -> bool:
-        # Sanity check, we expect to have something that at least quacks in tune
-        from tempfile import NamedTemporaryFile
-        with NamedTemporaryFile(suffix='.py', delete=False, mode='w', encoding='utf-8') as tf:
-            tmpfilename = tf.name
-            tf.write(INTROSPECT_COMMAND)
-        cmd = self.get_command() + [tmpfilename]
-        p, stdout, stderr = mesonlib.Popen_safe(cmd)
-        os.unlink(tmpfilename)
-        try:
-            info = json.loads(stdout)
-        except json.JSONDecodeError:
-            info = None
-            mlog.debug('Could not introspect Python (%s): exit code %d' % (str(p.args), p.returncode))
-            mlog.debug('Program stdout:\n')
-            mlog.debug(stdout)
-            mlog.debug('Program stderr:\n')
-            mlog.debug(stderr)
-
-        if info is not None and self._check_version(info['version']):
-            self.info = T.cast('PythonIntrospectionDict', info)
+        ret = super().sanity()
+        if ret:
             self.platlib = self._get_path(state, 'platlib')
             self.purelib = self._get_path(state, 'purelib')
-            return True
-        else:
-            return False
+        return ret
 
     def _get_path(self, state: T.Optional['ModuleState'], key: str) -> None:
         rel_path = self.info['install_paths'][key][1:]
@@ -575,10 +181,9 @@ class PythonInstallation(ExternalProgramHolder):
 
         new_kwargs = kwargs.copy()
         new_kwargs['required'] = False
-        methods = process_method_kw({DependencyMethods.PKGCONFIG, DependencyMethods.SYSTEM}, kwargs)
         # it's theoretically (though not practically) possible to not bind dep, let's ensure it is.
         dep: Dependency = NotFoundDependency('python', self.interpreter.environment)
-        for d in python_factory(self.interpreter.environment, for_machine, new_kwargs, methods, self):
+        for d in python_factory(self.interpreter.environment, for_machine, new_kwargs, self.held_object):
             dep = d()
             if dep.found():
                 break

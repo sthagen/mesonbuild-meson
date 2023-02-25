@@ -44,6 +44,7 @@ from mesonbuild.mesonlib import (
     MesonException, EnvironmentException, OptionKey, ExecutableSerialisation, EnvironmentVariables,
     windows_proof_rm
 )
+from mesonbuild.programs import ExternalProgram
 
 from mesonbuild.compilers.mixins.clang import ClangCompiler
 from mesonbuild.compilers.mixins.gnu import GnuCompiler
@@ -1948,6 +1949,33 @@ class AllPlatformTests(BasePlatformTests):
                 self.assertEqual(item['value'], ['b', 'c'])
                 self.assertEqual(item['choices'], ['b', 'c', 'd'])
 
+    def test_options_listed_in_build_options(self) -> None:
+        """Detect when changed options become listed in build options."""
+        testdir = os.path.join(self.unit_test_dir, '110 list build options')
+
+        out = self.init(testdir)
+        for line in out.splitlines():
+            if line.startswith('Message: Build options:'):
+                self.assertNotIn('-Dauto_features=auto', line)
+                self.assertNotIn('-Doptional=auto', line)
+
+        self.wipe()
+        self.mac_ci_delay()
+
+        out = self.init(testdir, extra_args=['-Dauto_features=disabled', '-Doptional=enabled'])
+        for line in out.splitlines():
+            if line.startswith('Message: Build options:'):
+                self.assertIn('-Dauto_features=disabled', line)
+                self.assertIn('-Doptional=enabled', line)
+
+        self.setconf('-Doptional=disabled')
+        out = self.build()
+        for line in out.splitlines():
+            if line.startswith('Message: Build options:'):
+                self.assertIn('-Dauto_features=disabled', line)
+                self.assertNotIn('-Doptional=enabled', line)
+                self.assertIn('-Doptional=disabled', line)
+
     def test_subproject_promotion(self):
         testdir = os.path.join(self.unit_test_dir, '12 promote')
         workdir = os.path.join(self.builddir, 'work')
@@ -3344,7 +3372,7 @@ class AllPlatformTests(BasePlatformTests):
 
     def test_summary(self):
         testdir = os.path.join(self.unit_test_dir, '71 summary')
-        out = self.init(testdir, extra_args=['-Denabled_opt=enabled'])
+        out = self.init(testdir, extra_args=['-Denabled_opt=enabled', f'-Dpython={sys.executable}'])
         expected = textwrap.dedent(r'''
             Some Subproject 2.0
 
@@ -3374,7 +3402,7 @@ class AllPlatformTests(BasePlatformTests):
 
               Stuff
                 missing prog   : NO
-                existing prog  : ''' + sys.executable + '''
+                existing prog  : ''' + ExternalProgram('python3', [sys.executable], silent=True).path + '''
                 missing dep    : NO
                 external dep   : YES 1.2.3
                 internal dep   : YES
@@ -3394,6 +3422,7 @@ class AllPlatformTests(BasePlatformTests):
                 libdir         : lib
                 prefix         : /usr
                 enabled_opt    : enabled
+                python         : ''' + sys.executable + '''
             ''')
         expected_lines = expected.split('\n')[1:]
         out_start = out.find(expected_lines[0])

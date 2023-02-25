@@ -18,6 +18,7 @@ from pathlib import Path
 import argparse
 import errno
 import os
+import selectors
 import shlex
 import shutil
 import subprocess
@@ -42,7 +43,7 @@ if T.TYPE_CHECKING:
             ExecutableSerialisation, InstallDataBase, InstallEmptyDir,
             InstallSymlinkData, TargetInstallData
     )
-    from .mesonlib import FileMode
+    from .mesonlib import FileMode, EnvironOrDict
 
     try:
         from typing import Protocol
@@ -556,13 +557,36 @@ class Installer:
                     self.log('Preserved {} unchanged files, see {} for the full list'
                              .format(self.preserved_file_count, os.path.normpath(self.lf.name)))
         except PermissionError:
-            if shutil.which('pkexec') is not None and 'PKEXEC_UID' not in os.environ and destdir == '':
-                print('Installation failed due to insufficient permissions.')
-                print('Attempting to use polkit to gain elevated privileges...')
-                os.execlp('pkexec', 'pkexec', sys.executable, main_file, *sys.argv[1:],
-                          '-C', os.getcwd())
-            else:
+            if is_windows() or destdir != '' or not os.isatty(sys.stdout.fileno()) or not os.isatty(sys.stderr.fileno()):
+                # can't elevate to root except in an interactive unix environment *and* when not doing a destdir install
                 raise
+            rootcmd = os.environ.get('MESON_ROOT_CMD') or shutil.which('sudo') or shutil.which('doas')
+            pkexec = shutil.which('pkexec')
+            if rootcmd is None and pkexec is not None and 'PKEXEC_UID' not in os.environ:
+                rootcmd = pkexec
+
+            if rootcmd is not None:
+                print('Installation failed due to insufficient permissions.')
+                s = selectors.DefaultSelector()
+                s.register(sys.stdin, selectors.EVENT_READ)
+                ans = None
+                for attempt in range(5):
+                    print(f'Attempt to use {rootcmd} to gain elevated privileges? [y/n] ', end='', flush=True)
+                    if s.select(30):
+                        # we waited on sys.stdin *only*
+                        ans = sys.stdin.readline().rstrip('\n')
+                    else:
+                        print()
+                        break
+                    if ans in {'y', 'n'}:
+                        break
+                else:
+                    if ans is not None:
+                        raise MesonException('Answer not one of [y/n]')
+                if ans == 'y':
+                    os.execlp(rootcmd, rootcmd, sys.executable, main_file, *sys.argv[1:],
+                              '-C', os.getcwd(), '--no-rebuild')
+            raise
 
     def do_strip(self, strip_bin: T.List[str], fname: str, outname: str) -> None:
         self.log(f'Stripping target {fname!r}.')
@@ -743,7 +767,41 @@ def rebuild_all(wd: str) -> bool:
         print("Can't find ninja, can't rebuild test.")
         return False
 
-    ret = subprocess.run(ninja + ['-C', wd]).returncode
+    def drop_privileges() -> T.Tuple[T.Optional[EnvironOrDict], T.Optional[T.Callable[[], None]]]:
+        if not is_windows() and os.geteuid() == 0:
+            import pwd
+            env = os.environ.copy()
+
+            if os.environ.get('SUDO_USER') is not None:
+                orig_user = env.pop('SUDO_USER')
+                orig_uid = env.pop('SUDO_UID', 0)
+                orig_gid = env.pop('SUDO_GID', 0)
+                homedir = pwd.getpwuid(int(orig_uid)).pw_dir
+            elif os.environ.get('DOAS_USER') is not None:
+                orig_user = env.pop('DOAS_USER')
+                pwdata = pwd.getpwnam(orig_user)
+                orig_uid = pwdata.pw_uid
+                orig_gid = pwdata.pw_gid
+                homedir = pwdata.pw_dir
+            else:
+                return None, None
+
+            env['USER'] = orig_user
+            env['HOME'] = homedir
+
+            def wrapped() -> None:
+                print(f'Dropping privileges to {orig_user!r} before running ninja...')
+                if orig_gid is not None:
+                    os.setgid(int(orig_gid))
+                if orig_uid is not None:
+                    os.setuid(int(orig_uid))
+
+            return env, wrapped
+        else:
+            return None, None
+
+    env, preexec_fn = drop_privileges()
+    ret = subprocess.run(ninja + ['-C', wd], env=env, preexec_fn=preexec_fn).returncode
     if ret != 0:
         print(f'Could not rebuild {wd}')
         return False
