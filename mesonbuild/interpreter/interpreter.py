@@ -33,7 +33,7 @@ from ..interpreterbase import noPosargs, noKwargs, permittedKwargs, noArgsFlatte
 from ..interpreterbase import InterpreterException, InvalidArguments, InvalidCode, SubdirDoneRequest
 from ..interpreterbase import Disabler, disablerIfNotFound
 from ..interpreterbase import FeatureNew, FeatureDeprecated, FeatureNewKwargs, FeatureDeprecatedKwargs
-from ..interpreterbase import ObjectHolder
+from ..interpreterbase import ObjectHolder, ContextManagerObject
 from ..modules import ExtensionModule, ModuleObject, MutableModuleObject, NewExtensionModule, NotFoundExtensionModule
 from ..cmake import CMakeInterpreter
 from ..backend.backends import ExecutableSerialisation
@@ -416,6 +416,8 @@ class Interpreter(InterpreterBase, HoldableObject):
                            })
         if 'MESON_UNIT_TEST' in os.environ:
             self.funcs.update({'exception': self.func_exception})
+        if 'MESON_RUNNING_IN_PROJECT_TESTS' in os.environ:
+            self.funcs.update({'expect_error': self.func_expect_error})
 
     def build_holder_map(self) -> None:
         '''
@@ -522,6 +524,25 @@ class Interpreter(InterpreterBase, HoldableObject):
                 pass
             else:
                 raise InterpreterException(f'Module returned a value of unknown type {v!r}.')
+
+    def handle_meson_version(self, pv: str, location: mparser.BaseNode) -> None:
+        if not mesonlib.version_compare(coredata.version, pv):
+            raise InterpreterException.from_node(f'Meson version is {coredata.version} but project requires {pv}', node=location)
+        mesonlib.project_meson_versions[self.subproject] = pv
+
+    def handle_meson_version_from_ast(self) -> None:
+        if not self.ast.lines:
+            return
+        project = self.ast.lines[0]
+        # first line is always project()
+        if not isinstance(project, mparser.FunctionNode):
+            return
+        for kw, val in project.args.kwargs.items():
+            assert isinstance(kw, mparser.IdNode), 'for mypy'
+            if kw.value == 'meson_version':
+                # mypy does not understand "and isinstance"
+                if isinstance(val, mparser.StringNode):
+                    self.handle_meson_version(val.value, val)
 
     def get_build_def_files(self) -> mesonlib.OrderedSet[str]:
         return self.build_def_files
@@ -1149,11 +1170,7 @@ class Interpreter(InterpreterBase, HoldableObject):
         # This needs to be evaluated as early as possible, as meson uses this
         # for things like deprecation testing.
         if kwargs['meson_version']:
-            cv = coredata.version
-            pv = kwargs['meson_version']
-            if not mesonlib.version_compare(cv, pv):
-                raise InterpreterException(f'Meson version is {cv} but project requires {pv}')
-            mesonlib.project_meson_versions[self.subproject] = kwargs['meson_version']
+            self.handle_meson_version(kwargs['meson_version'], node)
 
         if os.path.exists(self.option_file):
             oi = optinterpreter.OptionInterpreter(self.subproject)
@@ -1394,6 +1411,24 @@ class Interpreter(InterpreterBase, HoldableObject):
     @noPosargs
     def func_exception(self, node, args, kwargs):
         raise RuntimeError('unit test traceback :)')
+
+    @noKwargs
+    @typed_pos_args('expect_error', str)
+    def func_expect_error(self, node: mparser.BaseNode, args: T.Tuple[str], kwargs: TYPE_kwargs) -> ContextManagerObject:
+        class ExpectErrorObject(ContextManagerObject):
+            def __init__(self, msg: str, subproject: str) -> None:
+                super().__init__(subproject)
+                self.msg = msg
+
+            def __exit__(self, exc_type, exc_val, exc_tb):
+                if exc_val is None:
+                    raise InterpreterException('Expecting an error but code block succeeded')
+                if isinstance(exc_val, mesonlib.MesonException):
+                    msg = str(exc_val)
+                    if msg != self.msg:
+                        raise InterpreterException(f'Expecting error {self.msg!r} but got {msg!r}')
+                    return True
+        return ExpectErrorObject(args[0], self.subproject)
 
     def add_languages(self, args: T.List[str], required: bool, for_machine: MachineChoice) -> bool:
         success = self.add_languages_for(args, required, for_machine)

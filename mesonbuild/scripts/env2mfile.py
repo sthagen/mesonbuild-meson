@@ -131,13 +131,15 @@ def get_args_from_envvars(infos: MachineInfo) -> None:
     if objcpp_link_args:
         infos.link_args['objcpp'] = objcpp_link_args
 
-cpu_family_map = {
+deb_cpu_family_map = {
     'mips64el': 'mips64',
     'i686': 'x86',
 }
-cpu_map = {
+
+deb_cpu_map = {
     'armhf': 'arm7hlf',
-    'mips64el': 'mips64'
+    'mips64el': 'mips64',
+    'powerpc64le': 'ppc64',
 }
 
 def deb_detect_cmake(infos: MachineInfo, data: T.Dict[str, str]) -> None:
@@ -145,7 +147,10 @@ def deb_detect_cmake(infos: MachineInfo, data: T.Dict[str, str]) -> None:
     system_processor_map = {'arm': 'armv7l', 'mips64el': 'mips64', 'powerpc64le': 'ppc64le'}
 
     infos.cmake["CMAKE_C_COMPILER"] = infos.compilers['c']
-    infos.cmake["CMAKE_CXX_COMPILER"] = infos.compilers['cpp']
+    try:
+        infos.cmake["CMAKE_CXX_COMPILER"] = infos.compilers['cpp']
+    except KeyError:
+        pass
     infos.cmake["CMAKE_SYSTEM_NAME"] = system_name_map[data['DEB_HOST_ARCH_OS']]
     infos.cmake["CMAKE_SYSTEM_PROCESSOR"] = system_processor_map.get(data['DEB_HOST_GNU_CPU'],
                                                                      data['DEB_HOST_GNU_CPU'])
@@ -160,7 +165,7 @@ def deb_compiler_lookup(infos: MachineInfo, compilerstems: T.List[T.Tuple[str, s
             pass
 
 def detect_cross_debianlike(options: T.Any) -> MachineInfo:
-    if options.debarch is None:
+    if options.debarch == 'auto':
         cmd = ['dpkg-architecture']
     else:
         cmd = ['dpkg-architecture', '-a' + options.debarch]
@@ -175,10 +180,10 @@ def detect_cross_debianlike(options: T.Any) -> MachineInfo:
         data[k] = v
     host_arch = data['DEB_HOST_GNU_TYPE']
     host_os = data['DEB_HOST_ARCH_OS']
-    host_cpu_family = cpu_family_map.get(data['DEB_HOST_GNU_CPU'],
-                                         data['DEB_HOST_GNU_CPU'])
-    host_cpu = cpu_map.get(data['DEB_HOST_ARCH'],
-                           data['DEB_HOST_ARCH'])
+    host_cpu_family = deb_cpu_family_map.get(data['DEB_HOST_GNU_CPU'],
+                                             data['DEB_HOST_GNU_CPU'])
+    host_cpu = deb_cpu_map.get(data['DEB_HOST_ARCH'],
+                               data['DEB_HOST_ARCH'])
     host_endian = data['DEB_HOST_ARCH_ENDIAN']
 
     compilerstems = [('c', 'gcc'),

@@ -40,7 +40,7 @@ kwargs:
   default_options:
     type: list[str]
     description: |
-      Accecpts strings in the form `key=value`
+      Accepts strings in the form `key=value`
       which have the same format as options to `meson configure`.
       For example to set the default project type you would
       set this: `default_options : ['buildtype=debugoptimized']`. Note
@@ -48,6 +48,11 @@ kwargs:
       time. Global options such as `buildtype` can only be specified in
       the master project, settings in subprojects are ignored. Project
       specific options are used normally even in subprojects.
+
+      Note that some options can override the default behavior;
+      for example, using `c_args` here means that the `CFLAGS`
+      environment variable is not used. Consider using
+      [[add_project_arguments()]] instead.
 
   version:
     type: str | file

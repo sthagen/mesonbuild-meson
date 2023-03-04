@@ -1679,6 +1679,48 @@ class AllPlatformTests(BasePlatformTests):
             self.build()
             self.run_tests()
 
+    def test_prebuilt_shared_lib_rpath_same_prefix(self) -> None:
+        (cc, _, object_suffix, shared_suffix) = self.detect_prebuild_env()
+        orig_tdir = os.path.join(self.unit_test_dir, '17 prebuilt shared')
+
+        # Put the shared library in a location that shares a common prefix with
+        # the source directory:
+        #
+        #   .../
+        #       foo-lib/
+        #               libalexandria.so
+        #       foo/
+        #           meson.build
+        #           ...
+        #
+        # This allows us to check that the .../foo-lib/libalexandria.so path is
+        # preserved correctly when meson processes it.
+        with tempfile.TemporaryDirectory() as d:
+            libdir = os.path.join(d, 'foo-lib')
+            os.mkdir(libdir)
+
+            source = os.path.join(orig_tdir, 'alexandria.c')
+            objectfile = os.path.join(libdir, 'alexandria.' + object_suffix)
+            impfile = os.path.join(libdir, 'alexandria.lib')
+            if cc.get_argument_syntax() == 'msvc':
+                shlibfile = os.path.join(libdir, 'alexandria.' + shared_suffix)
+            elif is_cygwin():
+                shlibfile = os.path.join(libdir, 'cygalexandria.' + shared_suffix)
+            else:
+                shlibfile = os.path.join(libdir, 'libalexandria.' + shared_suffix)
+            # Ensure MSVC extra files end up in the directory that gets deleted
+            # at the end
+            with chdir(libdir):
+                self.build_shared_lib(cc, source, objectfile, shlibfile, impfile)
+
+            tdir = os.path.join(d, 'foo')
+            shutil.copytree(orig_tdir, tdir)
+
+            # Run the test
+            self.init(tdir, extra_args=[f'-Dsearch_dir={libdir}'])
+            self.build()
+            self.run_tests()
+
     def test_underscore_prefix_detection_list(self) -> None:
         '''
         Test the underscore detection hardcoded lookup list
@@ -4235,6 +4277,8 @@ class AllPlatformTests(BasePlatformTests):
             Path(installpath, 'usr/share/out3-custom.txt'),
             Path(installpath, 'usr/share/custom_files'),
             Path(installpath, 'usr/share/custom_files/data.txt'),
+            Path(installpath, 'usr/share/excludes'),
+            Path(installpath, 'usr/share/excludes/installed.txt'),
             Path(installpath, 'usr/lib'),
             Path(installpath, 'usr/lib/libbothcustom.a'),
             Path(installpath, 'usr/' + shared_lib_name('bothcustom')),
@@ -4442,7 +4486,15 @@ class AllPlatformTests(BasePlatformTests):
             'install_subdirs': {
                 f'{testdir}/custom_files': {
                     'destination': '{datadir}/custom_files',
-                    'tag': 'custom'
+                    'tag': 'custom',
+                    'exclude_dirs': [],
+                    'exclude_files': [],
+                },
+                f'{testdir}/excludes': {
+                    'destination': '{datadir}/excludes',
+                    'tag': 'custom',
+                    'exclude_dirs': ['excluded'],
+                    'exclude_files': ['excluded.txt'],
                 }
             }
         }

@@ -93,15 +93,15 @@ def main() -> int:
     check_mypy()
 
     root = Path(__file__).absolute().parent
-    args = []  # type: T.List[str]
 
     parser = argparse.ArgumentParser(description='Process some integers.')
     parser.add_argument('files', nargs='*')
+    parser.add_argument('--mypy', help='path to mypy executable')
     parser.add_argument('-q', '--quiet', action='store_true', help='do not print informational messages')
     parser.add_argument('-p', '--pretty', action='store_true', help='pretty print mypy errors')
     parser.add_argument('-C', '--clear', action='store_true', help='clear the terminal before running mypy')
 
-    opts = parser.parse_args()
+    opts, args = parser.parse_known_args()
     if opts.pretty:
         args.append('--pretty')
 
@@ -122,12 +122,10 @@ def main() -> int:
         to_check.extend(modules)
 
     if to_check:
+        command = [opts.mypy] if opts.mypy else [sys.executable, '-m', 'mypy']
         if not opts.quiet:
             print('Running mypy (this can take some time) ...')
-        p = subprocess.run(
-            [sys.executable, '-m', 'mypy', '--python-version', '3.10'] + args + to_check,
-            cwd=root,
-        )
+        p = subprocess.run(command + args + to_check, cwd=root)
         return p.returncode
     else:
         if not opts.quiet:
