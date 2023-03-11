@@ -37,12 +37,26 @@ from mesonbuild import mlog
 from .core import MesonException, HoldableObject
 
 if T.TYPE_CHECKING:
-    from typing_extensions import Literal
+    from typing_extensions import Literal, Protocol
 
     from .._typing import ImmutableListProtocol
     from ..build import ConfigurationData
     from ..coredata import KeyedOptionDictType, UserOption
+    from ..environment import Environment
     from ..compilers.compilers import Compiler
+    from ..interpreterbase.baseobjects import SubProject
+
+    class _EnvPickleLoadable(Protocol):
+
+        environment: Environment
+
+    class _VerPickleLoadable(Protocol):
+
+        version: str
+
+    # A generic type for pickle_load. This allows any type that has either a
+    # .version or a .environment to be passed.
+    _PL = T.TypeVar('_PL', bound=T.Union[_EnvPickleLoadable, _VerPickleLoadable])
 
 FileOrString = T.Union['File', str]
 
@@ -1192,7 +1206,7 @@ def do_replacement(regex: T.Pattern[str], line: str,
     return re.sub(regex, variable_replace, line), missing_variables
 
 def do_define(regex: T.Pattern[str], line: str, confdata: 'ConfigurationData',
-              variable_format: Literal['meson', 'cmake', 'cmake@']) -> str:
+              variable_format: Literal['meson', 'cmake', 'cmake@'], subproject: T.Optional[SubProject] = None) -> str:
     def get_cmake_define(line: str, confdata: 'ConfigurationData') -> str:
         arr = line.split()
         define_value = []
@@ -1205,8 +1219,12 @@ def do_define(regex: T.Pattern[str], line: str, confdata: 'ConfigurationData',
         return ' '.join(define_value)
 
     arr = line.split()
-    if variable_format == 'meson' and len(arr) != 2:
-        raise MesonException('#mesondefine does not contain exactly two tokens: %s' % line.strip())
+    if len(arr) != 2:
+        if variable_format == 'meson':
+            raise MesonException('#mesondefine does not contain exactly two tokens: %s' % line.strip())
+        elif subproject is not None:
+            from ..interpreterbase.decorators import FeatureNew
+            FeatureNew.single_use('cmakedefine without exactly two tokens', '0.54.1', subproject)
 
     varname = arr[1]
     try:
@@ -1242,7 +1260,7 @@ def get_variable_regex(variable_format: Literal['meson', 'cmake', 'cmake@'] = 'm
 
 def do_conf_str(src: str, data: list, confdata: 'ConfigurationData',
                 variable_format: Literal['meson', 'cmake', 'cmake@'],
-                encoding: str = 'utf-8') -> T.Tuple[T.List[str], T.Set[str], bool]:
+                encoding: str = 'utf-8', subproject: T.Optional[SubProject] = None) -> T.Tuple[T.List[str], T.Set[str], bool]:
     def line_is_valid(line: str, variable_format: str) -> bool:
         if variable_format == 'meson':
             if '#cmakedefine' in line:
@@ -1266,7 +1284,7 @@ def do_conf_str(src: str, data: list, confdata: 'ConfigurationData',
     for line in data:
         if line.startswith(search_token):
             confdata_useless = False
-            line = do_define(regex, line, confdata, variable_format)
+            line = do_define(regex, line, confdata, variable_format, subproject)
         else:
             if not line_is_valid(line, variable_format):
                 raise MesonException(f'Format error in {src}: saw "{line.strip()}" when format set to "{variable_format}"')
@@ -1280,14 +1298,14 @@ def do_conf_str(src: str, data: list, confdata: 'ConfigurationData',
 
 def do_conf_file(src: str, dst: str, confdata: 'ConfigurationData',
                  variable_format: Literal['meson', 'cmake', 'cmake@'],
-                 encoding: str = 'utf-8') -> T.Tuple[T.Set[str], bool]:
+                 encoding: str = 'utf-8', subproject: T.Optional[SubProject] = None) -> T.Tuple[T.Set[str], bool]:
     try:
         with open(src, encoding=encoding, newline='') as f:
             data = f.readlines()
     except Exception as e:
         raise MesonException(f'Could not read input file {src}: {e!s}')
 
-    (result, missing_variables, confdata_useless) = do_conf_str(src, data, confdata, variable_format, encoding)
+    (result, missing_variables, confdata_useless) = do_conf_str(src, data, confdata, variable_format, encoding, subproject)
     dst_tmp = dst + '~'
     try:
         with open(dst_tmp, 'w', encoding=encoding, newline='') as f:
@@ -2326,7 +2344,8 @@ class OptionKey:
         """Convenience method to check if this is a base option."""
         return self.type is OptionType.BASE
 
-def pickle_load(filename: str, object_name: str, object_type: T.Type) -> T.Any:
+
+def pickle_load(filename: str, object_name: str, object_type: T.Type[_PL]) -> _PL:
     load_fail_msg = f'{object_name} file {filename!r} is corrupted. Try with a fresh build tree.'
     try:
         with open(filename, 'rb') as f:
@@ -2342,11 +2361,18 @@ def pickle_load(filename: str, object_name: str, object_type: T.Type) -> T.Any:
             f'meson setup {build_dir} --wipe')
     if not isinstance(obj, object_type):
         raise MesonException(load_fail_msg)
+
+    # Because these Protocols are not available at runtime (and cannot be made
+    # available at runtime until we drop support for Python < 3.8), we have to
+    # do a bit of hackery so that mypy understands what's going on here
+    version: str
+    if hasattr(obj, 'version'):
+        version = T.cast('_VerPickleLoadable', obj).version
+    else:
+        version = T.cast('_EnvPickleLoadable', obj).environment.coredata.version
+
     from ..coredata import version as coredata_version
     from ..coredata import major_versions_differ, MesonVersionMismatchException
-    version = getattr(obj, 'version', None)
-    if version is None:
-        version = obj.environment.coredata.version
     if major_versions_differ(version, coredata_version):
         raise MesonVersionMismatchException(version, coredata_version)
     return obj

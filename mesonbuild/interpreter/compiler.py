@@ -3,6 +3,7 @@
 # Copyright © 2021 Intel Corporation
 from __future__ import annotations
 
+import collections
 import enum
 import functools
 import os
@@ -166,7 +167,7 @@ _COMPILES_KWS: T.List[KwargInfo] = [_NAME_KW, _ARGS_KW, _DEPENDENCIES_KW, _INCLU
 _HEADER_KWS: T.List[KwargInfo] = [REQUIRED_KW.evolve(since='0.50.0', default=False), *_COMMON_KWS]
 
 class CompilerHolder(ObjectHolder['Compiler']):
-    preprocess_uid = itertools.count()
+    preprocess_uid: T.Dict[str, itertools.count] = collections.defaultdict(itertools.count)
 
     def __init__(self, compiler: 'Compiler', interpreter: 'Interpreter'):
         super().__init__(compiler, interpreter)
@@ -773,13 +774,12 @@ class CompilerHolder(ObjectHolder['Compiler']):
         if any(isinstance(s, (build.CustomTarget, build.CustomTargetIndex, build.GeneratedList)) for s in sources):
             FeatureNew.single_use('compiler.preprocess with generated sources', '1.1.0', self.subproject,
                                   location=self.current_node)
-        tg_kwargs = {
-            f'{self.compiler.language}_args': kwargs['compile_args'],
-            'build_by_default': False,
-            'include_directories': kwargs['include_directories'],
-            'dependencies': kwargs['dependencies'],
-        }
-        tg_name = f'preprocessor_{next(self.preprocess_uid)}'
+
+        tg_counter = next(self.preprocess_uid[self.interpreter.subdir])
+        if tg_counter > 0:
+            FeatureNew.single_use('compiler.preprocess used multiple times', '1.1.0', self.subproject,
+                                  location=self.current_node)
+        tg_name = f'preprocessor_{tg_counter}'
         tg = build.CompileTarget(
             tg_name,
             self.interpreter.subdir,
@@ -789,7 +789,9 @@ class CompilerHolder(ObjectHolder['Compiler']):
             kwargs['output'],
             compiler,
             self.interpreter.backend,
-            tg_kwargs)
+            kwargs['compile_args'],
+            kwargs['include_directories'],
+            kwargs['dependencies'])
         self.interpreter.add_target(tg.name, tg)
         # Expose this target as list of its outputs, so user can pass them to
         # other targets, list outputs, etc.

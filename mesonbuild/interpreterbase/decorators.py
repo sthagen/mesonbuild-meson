@@ -313,14 +313,24 @@ class ContainerTypeInfo:
         if not isinstance(value, self.container):
             return False
         iter_ = iter(value.values()) if isinstance(value, dict) else iter(value)
-        for each in iter_:
-            if not isinstance(each, self.contains):
-                return False
+        if any(not isinstance(i, self.contains) for i in iter_):
+            return False
         if self.pairs and len(value) % 2 != 0:
             return False
         if not value and not self.allow_empty:
             return False
         return True
+
+    def check_any(self, value: T.Any) -> bool:
+        """Check a value should emit new/deprecated feature.
+
+        :param value: A value to check
+        :return: True if any of the items in value matches, False otherwise
+        """
+        if not isinstance(value, self.container):
+            return False
+        iter_ = iter(value.values()) if isinstance(value, dict) else iter(value)
+        return any(isinstance(i, self.contains) for i in iter_)
 
     def description(self) -> str:
         """Human readable description of this container type.
@@ -382,7 +392,6 @@ class KwargInfo(T.Generic[_T]):
         added in.
     :param not_set_warning: A warning message that is logged if the kwarg is not
         set by the user.
-    :param feature_validator: A callable returning an iterable of FeatureNew | FeatureDeprecated objects.
     """
     def __init__(self, name: str,
                  types: T.Union[T.Type[_T], T.Tuple[T.Union[T.Type[_T], ContainerTypeInfo], ...], ContainerTypeInfo],
@@ -390,11 +399,10 @@ class KwargInfo(T.Generic[_T]):
                  default: T.Optional[_T] = None,
                  since: T.Optional[str] = None,
                  since_message: T.Optional[str] = None,
-                 since_values: T.Optional[T.Dict[T.Union[_T, T.Type[T.List], T.Type[T.Dict]], T.Union[str, T.Tuple[str, str]]]] = None,
+                 since_values: T.Optional[T.Dict[T.Union[_T, ContainerTypeInfo, type], T.Union[str, T.Tuple[str, str]]]] = None,
                  deprecated: T.Optional[str] = None,
                  deprecated_message: T.Optional[str] = None,
-                 deprecated_values: T.Optional[T.Dict[T.Union[_T, T.Type[T.List], T.Type[T.Dict]], T.Union[str, T.Tuple[str, str]]]] = None,
-                 feature_validator: T.Optional[T.Callable[[_T], T.Iterable[FeatureCheckBase]]] = None,
+                 deprecated_values: T.Optional[T.Dict[T.Union[_T, ContainerTypeInfo, type], T.Union[str, T.Tuple[str, str]]]] = None,
                  validator: T.Optional[T.Callable[[T.Any], T.Optional[str]]] = None,
                  convertor: T.Optional[T.Callable[[_T], object]] = None,
                  not_set_warning: T.Optional[str] = None):
@@ -406,7 +414,6 @@ class KwargInfo(T.Generic[_T]):
         self.since = since
         self.since_message = since_message
         self.since_values = since_values
-        self.feature_validator = feature_validator
         self.deprecated = deprecated
         self.deprecated_message = deprecated_message
         self.deprecated_values = deprecated_values
@@ -421,11 +428,10 @@ class KwargInfo(T.Generic[_T]):
                default: T.Union[_T, None, _NULL_T] = _NULL,
                since: T.Union[str, None, _NULL_T] = _NULL,
                since_message: T.Union[str, None, _NULL_T] = _NULL,
-               since_values: T.Union[T.Dict[T.Union[_T, T.Type[T.List], T.Type[T.Dict]], T.Union[str, T.Tuple[str, str]]], None, _NULL_T] = _NULL,
+               since_values: T.Union[T.Dict[T.Union[_T, ContainerTypeInfo, type], T.Union[str, T.Tuple[str, str]]], None, _NULL_T] = _NULL,
                deprecated: T.Union[str, None, _NULL_T] = _NULL,
                deprecated_message: T.Union[str, None, _NULL_T] = _NULL,
-               deprecated_values: T.Union[T.Dict[T.Union[_T, T.Type[T.List], T.Type[T.Dict]], T.Union[str, T.Tuple[str, str]]], None, _NULL_T] = _NULL,
-               feature_validator: T.Union[T.Callable[[_T], T.Iterable[FeatureCheckBase]], None, _NULL_T] = _NULL,
+               deprecated_values: T.Union[T.Dict[T.Union[_T, ContainerTypeInfo, type], T.Union[str, T.Tuple[str, str]]], None, _NULL_T] = _NULL,
                validator: T.Union[T.Callable[[_T], T.Optional[str]], None, _NULL_T] = _NULL,
                convertor: T.Union[T.Callable[[_T], TYPE_var], None, _NULL_T] = _NULL) -> 'KwargInfo':
         """Create a shallow copy of this KwargInfo, with modifications.
@@ -451,7 +457,6 @@ class KwargInfo(T.Generic[_T]):
             deprecated=deprecated if not isinstance(deprecated, _NULL_T) else self.deprecated,
             deprecated_message=deprecated_message if not isinstance(deprecated_message, _NULL_T) else self.deprecated_message,
             deprecated_values=deprecated_values if not isinstance(deprecated_values, _NULL_T) else self.deprecated_values,
-            feature_validator=feature_validator if not isinstance(feature_validator, _NULL_T) else self.feature_validator,
             validator=validator if not isinstance(validator, _NULL_T) else self.validator,
             convertor=convertor if not isinstance(convertor, _NULL_T) else self.convertor,
         )
@@ -512,23 +517,28 @@ def typed_kwargs(name: str, *types: KwargInfo, allow_unknown: bool = False) -> T
 
             def emit_feature_change(values: T.Dict[_T, T.Union[str, T.Tuple[str, str]]], feature: T.Union[T.Type['FeatureDeprecated'], T.Type['FeatureNew']]) -> None:
                 for n, version in values.items():
-                    warn = False
                     if isinstance(version, tuple):
                         version, msg = version
                     else:
                         msg = None
 
-                    if n in {dict, list}:
-                        assert isinstance(n, type), 'for mypy'
+                    warning: T.Optional[str] = None
+                    if isinstance(n, ContainerTypeInfo):
+                        if n.check_any(value):
+                            warning = f'of type {n.description()}'
+                    elif isinstance(n, type):
                         if isinstance(value, n):
-                            feature.single_use(f'"{name}" keyword argument "{info.name}" of type {n.__name__}', version, subproject, msg, location=node)
-                    elif isinstance(value, (dict, list)):
-                        warn = n in value
-                    else:
-                        warn = n == value
-
-                    if warn:
-                        feature.single_use(f'"{name}" keyword argument "{info.name}" value "{n}"', version, subproject, msg, location=node)
+                            warning = f'of type {n.__name__}'
+                    elif isinstance(value, list):
+                        if n in value:
+                            warning = f'value "{n}" in list'
+                    elif isinstance(value, dict):
+                        if n in value.keys():
+                            warning = f'value "{n}" in dict keys'
+                    elif n == value:
+                        warning = f'value "{n}"'
+                    if warning:
+                        feature.single_use(f'"{name}" keyword argument "{info.name}" {warning}', version, subproject, msg, location=node)
 
             node, _, _kwargs, subproject = get_callee_args(wrapped_args)
             # Cast here, as the convertor function may place something other than a TYPE_var in the kwargs
@@ -561,10 +571,6 @@ def typed_kwargs(name: str, *types: KwargInfo, allow_unknown: bool = False) -> T
                         msg = info.validator(value)
                         if msg is not None:
                             raise InvalidArguments(f'{name} keyword argument "{info.name}" {msg}')
-
-                    if info.feature_validator is not None:
-                        for each in info.feature_validator(value):
-                            each.use(subproject, node)
 
                     if info.deprecated_values is not None:
                         emit_feature_change(info.deprecated_values, FeatureDeprecated)
@@ -652,7 +658,7 @@ class FeatureCheckBase(metaclass=abc.ABCMeta):
         fv = cls.feature_registry[subproject]
         tv = cls.get_target_version(subproject)
         for version in sorted(fv.keys()):
-            message = ', '.join(sorted(f"'{i[0]}'" for i in fv[version]))
+            message = ', '.join(sorted({f"'{i[0]}'" for i in fv[version]}))
             if cls.check_version(tv, version):
                 notice_str += '\n * {}: {{{}}}'.format(version, message)
             else:

@@ -14,8 +14,9 @@
 
 from __future__ import annotations
 from collections import defaultdict, OrderedDict
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, InitVar
 from functools import lru_cache
+import abc
 import copy
 import hashlib
 import itertools, pathlib
@@ -24,7 +25,6 @@ import pickle
 import re
 import textwrap
 import typing as T
-
 
 from . import environment
 from . import dependencies
@@ -60,6 +60,7 @@ if T.TYPE_CHECKING:
     GeneratedTypes = T.Union['CustomTarget', 'CustomTargetIndex', 'GeneratedList']
     LibTypes = T.Union['SharedLibrary', 'StaticLibrary', 'CustomTarget', 'CustomTargetIndex']
     BuildTargetTypes = T.Union['BuildTarget', 'CustomTarget', 'CustomTargetIndex']
+    ObjectTypes = T.Union[str, 'File', 'ExtractedObjects', 'GeneratedTypes']
 
 pch_kwargs = {'c_pch', 'cpp_pch'}
 
@@ -505,9 +506,7 @@ class StructuredSources(HoldableObject):
 
 
 @dataclass(eq=False)
-class Target(HoldableObject):
-
-    # TODO: should Target be an abc.ABCMeta?
+class Target(HoldableObject, metaclass=abc.ABCMeta):
 
     name: str
     subdir: str
@@ -515,21 +514,33 @@ class Target(HoldableObject):
     build_by_default: bool
     for_machine: MachineChoice
     environment: environment.Environment
+    install: bool = False
+    build_always_stale: bool = False
+    extra_files: T.List[File] = field(default_factory=list)
+    override_options: InitVar[T.Optional[T.Dict[OptionKey, str]]] = None
 
-    def __post_init__(self) -> None:
+    @abc.abstractproperty
+    def typename(self) -> str:
+        pass
+
+    @abc.abstractmethod
+    def type_suffix(self) -> str:
+        pass
+
+    def __post_init__(self, overrides: T.Optional[T.Dict[OptionKey, str]]) -> None:
+        if overrides:
+            ovr = {k.evolve(machine=self.for_machine) if k.lang else k: v
+                   for k, v in overrides.items()}
+        else:
+            ovr = {}
+        self.options = OptionOverrideProxy(ovr, self.environment.coredata.options, self.subproject)
+        # XXX: this should happen in the interpreter
         if has_path_sep(self.name):
             # Fix failing test 53 when this becomes an error.
             mlog.warning(textwrap.dedent(f'''\
                 Target "{self.name}" has a path separator in its name.
                 This is not supported, it can cause unexpected failures and will become
-                a hard error in the future.
-            '''))
-        self.install = False
-        self.build_always_stale = False
-        self.options = OptionOverrideProxy({}, self.environment.coredata.options, self.subproject)
-        self.extra_files = []  # type: T.List[File]
-        if not hasattr(self, 'typename'):
-            raise RuntimeError(f'Target type is not set for target class "{type(self).__name__}". This is a bug')
+                a hard error in the future.'''))
 
     # dataclass comparators?
     def __lt__(self, other: object) -> bool:
@@ -590,7 +601,7 @@ class Target(HoldableObject):
         return self.typename
 
     @staticmethod
-    def _get_id_hash(target_id):
+    def _get_id_hash(target_id: str) -> str:
         # We don't really need cryptographic security here.
         # Small-digest hash function with unlikely collision is good enough.
         h = hashlib.sha256()
@@ -686,13 +697,22 @@ class BuildTarget(Target):
 
     install_dir: T.List[T.Union[str, Literal[False]]]
 
-    def __init__(self, name: str, subdir: str, subproject: SubProject, for_machine: MachineChoice,
-                 sources: T.List['SourceOutputs'], structured_sources: T.Optional[StructuredSources],
-                 objects, environment: environment.Environment, compilers: T.Dict[str, 'Compiler'], kwargs):
+    def __init__(
+            self,
+            name: str,
+            subdir: str,
+            subproject: SubProject,
+            for_machine: MachineChoice,
+            sources: T.List['SourceOutputs'],
+            structured_sources: T.Optional[StructuredSources],
+            objects: T.List[ObjectTypes],
+            environment: environment.Environment,
+            compilers: T.Dict[str, 'Compiler'],
+            kwargs):
         super().__init__(name, subdir, subproject, True, for_machine, environment)
         self.all_compilers = compilers
         self.compilers = OrderedDict() # type: OrderedDict[str, Compiler]
-        self.objects: T.List[T.Union[str, 'File', 'ExtractedObjects']] = []
+        self.objects: T.List[ObjectTypes] = []
         self.structured_sources = structured_sources
         self.external_deps: T.List[dependencies.Dependency] = []
         self.include_dirs: T.List['IncludeDirs'] = []
@@ -1785,10 +1805,18 @@ class Executable(BuildTarget):
 
     typename = 'executable'
 
-    def __init__(self, name: str, subdir: str, subproject: str, for_machine: MachineChoice,
-                 sources: T.List[SourceOutputs], structured_sources: T.Optional['StructuredSources'],
-                 objects, environment: environment.Environment, compilers: T.Dict[str, 'Compiler'],
-                 kwargs):
+    def __init__(
+            self,
+            name: str,
+            subdir: str,
+            subproject: SubProject,
+            for_machine: MachineChoice,
+            sources: T.List['SourceOutputs'],
+            structured_sources: T.Optional[StructuredSources],
+            objects: T.List[ObjectTypes],
+            environment: environment.Environment,
+            compilers: T.Dict[str, 'Compiler'],
+            kwargs):
         key = OptionKey('b_pie')
         if 'pie' not in kwargs and key in environment.coredata.options:
             kwargs['pie'] = environment.coredata.options[key].value
@@ -1923,10 +1951,18 @@ class StaticLibrary(BuildTarget):
 
     typename = 'static library'
 
-    def __init__(self, name: str, subdir: str, subproject: str, for_machine: MachineChoice,
-                 sources: T.List[SourceOutputs], structured_sources: T.Optional['StructuredSources'],
-                 objects, environment: environment.Environment, compilers: T.Dict[str, 'Compiler'],
-                 kwargs):
+    def __init__(
+            self,
+            name: str,
+            subdir: str,
+            subproject: SubProject,
+            for_machine: MachineChoice,
+            sources: T.List['SourceOutputs'],
+            structured_sources: T.Optional[StructuredSources],
+            objects: T.List[ObjectTypes],
+            environment: environment.Environment,
+            compilers: T.Dict[str, 'Compiler'],
+            kwargs):
         self.prelink = kwargs.get('prelink', False)
         if not isinstance(self.prelink, bool):
             raise InvalidArguments('Prelink keyword argument must be a boolean.')
@@ -1995,10 +2031,18 @@ class SharedLibrary(BuildTarget):
 
     typename = 'shared library'
 
-    def __init__(self, name: str, subdir: str, subproject: str, for_machine: MachineChoice,
-                 sources: T.List[SourceOutputs], structured_sources: T.Optional['StructuredSources'],
-                 objects, environment: environment.Environment, compilers: T.Dict[str, 'Compiler'],
-                 kwargs):
+    def __init__(
+            self,
+            name: str,
+            subdir: str,
+            subproject: SubProject,
+            for_machine: MachineChoice,
+            sources: T.List['SourceOutputs'],
+            structured_sources: T.Optional[StructuredSources],
+            objects: T.List[ObjectTypes],
+            environment: environment.Environment,
+            compilers: T.Dict[str, 'Compiler'],
+            kwargs):
         self.soversion = None
         self.ltversion = None
         # Max length 2, first element is compatibility_version, second is current_version
@@ -2329,10 +2373,18 @@ class SharedModule(SharedLibrary):
 
     typename = 'shared module'
 
-    def __init__(self, name: str, subdir: str, subproject: str, for_machine: MachineChoice,
-                 sources: T.List[SourceOutputs], structured_sources: T.Optional['StructuredSources'],
-                 objects, environment: environment.Environment,
-                 compilers: T.Dict[str, 'Compiler'], kwargs):
+    def __init__(
+            self,
+            name: str,
+            subdir: str,
+            subproject: SubProject,
+            for_machine: MachineChoice,
+            sources: T.List['SourceOutputs'],
+            structured_sources: T.Optional[StructuredSources],
+            objects: T.List[ObjectTypes],
+            environment: environment.Environment,
+            compilers: T.Dict[str, 'Compiler'],
+            kwargs):
         if 'version' in kwargs:
             raise MesonException('Shared modules must not specify the version kwarg.')
         if 'soversion' in kwargs:
@@ -2435,14 +2487,14 @@ class CustomTarget(Target, CommandBase):
                  backend: T.Optional['Backend'] = None,
                  ):
         # TODO expose keyword arg to make MachineChoice.HOST configurable
-        super().__init__(name, subdir, subproject, False, MachineChoice.HOST, environment)
+        super().__init__(name, subdir, subproject, False, MachineChoice.HOST, environment,
+                         install, build_always_stale)
         self.sources = list(sources)
         self.outputs = substitute_values(
             outputs, get_filenames_templates_dict(
                 get_sources_string_names(sources, backend),
                 []))
         self.build_by_default = build_by_default if build_by_default is not None else install
-        self.build_always_stale = build_always_stale
         self.capture = capture
         self.console = console
         self.depend_files = list(depend_files or [])
@@ -2453,7 +2505,6 @@ class CustomTarget(Target, CommandBase):
         self.env = env or EnvironmentVariables()
         self.extra_depends = list(extra_depends or [])
         self.feed = feed
-        self.install = install
         self.install_dir = list(install_dir or [])
         self.install_mode = install_mode
         self.install_tag = _process_install_tag(install_tag, len(self.outputs))
@@ -2613,8 +2664,16 @@ class CompileTarget(BuildTarget):
                  output_templ: str,
                  compiler: Compiler,
                  backend: Backend,
-                 kwargs):
+                 compile_args: T.List[str],
+                 include_directories: T.List[IncludeDirs],
+                 dependencies: T.List[dependencies.Dependency]):
         compilers = {compiler.get_language(): compiler}
+        kwargs = {
+            'build_by_default': False,
+            f'{compiler.language}_args': compile_args,
+            'include_directories': include_directories,
+            'dependencies': dependencies,
+        }
         super().__init__(name, subdir, subproject, compiler.for_machine,
                          sources, None, [], environment, compilers, kwargs)
         self.filename = name

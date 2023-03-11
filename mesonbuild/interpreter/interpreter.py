@@ -2611,7 +2611,7 @@ class Interpreter(InterpreterBase, HoldableObject):
                 file_encoding = kwargs['encoding']
                 missing_variables, confdata_useless = \
                     mesonlib.do_conf_file(inputs_abs[0], ofile_abs, conf,
-                                          fmt, file_encoding)
+                                          fmt, file_encoding, self.subproject)
                 if missing_variables:
                     var_list = ", ".join(repr(m) for m in sorted(missing_variables))
                     mlog.warning(
@@ -3040,7 +3040,7 @@ class Interpreter(InterpreterBase, HoldableObject):
     def source_strings_to_files(self, sources: T.List['mesonlib.FileOrString'], strict: bool = False) -> T.List['mesonlib.FileOrString']: ... # noqa: F811
 
     @T.overload
-    def source_strings_to_files(self, sources: T.List[mesonlib.FileOrString, build.GeneratedTypes]) -> T.List[T.Union[mesonlib.File, build.GeneratedTypes]]: ... # noqa: F811
+    def source_strings_to_files(self, sources: T.List[T.Union[mesonlib.FileOrString, build.GeneratedTypes]]) -> T.List[T.Union[mesonlib.File, build.GeneratedTypes]]: ... # noqa: F811
 
     @T.overload
     def source_strings_to_files(self, sources: T.List['SourceInputs'], strict: bool = True) -> T.List['SourceOutputs']: ... # noqa: F811
