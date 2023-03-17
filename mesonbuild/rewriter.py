@@ -25,7 +25,7 @@
 from __future__ import annotations
 
 from .ast import IntrospectionInterpreter, BUILD_TARGET_FUNCTIONS, AstConditionLevel, AstIDGenerator, AstIndentationGenerator, AstPrinter
-from mesonbuild.mesonlib import MesonException
+from mesonbuild.mesonlib import MesonException, setup_vsenv
 from . import mlog, environment
 from functools import wraps
 from .mparser import Token, ArrayNode, ArgumentNode, AssignmentNode, BooleanNode, ElementaryNode, IdNode, FunctionNode, StringNode
@@ -45,7 +45,7 @@ def add_arguments(parser, formatter=None):
     subparsers = parser.add_subparsers(dest='type', title='Rewriter commands', description='Rewrite command to execute')
 
     # Target
-    tgt_parser = subparsers.add_parser('target', help='Modify a target', formatter_class=formatter)
+    tgt_parser = subparsers.add_parser('target', aliases=['tgt'], help='Modify a target', formatter_class=formatter)
     tgt_parser.add_argument('-s', '--subdir', default='', dest='subdir', help='Subdirectory of the new target (only for the "add_target" action)')
     tgt_parser.add_argument('--type', dest='tgt_type', choices=rewriter_keys['target']['target_type'][2], default='executable',
                             help='Type of the target to add (only for the "add_target" action)')
@@ -64,13 +64,13 @@ def add_arguments(parser, formatter=None):
     kw_parser.add_argument('kwargs', nargs='*', help='Pairs of keyword and value')
 
     # Default options
-    def_parser = subparsers.add_parser('default-options', help='Modify the project default options', formatter_class=formatter)
+    def_parser = subparsers.add_parser('default-options', aliases=['def'], help='Modify the project default options', formatter_class=formatter)
     def_parser.add_argument('operation', choices=rewriter_keys['default_options']['operation'][2],
                             help='Action to execute')
     def_parser.add_argument('options', nargs='*', help='Key, value pairs of configuration option')
 
     # JSON file/command
-    cmd_parser = subparsers.add_parser('command', help='Execute a JSON array of commands', formatter_class=formatter)
+    cmd_parser = subparsers.add_parser('command', aliases=['cmd'], help='Execute a JSON array of commands', formatter_class=formatter)
     cmd_parser.add_argument('json', help='JSON string or file to execute')
 
 class RequiredKeys:
@@ -594,6 +594,8 @@ class Rewriter:
 
         # Convert the keys back to IdNode's
         arg_node.kwargs = {IdNode(Token('', '', 0, 0, 0, None, k)): v for k, v in arg_node.kwargs.items()}
+        for k, v in arg_node.kwargs.items():
+            k.level = v.level
         if num_changed > 0 and node not in self.modified_nodes:
             self.modified_nodes += [node]
 
@@ -1041,6 +1043,7 @@ def run(options):
         mlog.set_quiet()
 
     try:
+        setup_vsenv()
         rewriter = Rewriter(options.sourcedir, skip_errors=options.skip)
         rewriter.analyze_meson()
 

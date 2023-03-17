@@ -26,7 +26,6 @@ from pathlib import Path
 
 from . import mlog
 from . import mesonlib
-from . import coredata
 from .mesonlib import MesonException, RealPathAction, join_args, setup_vsenv
 from mesonbuild.environment import detect_ninja
 from mesonbuild.coredata import UserArrayOption
@@ -90,6 +89,7 @@ class ParsedTargetName:
             'shared_library',
             'shared_module',
             'custom',
+            'alias',
             'run',
             'jar',
         }
@@ -131,7 +131,7 @@ def get_target_from_intro_data(target: ParsedTargetName, builddir: Path, introsp
 def generate_target_names_ninja(target: ParsedTargetName, builddir: Path, introspect_data: dict) -> T.List[str]:
     intro_target = get_target_from_intro_data(target, builddir, introspect_data)
 
-    if intro_target['type'] == 'run':
+    if intro_target['type'] in {'alias', 'run'}:
         return [target.name]
     else:
         return [str(Path(out_file).relative_to(builddir.resolve())) for out_file in intro_target['filename']]
@@ -170,7 +170,7 @@ def get_parsed_args_ninja(options: 'argparse.Namespace', builddir: Path) -> T.Tu
 def generate_target_name_vs(target: ParsedTargetName, builddir: Path, introspect_data: dict) -> str:
     intro_target = get_target_from_intro_data(target, builddir, introspect_data)
 
-    assert intro_target['type'] != 'run', 'Should not reach here: `run` targets must be handle above'
+    assert intro_target['type'] not in {'alias', 'run'}, 'Should not reach here: `run` targets must be handle above'
 
     # Normalize project name
     # Source: https://docs.microsoft.com/en-us/visualstudio/msbuild/how-to-build-specific-targets-in-solutions-by-using-msbuild-exe
@@ -190,7 +190,7 @@ def get_parsed_args_vs(options: 'argparse.Namespace', builddir: Path) -> T.Tuple
     if options.targets:
         intro_data = parse_introspect_data(builddir)
         has_run_target = any(
-            get_target_from_intro_data(ParsedTargetName(t), builddir, intro_data)['type'] == 'run'
+            get_target_from_intro_data(ParsedTargetName(t), builddir, intro_data)['type'] in {'alias', 'run'}
             for t in options.targets)
 
         if has_run_target:
@@ -331,8 +331,8 @@ def run(options: 'argparse.Namespace') -> int:
     if options.targets and options.clean:
         raise MesonException('`TARGET` and `--clean` can\'t be used simultaneously')
 
-    cdata = coredata.load(options.wd)
     b = build.load(options.wd)
+    cdata = b.environment.coredata
     vsenv_active = setup_vsenv(b.need_vsenv)
     if vsenv_active:
         mlog.log(mlog.green('INFO:'), 'automatically activated MSVC compiler environment')

@@ -72,7 +72,7 @@ class Conf:
         if os.path.isdir(os.path.join(self.build_dir, 'meson-private')):
             self.build = build.load(self.build_dir)
             self.source_dir = self.build.environment.get_source_dir()
-            self.coredata = coredata.load(self.build_dir)
+            self.coredata = self.build.environment.coredata
             self.default_values_only = False
         elif os.path.isfile(os.path.join(self.build_dir, environment.build_filename)):
             # Make sure that log entries in other parts of meson don't interfere with the JSON output
@@ -90,8 +90,8 @@ class Conf:
     def clear_cache(self):
         self.coredata.clear_deps_cache()
 
-    def set_options(self, options):
-        self.coredata.set_options(options)
+    def set_options(self, options) -> bool:
+        return self.coredata.set_options(options)
 
     def save(self):
         # Do nothing when using introspection
@@ -308,9 +308,8 @@ def run(options):
 
         save = False
         if options.cmd_line_options:
-            c.set_options(options.cmd_line_options)
+            save = c.set_options(options.cmd_line_options)
             coredata.update_cmd_line_file(builddir, options)
-            save = True
         elif options.clearcache:
             c.clear_cache()
             save = True
