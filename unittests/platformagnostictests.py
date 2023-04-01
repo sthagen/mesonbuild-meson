@@ -17,13 +17,14 @@ import os
 import tempfile
 import subprocess
 import textwrap
-from unittest import skipIf
+from unittest import skipIf, SkipTest
 from pathlib import Path
 
 from .baseplatformtests import BasePlatformTests
 from .helpers import is_ci
 from mesonbuild.mesonlib import is_linux
 from mesonbuild.optinterpreter import OptionInterpreter, OptionException
+from run_tests import Backend
 
 @skipIf(is_ci() and not is_linux(), "Run only on fast platforms")
 class PlatformAgnosticTests(BasePlatformTests):
@@ -36,7 +37,7 @@ class PlatformAgnosticTests(BasePlatformTests):
         Tests that find_program() with a relative path does not find the program
         in current workdir.
         '''
-        testdir = os.path.join(self.unit_test_dir, '100 relative find program')
+        testdir = os.path.join(self.unit_test_dir, '101 relative find program')
         self.init(testdir, workdir=testdir)
 
     def test_invalid_option_names(self):
@@ -72,11 +73,11 @@ class PlatformAgnosticTests(BasePlatformTests):
         interp.process(fname)
 
     def test_python_dependency_without_pkgconfig(self):
-        testdir = os.path.join(self.unit_test_dir, '102 python without pkgconfig')
+        testdir = os.path.join(self.unit_test_dir, '103 python without pkgconfig')
         self.init(testdir, override_envvars={'PKG_CONFIG': 'notfound'})
 
     def test_debug_function_outputs_to_meson_log(self):
-        testdir = os.path.join(self.unit_test_dir, '104 debug function')
+        testdir = os.path.join(self.unit_test_dir, '105 debug function')
         log_msg = 'This is an example debug output, should only end up in debug log'
         output = self.init(testdir)
 
@@ -88,7 +89,7 @@ class PlatformAgnosticTests(BasePlatformTests):
         self.assertIn(log_msg, mesonlog)
 
     def test_new_subproject_reconfigure(self):
-        testdir = os.path.join(self.unit_test_dir, '107 new subproject on reconfigure')
+        testdir = os.path.join(self.unit_test_dir, '108 new subproject on reconfigure')
         self.init(testdir)
         self.build()
 
@@ -138,3 +139,62 @@ class PlatformAgnosticTests(BasePlatformTests):
             dat = json.load(f)
         for i in dat['installed']:
             self.assertPathExists(os.path.join(self.installdir, i['file']))
+
+    def test_change_backend(self):
+        if self.backend != Backend.ninja:
+            raise SkipTest('Only useful to test if backend is ninja.')
+
+        testdir = os.path.join(self.python_test_dir, '7 install path')
+        self.init(testdir)
+
+        # no-op change works
+        self.setconf(f'--backend=ninja')
+        self.init(testdir, extra_args=['--reconfigure', '--backend=ninja'])
+
+        # Change backend option is not allowed
+        with self.assertRaises(subprocess.CalledProcessError) as cm:
+            self.setconf('-Dbackend=none')
+        self.assertIn("ERROR: Tried modify read only option 'backend'", cm.exception.stdout)
+
+        # Reconfigure with a different backend is not allowed
+        with self.assertRaises(subprocess.CalledProcessError) as cm:
+            self.init(testdir, extra_args=['--reconfigure', '--backend=none'])
+        self.assertIn("ERROR: Tried modify read only option 'backend'", cm.exception.stdout)
+
+        # Wipe with a different backend is allowed
+        self.init(testdir, extra_args=['--wipe', '--backend=none'])
+
+    def test_validate_dirs(self):
+        testdir = os.path.join(self.common_test_dir, '1 trivial')
+
+        # Using parent as builddir should fail
+        self.builddir = os.path.dirname(self.builddir)
+        with self.assertRaises(subprocess.CalledProcessError) as cm:
+            self.init(testdir)
+        self.assertIn('cannot be a parent of source directory', cm.exception.stdout)
+
+        # Reconfigure of empty builddir should work
+        self.new_builddir()
+        self.init(testdir, extra_args=['--reconfigure'])
+
+        # Reconfigure of not empty builddir should work
+        self.new_builddir()
+        Path(self.builddir, 'dummy').touch()
+        self.init(testdir, extra_args=['--reconfigure'])
+
+        # Wipe of empty builddir should work
+        self.new_builddir()
+        self.init(testdir, extra_args=['--wipe'])
+
+        # Wipe of partial builddir should work
+        self.new_builddir()
+        Path(self.builddir, 'meson-private').mkdir()
+        Path(self.builddir, 'dummy').touch()
+        self.init(testdir, extra_args=['--wipe'])
+
+        # Wipe of not empty builddir should fail
+        self.new_builddir()
+        Path(self.builddir, 'dummy').touch()
+        with self.assertRaises(subprocess.CalledProcessError) as cm:
+            self.init(testdir, extra_args=['--wipe'])
+        self.assertIn('Directory is not empty', cm.exception.stdout)

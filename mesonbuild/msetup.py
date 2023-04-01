@@ -24,6 +24,7 @@ import argparse
 import tempfile
 import shutil
 import glob
+from pathlib import Path
 
 from . import environment, interpreter, mesonlib
 from . import build
@@ -52,10 +53,6 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
                         default=[],
                         action='append',
                         help='File describing cross compilation environment.')
-    parser.add_argument('--vsenv', action='store_true',
-                        help='Setup Visual Studio environment even when other compilers are found, ' +
-                             'abort if Visual Studio is not found. This option has no effect on other ' +
-                             'platforms than Windows. Defaults to True when using "vs" backend.')
     parser.add_argument('-v', '--version', action='version',
                         version=coredata.version)
     parser.add_argument('--profile-self', action='store_true', dest='profile',
@@ -89,9 +86,9 @@ class MesonApp:
                     try:
                         restore.append((shutil.copy(filename, d), filename))
                     except FileNotFoundError:
-                        raise MesonException(
-                            'Cannot find cmd_line.txt. This is probably because this '
-                            'build directory was configured with a meson version < 0.49.0.')
+                        # validate_dirs() already verified that build_dir has
+                        # a partial build or is empty.
+                        pass
 
                 coredata.read_cmd_line_file(self.build_dir, options)
 
@@ -121,7 +118,7 @@ class MesonApp:
         invalid_msg_prefix = f'Neither source directory {dir1!r} nor build directory {dir2!r}'
         if dir1 is None:
             if dir2 is None:
-                if not os.path.exists('meson.build') and os.path.exists('../meson.build'):
+                if not self.has_build_file('.') and self.has_build_file('..'):
                     dir2 = '..'
                 else:
                     raise MesonException('Must specify at least one directory name.')
@@ -154,8 +151,6 @@ class MesonApp:
         raise MesonException(f'{invalid_msg_prefix} contain a build file {environment.build_filename}.')
 
     def add_vcs_ignore_files(self, build_dir: str) -> None:
-        if os.listdir(build_dir):
-            return
         with open(os.path.join(build_dir, '.gitignore'), 'w', encoding='utf-8') as ofile:
             ofile.write(git_ignore_file)
         with open(os.path.join(build_dir, '.hgignore'), 'w', encoding='utf-8') as ofile:
@@ -163,22 +158,31 @@ class MesonApp:
 
     def validate_dirs(self, dir1: str, dir2: str, reconfigure: bool, wipe: bool) -> T.Tuple[str, str]:
         (src_dir, build_dir) = self.validate_core_dirs(dir1, dir2)
-        self.add_vcs_ignore_files(build_dir)
-        priv_dir = os.path.join(build_dir, 'meson-private/coredata.dat')
-        if os.path.exists(priv_dir):
+        if Path(build_dir) in Path(src_dir).parents:
+            raise MesonException(f'Build directory {build_dir} cannot be a parent of source directory {src_dir}')
+        if not os.listdir(build_dir):
+            self.add_vcs_ignore_files(build_dir)
+            return src_dir, build_dir
+        priv_dir = os.path.join(build_dir, 'meson-private')
+        has_valid_build = os.path.exists(os.path.join(priv_dir, 'coredata.dat'))
+        has_partial_build = os.path.isdir(priv_dir)
+        if has_valid_build:
             if not reconfigure and not wipe:
-                print('Directory already configured.\n'
-                      '\nJust run your build command (e.g. ninja) and Meson will regenerate as necessary.\n'
+                print('Directory already configured.\n\n'
+                      'Just run your build command (e.g. ninja) and Meson will regenerate as necessary.\n'
                       'If ninja fails, run "ninja reconfigure" or "meson setup --reconfigure"\n'
-                      'to force Meson to regenerate.\n'
-                      '\nIf build failures persist, run "meson setup --wipe" to rebuild from scratch\n'
-                      'using the same options as passed when configuring the build.'
-                      '\nTo change option values, run "meson configure" instead.')
-                raise SystemExit
-        else:
-            has_cmd_line_file = os.path.exists(coredata.get_cmd_line_file(build_dir))
-            if (wipe and not has_cmd_line_file) or (not wipe and reconfigure):
-                raise SystemExit(f'Directory does not contain a valid build tree:\n{build_dir}')
+                      'to force Meson to regenerate.\n\n'
+                      'If build failures persist, run "meson setup --wipe" to rebuild from scratch\n'
+                      'using the same options as passed when configuring the build.\n'
+                      'To change option values, run "meson configure" instead.')
+                # FIXME: This returns success and ignores new option values from CLI.
+                # We should either make this a hard error, or update options and
+                # return success.
+                # Note that making this an error would not be backward compatible (and also isn't
+                # universally agreed on): https://github.com/mesonbuild/meson/pull/4249.
+                raise SystemExit(0)
+        elif not has_partial_build and wipe:
+            raise MesonException(f'Directory is not empty and does not contain a previous build:\n{build_dir}')
         return src_dir, build_dir
 
     def generate(self) -> None:
