@@ -85,7 +85,7 @@ class PkgGenerator:
         ET.SubElement(root, 'pkg-ref', {'id': self.identifier})
         ET.SubElement(root, 'options', {'customize': 'never',
                                         'require-scripts': 'false',
-                                        'hostArhcitectures': 'x86_64,arm64'})
+                                        'hostArchitectures': 'x86_64,arm64'})
         choices_outline = ET.SubElement(root, 'choices-outline')
         line = ET.SubElement(choices_outline, 'line', {'choice': 'default'})
         ET.SubElement(line, 'line', {'choice': self.identifier})
@@ -96,7 +96,7 @@ class PkgGenerator:
                                         'version': '0', # self.version,
                                         'onConclusion': 'none'}).text = self.pkgname
         ET.ElementTree(root).write(self.distribution_file, encoding='utf-8', xml_declaration=True)
-        # ElementTree can not do prettyprinting so do it manually
+        # ElementTree cannot do pretty-printing, so do it manually
         import xml.dom.minidom
         doc = xml.dom.minidom.parse(self.distribution_file)
         with open(self.distribution_file, 'w') as open_file:

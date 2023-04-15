@@ -28,6 +28,7 @@ if T.TYPE_CHECKING:
     from ..linkers import DynamicLinker
     from ..mesonlib import MachineChoice
     from ..programs import ExternalProgram
+    from ..dependencies import Dependency
 
 
 rust_optimization_args = {
@@ -87,7 +88,7 @@ class RustCompiler(Compiler):
         stdo = _stdo.decode('utf-8', errors='replace')
         stde = _stde.decode('utf-8', errors='replace')
         if pc.returncode != 0:
-            raise EnvironmentException('Rust compiler {} can not compile programs.\n{}\n{}'.format(
+            raise EnvironmentException('Rust compiler {} cannot compile programs.\n{}\n{}'.format(
                 self.name_string(),
                 stdo,
                 stde))
@@ -152,6 +153,12 @@ class RustCompiler(Compiler):
                 'none',
             ),
         }
+
+    def get_dependency_compile_args(self, dep: 'Dependency') -> T.List[str]:
+        # Rust doesn't have dependency compile arguments so simply return
+        # nothing here. Dependencies are linked and all required metadata is
+        # provided by the linker flags.
+        return []
 
     def get_option_compile_args(self, options: 'KeyedOptionDictType') -> T.List[str]:
         args = []

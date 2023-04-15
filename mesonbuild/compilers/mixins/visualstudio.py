@@ -423,7 +423,7 @@ class MSVCCompiler(VisualStudioLikeCompiler):
     def __init__(self, target: str):
         super().__init__(target)
 
-        # Visual Studio 2013 and erlier don't support the /utf-8 argument.
+        # Visual Studio 2013 and earlier don't support the /utf-8 argument.
         # We want to remove it. We also want to make an explicit copy so we
         # don't mutate class constant state
         if mesonlib.version_compare(self.version, '<19.00') and '/utf-8' in self.always_args:
@@ -450,7 +450,7 @@ class MSVCCompiler(VisualStudioLikeCompiler):
         if self.version.split('.')[0] == '16' and instruction_set == 'avx':
             # VS documentation says that this exists and should work, but
             # it does not. The headers do not contain AVX intrinsics
-            # and they can not be called.
+            # and they cannot be called.
             return None
         return super().get_instruction_set_args(instruction_set)
 

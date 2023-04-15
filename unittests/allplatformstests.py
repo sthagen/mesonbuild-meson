@@ -441,14 +441,15 @@ class AllPlatformTests(BasePlatformTests):
         self.init(testdir)
         intro = self.introspect('--installed')
         expected = {
-            'sub2': 'share/sub2',
-            'subdir/sub1': 'share/sub1',
-            'subdir/sub_elided': 'share',
-            'sub1': 'share/sub1',
-            'sub/sub1': 'share/sub1',
-            'sub_elided': 'share',
             'nested_elided/sub': 'share',
             'new_directory': 'share/new_directory',
+            'sub/sub1': 'share/sub1',
+            'sub1': 'share/sub1',
+            'sub2': 'share/sub2',
+            'sub3': '/usr/share/sub3',
+            'sub_elided': 'share',
+            'subdir/sub1': 'share/sub1',
+            'subdir/sub_elided': 'share',
         }
 
         self.assertEqual(len(intro), len(expected))
@@ -679,7 +680,7 @@ class AllPlatformTests(BasePlatformTests):
         with open(os.path.join(self.logdir, 'testlog-good.txt'), encoding='utf-8') as f:
             exclude_suites_log = f.read()
         self.assertNotIn('buggy', exclude_suites_log)
-        # --suite overrides add_test_setup(xclude_suites)
+        # --suite overrides add_test_setup(exclude_suites)
         self._run(self.mtest_command + ['--setup=good', '--suite', 'buggy'])
         with open(os.path.join(self.logdir, 'testlog-good.txt'), encoding='utf-8') as f:
             include_suites_log = f.read()
@@ -2228,7 +2229,7 @@ class AllPlatformTests(BasePlatformTests):
         msg = ('''DEPRECATION: target prog links against shared module mymod, which is incorrect.
              This will be an error in the future, so please use shared_library() for mymod instead.
              If shared_module() was used for mymod because it has references to undefined symbols,
-             use shared_libary() with `override_options: ['b_lundef=false']` instead.''')
+             use shared_library() with `override_options: ['b_lundef=false']` instead.''')
         self.assertIn(msg, out)
 
     def test_mixed_language_linker_check(self):

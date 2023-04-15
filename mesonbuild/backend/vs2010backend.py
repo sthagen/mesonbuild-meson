@@ -866,7 +866,7 @@ class Vs2010Backend(backends.Backend):
         ofname_tmp = ofname + '~'
         tree.write(ofname_tmp, encoding='utf-8', xml_declaration=True)
 
-        # ElementTree can not do prettyprinting so do it manually
+        # ElementTree cannot do pretty-printing, so do it manually
         doc = xml.dom.minidom.parse(ofname_tmp)
         with open(ofname_tmp, 'w', encoding='utf-8') as of:
             of.write(doc.toprettyxml())
@@ -1240,14 +1240,14 @@ class Vs2010Backend(backends.Backend):
                 # Extend without reordering or de-dup to preserve `-L -l` sets
                 # https://github.com/mesonbuild/meson/issues/1718
                 if isinstance(dep, dependencies.OpenMPDependency):
-                    ET.SubElement(clconf, 'OpenMPSuppport').text = 'true'
+                    ET.SubElement(clconf, 'OpenMPSupport').text = 'true'
                 else:
                     extra_link_args.extend_direct(dep.get_link_args())
             for d in target.get_dependencies():
                 if isinstance(d, build.StaticLibrary):
                     for dep in d.get_external_deps():
                         if isinstance(dep, dependencies.OpenMPDependency):
-                            ET.SubElement(clconf, 'OpenMPSuppport').text = 'true'
+                            ET.SubElement(clconf, 'OpenMPSupport').text = 'true'
                         else:
                             extra_link_args.extend_direct(dep.get_link_args())
         # Add link args for c_* or cpp_* build options. Currently this only
@@ -1436,7 +1436,7 @@ class Vs2010Backend(backends.Backend):
                     else:
                         inc_dirs = file_inc_dirs
                     self.add_include_dirs(lang, inc_cl, inc_dirs)
-                    # XXX: Do we need to set the object file name name here too?
+                    # XXX: Do we need to set the object file name here too?
 
         previous_objects = []
         if self.has_objects(objects, additional_objects, gen_objs):

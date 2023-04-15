@@ -185,7 +185,7 @@ def returncode_to_status(retcode: int) -> str:
     # functions here because the status returned by subprocess is munged. It
     # returns a negative value if the process was killed by a signal rather than
     # the raw status returned by `wait()`. Also, If a shell sits between Meson
-    # the the actual unit test that shell is likely to convert a termination due
+    # the actual unit test that shell is likely to convert a termination due
     # to a signal into an exit status of 128 plus the signal number.
     if retcode < 0:
         signum = -retcode
@@ -1447,7 +1447,7 @@ class SingleTestRunner:
 
     async def run(self, harness: 'TestHarness') -> TestRun:
         if self.cmd is None:
-            self.stdo = 'Not run because can not execute cross compiled binaries.'
+            self.stdo = 'Not run because cannot execute cross compiled binaries.'
             harness.log_start_test(self.runobj)
             self.runobj.complete_skip()
         else:

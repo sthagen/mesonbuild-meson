@@ -207,10 +207,10 @@ def set_mode(path: str, mode: T.Optional['FileMode'], default_umask: T.Union[str
         except PermissionError as e:
             print(f'{path!r}: Unable to set owner {mode.owner!r} and group {mode.group!r}: {e.strerror}, ignoring...')
         except LookupError:
-            print(f'{path!r}: Non-existent owner {mode.owner!r} or group {mode.group!r}: ignoring...')
+            print(f'{path!r}: Nonexistent owner {mode.owner!r} or group {mode.group!r}: ignoring...')
         except OSError as e:
             if e.errno == errno.EINVAL:
-                print(f'{path!r}: Non-existent numeric owner {mode.owner!r} or group {mode.group!r}: ignoring...')
+                print(f'{path!r}: Nonexistent numeric owner {mode.owner!r} or group {mode.group!r}: ignoring...')
             else:
                 raise
     # Must set permissions *after* setting owner/group otherwise the
@@ -480,6 +480,8 @@ class Installer:
             raise ValueError(f'dst_dir must be absolute, got {dst_dir}')
         if exclude is not None:
             exclude_files, exclude_dirs = exclude
+            exclude_files = {os.path.normpath(x) for x in exclude_files}
+            exclude_dirs = {os.path.normpath(x) for x in exclude_dirs}
         else:
             exclude_files = exclude_dirs = set()
         for root, dirs, files in os.walk(src_dir):
@@ -776,14 +778,26 @@ def rebuild_all(wd: str, backend: str) -> bool:
                 orig_user = env.pop('SUDO_USER')
                 orig_uid = env.pop('SUDO_UID', 0)
                 orig_gid = env.pop('SUDO_GID', 0)
-                homedir = pwd.getpwuid(int(orig_uid)).pw_dir
+                try:
+                    homedir = pwd.getpwuid(int(orig_uid)).pw_dir
+                except KeyError:
+                    # `sudo chroot` leaves behind stale variable and builds as root without a user
+                    return None, None
             elif os.environ.get('DOAS_USER') is not None:
                 orig_user = env.pop('DOAS_USER')
-                pwdata = pwd.getpwnam(orig_user)
+                try:
+                    pwdata = pwd.getpwnam(orig_user)
+                except KeyError:
+                    # `doas chroot` leaves behind stale variable and builds as root without a user
+                    return None, None
                 orig_uid = pwdata.pw_uid
                 orig_gid = pwdata.pw_gid
                 homedir = pwdata.pw_dir
             else:
+                return None, None
+
+            if os.stat(os.path.join(wd, 'build.ninja')).st_uid != int(orig_uid):
+                # the entire build process is running with sudo, we can't drop privileges
                 return None, None
 
             env['USER'] = orig_user

@@ -420,7 +420,7 @@ class GnomeModule(ExtensionModule):
                 depends.append(dep)
                 subdirs.append(dep.get_subdir())
                 if not mesonlib.version_compare(glib_version, gresource_dep_needed_version):
-                    m = 'The "dependencies" argument of gnome.compile_resources() can not\n' \
+                    m = 'The "dependencies" argument of gnome.compile_resources() cannot\n' \
                         'be used with the current version of glib-compile-resources due to\n' \
                         '<https://bugzilla.gnome.org/show_bug.cgi?id=774368>'
                     raise MesonException(m)
@@ -2149,7 +2149,7 @@ class GnomeModule(ExtensionModule):
         )
 
         # So to try our best to get this to just work we need:
-        # - link with with the correct library
+        # - link with the correct library
         # - include the vapi and dependent vapi files in sources
         # - add relevant directories to include dirs
         incs = [build.IncludeDirs(state.subdir, ['.'] + vapi_includes, False)]
