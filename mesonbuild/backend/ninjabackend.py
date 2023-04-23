@@ -50,7 +50,7 @@ if T.TYPE_CHECKING:
     from typing_extensions import Literal
 
     from .._typing import ImmutableListProtocol
-    from ..build import ExtractedObjects
+    from ..build import ExtractedObjects, LibTypes
     from ..interpreter import Interpreter
     from ..linkers import DynamicLinker, StaticLinker
     from ..compilers.cs import CsCompiler
@@ -746,7 +746,8 @@ class NinjaBackend(backends.Backend):
                 return False
         return True
 
-    def create_target_source_introspection(self, target: build.Target, comp: compilers.Compiler, parameters, sources, generated_sources):
+    def create_target_source_introspection(self, target: build.Target, comp: compilers.Compiler, parameters, sources, generated_sources,
+                                           unity_sources: T.Optional[T.List[mesonlib.FileOrString]] = None):
         '''
         Adds the source file introspection information for a language of a target
 
@@ -781,16 +782,40 @@ class NinjaBackend(backends.Backend):
                 'parameters': parameters,
                 'sources': [],
                 'generated_sources': [],
+                'unity_sources': [],
             }
             tgt[id_hash] = src_block
-        # Make source files absolute
-        sources = [x.absolute_path(self.source_dir, self.build_dir) if isinstance(x, File) else os.path.normpath(os.path.join(self.build_dir, x))
-                   for x in sources]
-        generated_sources = [x.absolute_path(self.source_dir, self.build_dir) if isinstance(x, File) else os.path.normpath(os.path.join(self.build_dir, x))
-                             for x in generated_sources]
-        # Add the source files
-        src_block['sources'] += sources
-        src_block['generated_sources'] += generated_sources
+
+        def compute_path(file: mesonlib.FileOrString) -> str:
+            """ Make source files absolute """
+            if isinstance(file, File):
+                return file.absolute_path(self.source_dir, self.build_dir)
+            return os.path.normpath(os.path.join(self.build_dir, file))
+
+        src_block['sources'].extend(compute_path(x) for x in sources)
+        src_block['generated_sources'].extend(compute_path(x) for x in generated_sources)
+        if unity_sources:
+            src_block['unity_sources'].extend(compute_path(x) for x in unity_sources)
+
+    def create_target_linker_introspection(self, target: build.Target, linker: T.Union[Compiler, StaticLinker], parameters):
+        tid = target.get_id()
+        tgt = self.introspection_data[tid]
+        lnk_hash = tuple(parameters)
+        lnk_block = tgt.get(lnk_hash, None)
+        if lnk_block is None:
+            if isinstance(parameters, CompilerArgs):
+                parameters = parameters.to_native(copy=True)
+
+            if isinstance(linker, Compiler):
+                linkers = linker.get_linker_exelist()
+            else:
+                linkers = linker.get_exelist()
+
+            lnk_block = {
+                'linker': linkers,
+                'parameters': parameters,
+            }
+            tgt[lnk_hash] = lnk_block
 
     def generate_target(self, target):
         try:
@@ -985,7 +1010,7 @@ class NinjaBackend(backends.Backend):
         if is_unity:
             for src in self.generate_unity_files(target, unity_src):
                 o, s = self.generate_single_compile(target, src, True, unity_deps + header_deps + d_generated_deps,
-                                                    fortran_order_deps, fortran_inc_args)
+                                                    fortran_order_deps, fortran_inc_args, unity_src)
                 obj_list.append(o)
                 compiled_sources.append(s)
                 source2object[s] = o
@@ -1805,6 +1830,12 @@ class NinjaBackend(backends.Backend):
 
         self.rust_crates[name] = crate
 
+    def _get_rust_dependency_name(self, target: build.BuildTarget, dependency: LibTypes) -> str:
+        # Convert crate names with dashes to underscores by default like
+        # cargo does as dashes can't be used as parts of identifiers
+        # in Rust
+        return target.rust_dependency_map.get(dependency.name, dependency.name).replace('-', '_')
+
     def generate_rust_target(self, target: build.BuildTarget) -> None:
         rustc = target.compilers['rust']
         # Rust compiler takes only the main file as input and
@@ -1892,8 +1923,8 @@ class NinjaBackend(backends.Backend):
             args.extend(rustc.get_linker_always_args())
 
         args += self.generate_basic_compiler_args(target, rustc, False)
-        # Rustc replaces - with _. spaces are not allowed, so we replace them with underscores
-        args += ['--crate-name', target.name.replace('-', '_').replace(' ', '_')]
+        # Rustc replaces - with _. spaces or dots are not allowed, so we replace them with underscores
+        args += ['--crate-name', target.name.replace('-', '_').replace(' ', '_').replace('.', '_')]
         depfile = os.path.join(target.subdir, target.name + '.d')
         args += ['--emit', f'dep-info={depfile}', '--emit', 'link']
         args += target.get_extra_args('rust')
@@ -1911,11 +1942,7 @@ class NinjaBackend(backends.Backend):
                 # specify `extern CRATE_NAME=OUTPUT_FILE` for each Rust
                 # dependency, so that collisions with libraries in rustc's
                 # sysroot don't cause ambiguity
-                #
-                # Also convert crate names with dashes to underscores like
-                # cargo does as dashes can't be used as parts of identifiers
-                # in Rust
-                d_name = d.name.replace('-', '_')
+                d_name = self._get_rust_dependency_name(target, d)
                 args += ['--extern', '{}={}'.format(d_name, os.path.join(d.subdir, d.filename))]
                 project_deps.append(RustDep(d_name, self.rust_crates[d.name].order))
             elif isinstance(d, build.StaticLibrary):
@@ -1954,11 +1981,7 @@ class NinjaBackend(backends.Backend):
                 # specify `extern CRATE_NAME=OUTPUT_FILE` for each Rust
                 # dependency, so that collisions with libraries in rustc's
                 # sysroot don't cause ambiguity
-                #
-                # Also convert crate names with dashes to underscores like
-                # cargo does as dashes can't be used as parts of identifiers
-                # in Rust
-                d_name = d.name.replace('-', '_')
+                d_name = self._get_rust_dependency_name(target, d)
                 args += ['--extern', '{}={}'.format(d_name, os.path.join(d.subdir, d.filename))]
                 project_deps.append(RustDep(d_name, self.rust_crates[d.name].order))
             else:
@@ -2006,9 +2029,10 @@ class NinjaBackend(backends.Backend):
         target_deps = target.get_dependencies()
         has_shared_deps = any(isinstance(dep, build.SharedLibrary) for dep in target_deps)
         if isinstance(target, build.SharedLibrary) or has_shared_deps:
-            has_rust_shared_deps = any(isinstance(dep, build.SharedLibrary) and dep.uses_rust() and dep.rust_crate_type != 'cdylib'
+            has_rust_shared_deps = any(isinstance(dep, build.SharedLibrary) and dep.uses_rust()
+                                       and dep.rust_crate_type not in {'cdylib', 'proc-macro'}
                                        for dep in target_deps)
-            if cratetype != 'cdylib' or has_rust_shared_deps:
+            if cratetype not in {'cdylib', 'proc-macro'} or has_rust_shared_deps:
                 # add prefer-dynamic if any of the Rust libraries we link
                 # against are dynamic or this is a dynamic library itself,
                 # otherwise we'll end up with multiple implementations of crates
@@ -2808,7 +2832,8 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
     def generate_single_compile(self, target: build.BuildTarget, src,
                                 is_generated=False, header_deps=None,
                                 order_deps: T.Optional[T.List[str]] = None,
-                                extra_args: T.Optional[T.List[str]] = None) -> None:
+                                extra_args: T.Optional[T.List[str]] = None,
+                                unity_sources: T.Optional[T.List[mesonlib.FileOrString]] = None) -> None:
         """
         Compiles C/C++, ObjC/ObjC++, Fortran, and D sources
         """
@@ -2831,9 +2856,9 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
 
         # Create introspection information
         if is_generated is False:
-            self.create_target_source_introspection(target, compiler, commands, [src], [])
+            self.create_target_source_introspection(target, compiler, commands, [src], [], unity_sources)
         else:
-            self.create_target_source_introspection(target, compiler, commands, [], [src])
+            self.create_target_source_introspection(target, compiler, commands, [], [src], unity_sources)
 
         build_dir = self.environment.get_build_dir()
         if isinstance(src, File):
@@ -3359,6 +3384,7 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
         elem = NinjaBuildElement(self.all_outputs, outname, linker_rule, obj_list, implicit_outs=implicit_outs)
         elem.add_dep(dep_targets + custom_target_libraries)
         elem.add_item('LINK_ARGS', commands)
+        self.create_target_linker_introspection(target, linker, commands)
         return elem
 
     def get_dependency_filename(self, t):
@@ -3554,13 +3580,11 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
         self.add_build(elem)
 
     def get_introspection_data(self, target_id: str, target: build.Target) -> T.List[T.Dict[str, T.Union[bool, str, T.List[T.Union[str, T.Dict[str, T.Union[str, T.List[str], bool]]]]]]]:
-        if target_id not in self.introspection_data or len(self.introspection_data[target_id]) == 0:
+        data = self.introspection_data.get(target_id)
+        if not data:
             return super().get_introspection_data(target_id, target)
 
-        result = []
-        for i in self.introspection_data[target_id].values():
-            result += [i]
-        return result
+        return list(data.values())
 
 
 def _scan_fortran_file_deps(src: Path, srcdir: Path, dirname: Path, tdeps, compiler) -> T.List[str]:

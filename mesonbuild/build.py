@@ -74,7 +74,7 @@ lang_arg_kwargs |= {
 }
 
 vala_kwargs = {'vala_header', 'vala_gir', 'vala_vapi'}
-rust_kwargs = {'rust_crate_type'}
+rust_kwargs = {'rust_crate_type', 'rust_dependency_map'}
 cs_kwargs = {'resources', 'cs_args'}
 
 buildtarget_kwargs = {
@@ -733,6 +733,7 @@ class BuildTarget(Target):
         self.extra_args: T.Dict[str, T.List['FileOrString']] = {}
         self.sources: T.List[File] = []
         self.generated: T.List['GeneratedTypes'] = []
+        self.extra_files: T.List[File] = []
         self.d_features = defaultdict(list)
         self.pic = False
         self.pie = False
@@ -1168,10 +1169,12 @@ class BuildTarget(Target):
         extra_files = extract_as_list(kwargs, 'extra_files')
         for i in extra_files:
             assert isinstance(i, File)
+            if i in self.extra_files:
+                continue
             trial = os.path.join(self.environment.get_source_dir(), i.subdir, i.fname)
             if not os.path.isfile(trial):
                 raise InvalidArguments(f'Tried to add non-existing extra file {i}.')
-        self.extra_files = extra_files
+            self.extra_files.append(i)
         self.install_rpath: str = kwargs.get('install_rpath', '')
         if not isinstance(self.install_rpath, str):
             raise InvalidArguments('Install_rpath is not a string.')
@@ -1235,6 +1238,13 @@ class BuildTarget(Target):
             permitted = ['default', 'internal', 'hidden', 'protected', 'inlineshidden']
             if self.gnu_symbol_visibility not in permitted:
                 raise InvalidArguments('GNU symbol visibility arg {} not one of: {}'.format(self.gnu_symbol_visibility, ', '.join(permitted)))
+
+        rust_dependency_map = kwargs.get('rust_dependency_map', {})
+        if not isinstance(rust_dependency_map, dict):
+            raise InvalidArguments(f'Invalid rust_dependency_map "{rust_dependency_map}": must be a dictionary.')
+        if any(not isinstance(v, str) for v in rust_dependency_map.values()):
+            raise InvalidArguments(f'Invalid rust_dependency_map "{rust_dependency_map}": must be a dictionary with string values.')
+        self.rust_dependency_map = rust_dependency_map
 
     def validate_win_subsystem(self, value: str) -> str:
         value = value.lower()
@@ -1315,6 +1325,7 @@ class BuildTarget(Target):
             if isinstance(dep, dependencies.InternalDependency):
                 # Those parts that are internal.
                 self.process_sourcelist(dep.sources)
+                self.extra_files.extend(f for f in dep.extra_files if f not in self.extra_files)
                 self.add_include_dirs(dep.include_directories, dep.get_include_type())
                 self.objects.extend(dep.objects)
                 for l in dep.libraries:
@@ -1327,7 +1338,7 @@ class BuildTarget(Target):
                                                               [],
                                                               dep.get_compile_args(),
                                                               dep.get_link_args(),
-                                                              [], [], [], [], {}, [], [], [])
+                                                              [], [], [], [], [], {}, [], [], [])
                     self.external_deps.append(extpart)
                 # Deps of deps.
                 self.add_deps(dep.ext_deps)
@@ -1987,6 +1998,10 @@ class StaticLibrary(BuildTarget):
             # Don't let configuration proceed with a non-static crate type
             elif self.rust_crate_type not in ['rlib', 'staticlib']:
                 raise InvalidArguments(f'Crate type "{self.rust_crate_type}" invalid for static libraries; must be "rlib" or "staticlib"')
+            # See https://github.com/rust-lang/rust/issues/110460
+            if self.rust_crate_type == 'rlib' and any(c in self.name for c in ['-', ' ', '.']):
+                raise InvalidArguments('Rust crate type "rlib" does not allow spaces, periods or dashes in the library name '
+                                       'due to a limitation of rustc. Replace them with underscores, for example')
         # By default a static library is named libfoo.a even on Windows because
         # MSVC does not have a consistent convention for what static libraries
         # are called. The MSVC CRT uses libfoo.lib syntax but nothing else uses
@@ -2077,6 +2092,11 @@ class SharedLibrary(BuildTarget):
             # Don't let configuration proceed with a non-dynamic crate type
             elif self.rust_crate_type not in ['dylib', 'cdylib', 'proc-macro']:
                 raise InvalidArguments(f'Crate type "{self.rust_crate_type}" invalid for dynamic libraries; must be "dylib", "cdylib", or "proc-macro"')
+            # See https://github.com/rust-lang/rust/issues/110460
+            if self.rust_crate_type != 'cdylib' and any(c in self.name for c in ['-', ' ', '.']):
+                raise InvalidArguments('Rust crate types "dylib" and "proc-macro" do not allow spaces, periods or dashes in the library name '
+                                       'due to a limitation of rustc. Replace them with underscores, for example')
+
         if not hasattr(self, 'prefix'):
             self.prefix = None
         if not hasattr(self, 'suffix'):

@@ -691,6 +691,7 @@ class Interpreter(InterpreterBase, HoldableObject):
         LINK_WITH_KW,
         LINK_WHOLE_KW.evolve(since='0.46.0'),
         SOURCES_KW,
+        KwargInfo('extra_files', ContainerTypeInfo(list, (mesonlib.File, str)), listify=True, default=[], since='1.2.0'),
         VARIABLES_KW.evolve(since='0.54.0', since_values={list: '0.56.0'}),
         KwargInfo('version', (str, NoneType)),
         KwargInfo('objects', ContainerTypeInfo(list, build.ExtractedObjects), listify=True, default=[], since='1.1.0'),
@@ -702,6 +703,7 @@ class Interpreter(InterpreterBase, HoldableObject):
         libs_whole = kwargs['link_whole']
         objects = kwargs['objects']
         sources = self.source_strings_to_files(kwargs['sources'])
+        extra_files = self.source_strings_to_files(kwargs['extra_files'])
         compile_args = kwargs['compile_args']
         link_args = kwargs['link_args']
         variables = kwargs['variables']
@@ -727,8 +729,8 @@ class Interpreter(InterpreterBase, HoldableObject):
                 raise InterpreterException('Invalid dependency')
 
         dep = dependencies.InternalDependency(version, incs, compile_args,
-                                              link_args, libs, libs_whole, sources, deps,
-                                              variables, d_module_versions, d_import_dirs,
+                                              link_args, libs, libs_whole, sources, extra_files,
+                                              deps, variables, d_module_versions, d_import_dirs,
                                               objects)
         return dep
 
@@ -3181,6 +3183,7 @@ class Interpreter(InterpreterBase, HoldableObject):
             raise InterpreterException(f'Unknown default_library value: {default_library}.')
 
     def build_target(self, node: mparser.BaseNode, args, kwargs, targetclass):
+        @FeatureNewKwargs('build target', '1.2.0', ['rust_dependency_map'])
         @FeatureNewKwargs('build target', '0.42.0', ['rust_crate_type', 'build_rpath', 'implicit_include_directories'])
         @FeatureNewKwargs('build target', '0.41.0', ['rust_args'])
         @FeatureNewKwargs('build target', '0.38.0', ['build_by_default'])
