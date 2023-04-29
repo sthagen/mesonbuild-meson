@@ -2446,7 +2446,12 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
             output = []
         else:
             output = NinjaCommandArg.list(compiler.get_output_args('$out'), Quoting.none)
-        command = compiler.get_exelist() + ['$ARGS'] + depargs + output + compiler.get_compile_only_args() + ['$in']
+
+        if 'mwcc' in compiler.id:
+            output[0].s = '-precompile'
+            command = compiler.get_exelist() + ['$ARGS'] + depargs + output + ['$in'] # '-c' must be removed
+        else:
+            command = compiler.get_exelist() + ['$ARGS'] + depargs + output + compiler.get_compile_only_args() + ['$in']
         description = 'Precompiling header $in'
         if compiler.get_argument_syntax() == 'msvc':
             deps = 'msvc'
@@ -2949,6 +2954,8 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
     def add_dependency_scanner_entries_to_element(self, target, compiler, element, src):
         if not self.should_use_dyndeps_for_target(target):
             return
+        if isinstance(target, build.CompileTarget):
+            return
         extension = os.path.splitext(src.fname)[1][1:]
         if extension != 'C':
             extension = extension.lower()
@@ -3024,6 +3031,13 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
         dep = dst + '.' + compiler.get_depfile_suffix()
         return commands, dep, dst, []  # Gcc does not create an object file during pch generation.
 
+    def generate_mwcc_pch_command(self, target, compiler, pch):
+        commands = self._generate_single_compile(target, compiler)
+        dst = os.path.join(self.get_target_private_dir(target),
+                           os.path.basename(pch) + '.' + compiler.get_pch_suffix())
+        dep = os.path.splitext(dst)[0] + '.' + compiler.get_depfile_suffix()
+        return commands, dep, dst, []  # mwcc compilers do not create an object file during pch generation.
+
     def generate_pch(self, target, header_deps=None):
         header_deps = header_deps if header_deps is not None else []
         pch_objects = []
@@ -3042,6 +3056,10 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
             elif compiler.id == 'intel':
                 # Intel generates on target generation
                 continue
+            elif 'mwcc' in compiler.id:
+                src = os.path.join(self.build_to_src, target.get_source_subdir(), pch[0])
+                (commands, dep, dst, objs) = self.generate_mwcc_pch_command(target, compiler, pch[0])
+                extradep = None
             else:
                 src = os.path.join(self.build_to_src, target.get_source_subdir(), pch[0])
                 (commands, dep, dst, objs) = self.generate_gcc_pch_command(target, compiler, pch[0])
