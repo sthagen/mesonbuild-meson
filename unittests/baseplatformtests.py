@@ -45,6 +45,11 @@ from run_tests import (
 )
 
 
+# magic attribute used by unittest.result.TestResult._is_relevant_tb_level
+# This causes tracebacks to hide these internal implementation details,
+# e.g. for assertXXX helpers.
+__unittest = True
+
 class BasePlatformTests(TestCase):
     prefix = '/usr'
     libdir = 'lib'
@@ -484,3 +489,6 @@ class BasePlatformTests(TestCase):
     def assertPathDoesNotExist(self, path):
         m = f'Path {path!r} should not exist'
         self.assertFalse(os.path.exists(path), msg=m)
+
+    def assertLength(self, val, length):
+        assert len(val) == length, f'{val} is not length {length}'

@@ -13,7 +13,7 @@
 # limitations under the License.
 from __future__ import annotations
 
-import functools, json, os
+import functools, json, os, textwrap
 from pathlib import Path
 import typing as T
 
@@ -54,6 +54,9 @@ else:
 class Pybind11ConfigToolDependency(ConfigToolDependency):
 
     tools = ['pybind11-config']
+
+    # any version of the tool is valid, since this is header-only
+    allow_default_for_cross = True
 
     # pybind11 in 2.10.4 added --version, sanity-check another flag unique to it
     # in the meantime
@@ -209,7 +212,7 @@ class PythonSystemDependency(SystemDependency, _PythonDependencyBase):
 
         # https://sourceforge.net/p/mingw-w64/mailman/message/30504611/
         # https://github.com/python/cpython/pull/100137
-        if mesonlib.is_windows() and self.get_windows_python_arch() == '64' and mesonlib.version_compare(self.version, '<3.12'):
+        if mesonlib.is_windows() and self.get_windows_python_arch().endswith('64') and mesonlib.version_compare(self.version, '<3.12'):
             self.compile_args += ['-DMS_WIN64=']
 
         if not self.clib_compiler.has_header('Python.h', '', environment, extra_args=self.compile_args):
@@ -240,16 +243,18 @@ class PythonSystemDependency(SystemDependency, _PythonDependencyBase):
         if self.platform == 'mingw':
             pycc = self.variables.get('CC')
             if pycc.startswith('x86_64'):
-                return '64'
+                return 'x86_64'
             elif pycc.startswith(('i686', 'i386')):
-                return '32'
+                return 'x86'
             else:
                 mlog.log(f'MinGW Python built with unknown CC {pycc!r}, please file a bug')
                 return None
         elif self.platform == 'win32':
-            return '32'
+            return 'x86'
         elif self.platform in {'win64', 'win-amd64'}:
-            return '64'
+            return 'x86_64'
+        elif self.platform in {'win-arm64'}:
+            return 'aarch64'
         mlog.log(f'Unknown Windows Python platform {self.platform!r}')
         return None
 
@@ -272,6 +277,29 @@ class PythonSystemDependency(SystemDependency, _PythonDependencyBase):
                         libpath = Path(f'python{vernum}.dll')
                 else:
                     libpath = Path('libs') / f'python{vernum}.lib'
+                    # For a debug build, pyconfig.h may force linking with
+                    # pythonX_d.lib (see meson#10776). This cannot be avoided
+                    # and won't work unless we also have a debug build of
+                    # Python itself (except with pybind11, which has an ugly
+                    # hack to work around this) - so emit a warning to explain
+                    # the cause of the expected link error.
+                    buildtype = self.env.coredata.get_option(mesonlib.OptionKey('buildtype'))
+                    assert isinstance(buildtype, str)
+                    debug = self.env.coredata.get_option(mesonlib.OptionKey('debug'))
+                    # `debugoptimized` buildtype may not set debug=True currently, see gh-11645
+                    is_debug_build = debug or buildtype == 'debug'
+                    vscrt_debug = False
+                    if mesonlib.OptionKey('b_vscrt') in self.env.coredata.options:
+                        vscrt = self.env.coredata.options[mesonlib.OptionKey('b_vscrt')].value
+                        if vscrt in {'mdd', 'mtd', 'from_buildtype', 'static_from_buildtype'}:
+                            vscrt_debug = True
+                    if is_debug_build and vscrt_debug and not self.variables.get('Py_DEBUG'):
+                        mlog.warning(textwrap.dedent('''\
+                            Using a debug build type with MSVC or an MSVC-compatible compiler
+                            when the Python interpreter is not also a debug build will almost
+                            certainly result in a failed build. Prefer using a release build
+                            type or a debug Python interpreter.
+                            '''))
             # base_prefix to allow for virtualenvs.
             lib = Path(self.variables.get('base_prefix')) / libpath
         elif self.platform == 'mingw':
@@ -298,19 +326,8 @@ class PythonSystemDependency(SystemDependency, _PythonDependencyBase):
             self.is_found = False
             return
         arch = detect_cpu_family(env.coredata.compilers.host)
-        if arch == 'x86':
-            arch = '32'
-        elif arch == 'x86_64':
-            arch = '64'
-        else:
-            # We can't cross-compile Python 3 dependencies on Windows yet
-            mlog.log(f'Unknown architecture {arch!r} for',
-                     mlog.bold(self.name))
-            self.is_found = False
-            return
-        # Pyarch ends in '32' or '64'
         if arch != pyarch:
-            mlog.log('Need', mlog.bold(self.name), f'for {arch}-bit, but found {pyarch}-bit')
+            mlog.log('Need', mlog.bold(self.name), f'for {arch}, but found {pyarch}')
             self.is_found = False
             return
         # This can fail if the library is not found
