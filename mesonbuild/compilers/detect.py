@@ -111,11 +111,15 @@ def compiler_from_language(env: 'Environment', lang: str, for_machine: MachineCh
     }
     return lang_map[lang](env, for_machine) if lang in lang_map else None
 
-def detect_compiler_for(env: 'Environment', lang: str, for_machine: MachineChoice) -> T.Optional[Compiler]:
+def detect_compiler_for(env: 'Environment', lang: str, for_machine: MachineChoice, skip_sanity_check: bool) -> T.Optional[Compiler]:
     comp = compiler_from_language(env, lang, for_machine)
-    if comp is not None:
-        assert comp.for_machine == for_machine
-        env.coredata.process_new_compiler(lang, comp, env)
+    if comp is None:
+        return comp
+    assert comp.for_machine == for_machine
+    env.coredata.process_new_compiler(lang, comp, env)
+    if not skip_sanity_check:
+        comp.sanity_check(env.get_scratch_dir(), env)
+    env.coredata.compilers[comp.for_machine][lang] = comp
     return comp
 
 
@@ -1216,7 +1220,7 @@ def detect_swift_compiler(env: 'Environment', for_machine: MachineChoice) -> Com
     raise EnvironmentException('Unknown compiler: ' + join_args(exelist))
 
 def detect_nasm_compiler(env: 'Environment', for_machine: MachineChoice) -> Compiler:
-    from .asm import NasmCompiler, YasmCompiler
+    from .asm import NasmCompiler, YasmCompiler, MetrowerksAsmCompilerARM, MetrowerksAsmCompilerEmbeddedPowerPC
     compilers, _, _ = _get_compilers(env, 'nasm', for_machine)
     is_cross = env.is_cross_build(for_machine)
 
@@ -1249,6 +1253,16 @@ def detect_nasm_compiler(env: 'Environment', for_machine: MachineChoice) -> Comp
             comp_class = YasmCompiler
             env.coredata.add_lang_args(comp_class.language, comp_class, for_machine, env)
             return comp_class([], comp, version, for_machine, info, cc.linker, is_cross=is_cross)
+        elif 'Metrowerks' in output or 'Freescale' in output:
+            if 'ARM' in output:
+                comp_class_mwasmarm = MetrowerksAsmCompilerARM
+                env.coredata.add_lang_args(comp_class_mwasmarm.language, comp_class_mwasmarm, for_machine, env)
+                return comp_class_mwasmarm([], comp, version, for_machine, info, cc.linker, is_cross=is_cross)
+            else:
+                comp_class_mwasmeppc = MetrowerksAsmCompilerEmbeddedPowerPC
+                env.coredata.add_lang_args(comp_class_mwasmeppc.language, comp_class_mwasmeppc, for_machine, env)
+                return comp_class_mwasmeppc([], comp, version, for_machine, info, cc.linker, is_cross=is_cross)
+
     _handle_exceptions(popen_exceptions, compilers)
     raise EnvironmentException('Unreachable code (exception to make mypy happy)')
 
