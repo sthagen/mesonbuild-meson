@@ -15,10 +15,11 @@ from __future__ import annotations
 
 import subprocess, os.path
 import textwrap
+import re
 import typing as T
 
-from .. import coredata
-from ..mesonlib import EnvironmentException, MesonException, Popen_safe, OptionKey
+from .. import coredata, mlog
+from ..mesonlib import EnvironmentException, MesonException, Popen_safe, OptionKey, join_args
 from .compilers import Compiler, rust_buildtype_args, clike_debug_args
 
 if T.TYPE_CHECKING:
@@ -66,6 +67,7 @@ class RustCompiler(Compiler):
         self.base_options.update({OptionKey(o) for o in ['b_colorout', 'b_ndebug']})
         if 'link' in self.linker.id:
             self.base_options.add(OptionKey('b_vscrt'))
+        self.native_static_libs: T.List[str] = []
 
     def needs_static_linker(self) -> bool:
         return False
@@ -78,20 +80,17 @@ class RustCompiler(Compiler):
                 '''fn main() {
                 }
                 '''))
-        pc = subprocess.Popen(self.exelist + ['-o', output_name, source_name],
-                              stdout=subprocess.PIPE,
-                              stderr=subprocess.PIPE,
-                              cwd=work_dir)
-        _stdo, _stde = pc.communicate()
-        assert isinstance(_stdo, bytes)
-        assert isinstance(_stde, bytes)
-        stdo = _stdo.decode('utf-8', errors='replace')
-        stde = _stde.decode('utf-8', errors='replace')
+
+        cmdlist = self.exelist + ['-o', output_name, source_name]
+        pc, stdo, stde = Popen_safe(cmdlist, cwd=work_dir)
+        mlog.debug('Sanity check compiler command line:', join_args(cmdlist))
+        mlog.debug('Sanity check compile stdout:')
+        mlog.debug(stdo)
+        mlog.debug('-----\nSanity check compile stderr:')
+        mlog.debug(stde)
+        mlog.debug('-----')
         if pc.returncode != 0:
-            raise EnvironmentException('Rust compiler {} cannot compile programs.\n{}\n{}'.format(
-                self.name_string(),
-                stdo,
-                stde))
+            raise EnvironmentException(f'Rust compiler {self.name_string()} cannot compile programs.')
         if self.is_cross:
             if self.exe_wrapper is None:
                 # Can't check if the binaries run so we have to assume they do
@@ -102,7 +101,19 @@ class RustCompiler(Compiler):
         pe = subprocess.Popen(cmdlist, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         pe.wait()
         if pe.returncode != 0:
-            raise EnvironmentException('Executables created by Rust compiler %s are not runnable.' % self.name_string())
+            raise EnvironmentException(f'Executables created by Rust compiler {self.name_string()} are not runnable.')
+        # Get libraries needed to link with a Rust staticlib
+        cmdlist = self.exelist + ['--crate-type', 'staticlib', '--print', 'native-static-libs', source_name]
+        p, stdo, stde = Popen_safe(cmdlist, cwd=work_dir)
+        if p.returncode == 0:
+            match = re.search('native-static-libs: (.*)$', stde, re.MULTILINE)
+            if match:
+                # Exclude some well known libraries that we don't need because they
+                # are always part of C/C++ linkers. Rustc probably should not print
+                # them, pkg-config for example never specify them.
+                # FIXME: https://github.com/rust-lang/rust/issues/55120
+                exclude = {'-lc', '-lgcc_s', '-lkernel32', '-ladvapi32'}
+                self.native_static_libs = [i for i in match.group(1).split() if i not in exclude]
 
     def get_dependency_gen_args(self, outtarget: str, outfile: str) -> T.List[str]:
         return ['--dep-info', outfile]
