@@ -95,15 +95,19 @@ def _install_mode_validator(mode: T.List[T.Union[str, bool, int]]) -> T.Optional
 
 
 def _install_mode_convertor(mode: T.Optional[T.List[T.Union[str, bool, int]]]) -> FileMode:
-    """Convert the DSL form of the `install_mode` keyword argument to `FileMode`
+    """Convert the DSL form of the `install_mode` keyword argument to `FileMode`"""
 
-    This is not required, and if not required returns None
+    if not mode:
+        return FileMode()
 
-    TODO: It's not clear to me why this needs to be None and not just return an
-    empty FileMode.
-    """
-    # this has already been validated by the validator
-    return FileMode(*(m if isinstance(m, str) else None for m in mode))
+    # This has already been validated by the validator. False denotes "use
+    # default". mypy is totally incapable of understanding it, because
+    # generators clobber types via homogeneous return. But also we *must*
+    # convert the first element different from the rest
+    m1 = mode[0] if isinstance(mode[0], str) else None
+    rest = (m if isinstance(m, (str, int)) else None for m in mode[1:])
+
+    return FileMode(m1, *rest)
 
 
 def _lower_strlist(input: T.List[str]) -> T.List[str]:
