@@ -982,12 +982,9 @@ class Interpreter(InterpreterBase, HoldableObject):
 
             subi.subproject_stack = self.subproject_stack + [subp_name]
             current_active = self.active_projectname
-            current_warnings_counter = mlog.log_warnings_counter
-            mlog.log_warnings_counter = 0
-            subi.run()
-            subi_warnings = mlog.log_warnings_counter
-            mlog.log_warnings_counter = current_warnings_counter
-
+            with mlog.nested_warnings():
+                subi.run()
+                subi_warnings = mlog.get_warning_count()
             mlog.log('Subproject', mlog.bold(subp_name), 'finished.')
 
         mlog.log()
@@ -1497,7 +1494,7 @@ class Interpreter(InterpreterBase, HoldableObject):
                 try:
                     skip_sanity_check = self.should_skip_sanity_check(for_machine)
                     if skip_sanity_check:
-                        mlog.log_once('Cross compiler sanity tests disabled via the cross file.')
+                        mlog.log('Cross compiler sanity tests disabled via the cross file.', once=True)
                     comp = compilers.detect_compiler_for(self.environment, lang, for_machine, skip_sanity_check)
                     if comp is None:
                         raise InvalidArguments(f'Tried to use unknown language "{lang}".')
