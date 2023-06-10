@@ -3,23 +3,30 @@ project('llvmtest', ['c', 'cpp'], default_options : ['c_std=c99'])
 method = get_option('method')
 static = get_option('link-static')
 
-if(method == 'combination')
-  d = dependency('llvm', version : static ? '>0.1' : '>=7.0', required : false, static : static)
-  if not d.found()
-    error('MESON_SKIP_TEST llvm not found or llvm version is too low')
+d = dependency('llvm', required : false, static : static)
+if not d.found()
+  error('MESON_SKIP_TEST llvm not found.')
+endif
+
+modules_to_find = [
+  'bitwriter', 'asmprinter', 'executionengine', 'mcjit', 'target',
+  'nativecodegen', 'amdgpu', 'engine'
+]
+
+if method == 'combination'
+  if not d.version().version_compare(static ? '>0.1' : '>=7.0')
+    error('MESON_SKIP_TEST: llvm version is too low')
   endif
   llvm_ct_dep = dependency(
     'llvm',
-    modules : ['bitwriter', 'asmprinter', 'executionengine', 'target',
-              'mcjit', 'nativecodegen', 'amdgpu', 'engine'],
+    modules : modules_to_find,
     required : false,
     static : static,
     method : 'config-tool',
   )
 
-  # Bump the version along till the LLVM bug is fixed
-  if static and d.version().startswith('16.0') and d.version()[5].to_int() <= 4
-    message('Skipping modules with cmake, see https://github.com/mesonbuild/meson/issues/11642')
+  if static and d.version().startswith('16.0') and d.version()[5].to_int() <= 6
+    message('Skipping modules with cmake due to an LLVM bug, see https://github.com/mesonbuild/meson/issues/11642')
     llvm_cm_dep = dependency(
       'llvm',
       required : false,
@@ -29,15 +36,14 @@ if(method == 'combination')
   else
     llvm_cm_dep = dependency(
       'llvm',
-      modules : ['bitwriter', 'asmprinter', 'executionengine', 'target',
-                'mcjit', 'nativecodegen', 'amdgpu', 'engine'],
+      modules : modules_to_find,
       required : false,
       static : static,
       method : 'cmake',
     )
   endif
 
-  assert(llvm_ct_dep.found() == llvm_cm_dep.found(), 'config-tool and cmake results differ')
+  assert(llvm_ct_dep.found() and llvm_cm_dep.found(), 'config-tool and cmake both need to be found')
   cm_version_major = llvm_cm_dep.version().split('.')[0].to_int()
   cm_version_minor = llvm_cm_dep.version().split('.')[1].to_int()
   ct_version_major = llvm_ct_dep.version().split('.')[0].to_int()
@@ -45,12 +51,7 @@ if(method == 'combination')
   assert(cm_version_major == ct_version_major, 'config-tool and cmake returns different major versions')
   assert(cm_version_minor == ct_version_minor, 'config-tool and cmake returns different minor versions')
 else
-  d = dependency('llvm', required : false, method : method, static : static)
-  if not d.found()
-    error('MESON_SKIP_TEST llvm not found.')
-  endif
-
-  if(not static and method == 'cmake')
+  if not static and method == 'cmake'
     d = dependency('llvm', version : '>=7.0', required : false, static : static)
     if not d.found()
       error('MESON_SKIP_TEST llvm version is too low for cmake dynamic link.')
@@ -80,9 +81,8 @@ else
     dep_tinfo = cpp.find_library('tinfo', required: false)
   endif
 
-  # Bump the version along till the LLVM bug is fixed
-  if static and method == 'cmake' and d.version().startswith('16.0') and d.version()[5].to_int() <= 4
-    message('Skipping modules with cmake, see https://github.com/mesonbuild/meson/issues/11642')
+  if static and method == 'cmake' and d.version().startswith('16.0') and d.version()[5].to_int() <= 5
+    message('Skipping modules with cmake due to an LLVM bug, see https://github.com/mesonbuild/meson/issues/11642')
     llvm_dep = dependency(
       'llvm',
       required : false,
@@ -92,8 +92,7 @@ else
   else
     llvm_dep = dependency(
       'llvm',
-      modules : ['bitwriter', 'asmprinter', 'executionengine', 'target',
-                'mcjit', 'nativecodegen', 'amdgpu'],
+      modules : modules_to_find,
       required : false,
       static : static,
       method : method,
