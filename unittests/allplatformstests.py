@@ -4633,7 +4633,10 @@ class AllPlatformTests(BasePlatformTests):
         symlinked_subproject = os.path.join(testdir, 'subprojects', 'symlinked_subproject')
         if not os.path.exists(subproject_dir):
             os.mkdir(subproject_dir)
-        os.symlink(subproject, symlinked_subproject)
+        try:
+            os.symlink(subproject, symlinked_subproject)
+        except OSError:
+            raise SkipTest("Symlinks are not available on this machine")
         self.addCleanup(os.remove, symlinked_subproject)
 
         self.init(testdir)
@@ -4690,7 +4693,7 @@ class AllPlatformTests(BasePlatformTests):
         cmd = self.meson_command + ['--internal', 'test_loaded_modules', '--unpickle', str(p)]
         p = subprocess.run(cmd, stdout=subprocess.PIPE)
         all_modules = json.loads(p.stdout.splitlines()[0])
-        meson_modules = [m for m in all_modules if 'meson' in m]
+        meson_modules = [m for m in all_modules if m.startswith('mesonbuild')]
         expected_meson_modules = [
             'mesonbuild',
             'mesonbuild._pathlib',

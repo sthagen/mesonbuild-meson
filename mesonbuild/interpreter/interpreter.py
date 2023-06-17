@@ -33,7 +33,7 @@ from ..interpreterbase import ContainerTypeInfo, InterpreterBase, KwargInfo, typ
 from ..interpreterbase import noPosargs, noKwargs, permittedKwargs, noArgsFlattening, noSecondLevelHolderResolving, unholder_return
 from ..interpreterbase import InterpreterException, InvalidArguments, InvalidCode, SubdirDoneRequest
 from ..interpreterbase import Disabler, disablerIfNotFound
-from ..interpreterbase import FeatureNew, FeatureDeprecated, FeatureNewKwargs, FeatureDeprecatedKwargs
+from ..interpreterbase import FeatureNew, FeatureDeprecated, FeatureBroken, FeatureNewKwargs, FeatureDeprecatedKwargs
 from ..interpreterbase import ObjectHolder, ContextManagerObject
 from ..modules import ExtensionModule, ModuleObject, MutableModuleObject, NewExtensionModule, NotFoundExtensionModule
 from ..cmake import CMakeInterpreter
@@ -526,7 +526,7 @@ class Interpreter(InterpreterBase, HoldableObject):
                 raise InterpreterException(f'Module returned a value of unknown type {v!r}.')
 
     def handle_meson_version(self, pv: str, location: mparser.BaseNode) -> None:
-        if not mesonlib.version_compare(coredata.version, pv):
+        if not mesonlib.version_compare(coredata.stable_version, pv):
             raise InterpreterException.from_node(f'Meson version is {coredata.version} but project requires {pv}', node=location)
         mesonlib.project_meson_versions[self.subproject] = pv
 
@@ -804,7 +804,7 @@ class Interpreter(InterpreterBase, HoldableObject):
                     progname = name
                     break
             else:
-                raise MesonBugException('cmd was a built executable but not found in overrides table')
+                raise InterpreterException(f'Program {cmd.description()!r} is a compiled executable and therefore cannot be used during configuration')
             raise InterpreterException(overridden_msg.format(progname, cmd.description()))
         if isinstance(cmd, ExternalProgram):
             if not cmd.found():
@@ -2978,6 +2978,7 @@ class Interpreter(InterpreterBase, HoldableObject):
         mlog.log('Build targets in project:', mlog.bold(str(len(self.build.targets))))
         FeatureNew.report(self.subproject)
         FeatureDeprecated.report(self.subproject)
+        FeatureBroken.report(self.subproject)
         if not self.is_subproject():
             self.print_extra_warnings()
             self._print_summary()
@@ -3202,13 +3203,13 @@ class Interpreter(InterpreterBase, HoldableObject):
         if 'sources' in kwargs:
             sources += listify(kwargs['sources'])
         if any(isinstance(s, build.BuildTarget) for s in sources):
-            FeatureDeprecated.single_use('passing references to built targets as a source file', '1.1.0', self.subproject,
-                                         'consider using `link_with` or `link_whole` if you meant to link, or dropping them as otherwise they are ignored',
-                                         node)
+            FeatureBroken.single_use('passing references to built targets as a source file', '1.1.0', self.subproject,
+                                     'Consider using `link_with` or `link_whole` if you meant to link, or dropping them as otherwise they are ignored.',
+                                     node)
         if any(isinstance(s, build.ExtractedObjects) for s in sources):
-            FeatureDeprecated.single_use('passing object files as sources', '1.1.0', self.subproject,
-                                         'pass these to the `objects` keyword instead, they are ignored when passed as sources',
-                                         node)
+            FeatureBroken.single_use('passing object files as sources', '1.1.0', self.subproject,
+                                     'Pass these to the `objects` keyword instead, they are ignored when passed as sources.',
+                                     node)
         # Go ahead and drop these here, since they're only allowed through for
         # backwards compatibility anyway
         sources = [s for s in sources
