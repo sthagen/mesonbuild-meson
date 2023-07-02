@@ -36,7 +36,8 @@ if T.TYPE_CHECKING:
     from ..coredata import MutableKeyedOptionDictType, KeyedOptionDictType
     from ..envconfig import MachineInfo
     from ..environment import Environment
-    from ..linkers import DynamicLinker, RSPFileSyntax
+    from ..linkers import RSPFileSyntax
+    from ..linkers.linkers import DynamicLinker
     from ..mesonlib import MachineChoice
     from ..dependencies import Dependency
 
@@ -133,11 +134,14 @@ def is_header(fname: 'mesonlib.FileOrString') -> bool:
     suffix = fname.split('.')[-1]
     return suffix in header_suffixes
 
+def is_source_suffix(suffix: str) -> bool:
+    return suffix in source_suffixes
+
 def is_source(fname: 'mesonlib.FileOrString') -> bool:
     if isinstance(fname, mesonlib.File):
         fname = fname.fname
     suffix = fname.split('.')[-1].lower()
-    return suffix in source_suffixes
+    return is_source_suffix(suffix)
 
 def is_assembly(fname: 'mesonlib.FileOrString') -> bool:
     if isinstance(fname, mesonlib.File):
@@ -936,6 +940,12 @@ class Compiler(HoldableObject, metaclass=abc.ABCMeta):
                          install_rpath: str) -> T.Tuple[T.List[str], T.Set[bytes]]:
         return self.linker.build_rpath_args(
             env, build_dir, from_dir, rpath_paths, build_rpath, install_rpath)
+
+    def get_archive_name(self, filename: str) -> str:
+        return self.linker.get_archive_name(filename)
+
+    def get_command_to_archive_shlib(self) -> T.List[str]:
+        return self.linker.get_command_to_archive_shlib()
 
     def thread_flags(self, env: 'Environment') -> T.List[str]:
         return []

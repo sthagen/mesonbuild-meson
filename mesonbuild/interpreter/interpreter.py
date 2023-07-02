@@ -36,7 +36,6 @@ from ..interpreterbase import Disabler, disablerIfNotFound
 from ..interpreterbase import FeatureNew, FeatureDeprecated, FeatureBroken, FeatureNewKwargs, FeatureDeprecatedKwargs
 from ..interpreterbase import ObjectHolder, ContextManagerObject
 from ..modules import ExtensionModule, ModuleObject, MutableModuleObject, NewExtensionModule, NotFoundExtensionModule
-from ..cmake import CMakeInterpreter
 from ..backend.backends import ExecutableSerialisation
 
 from . import interpreterobjects as OBJ
@@ -1011,6 +1010,7 @@ class Interpreter(InterpreterBase, HoldableObject):
     def _do_subproject_cmake(self, subp_name: str, subdir: str, subdir_abs: str,
                              default_options: T.Dict[OptionKey, str],
                              kwargs: kwtypes.DoSubproject) -> SubprojectHolder:
+        from ..cmake import CMakeInterpreter
         with mlog.nested(subp_name):
             new_build = self.build.copy()
             prefix = self.coredata.options[OptionKey('prefix')].value
@@ -1128,23 +1128,30 @@ class Interpreter(InterpreterBase, HoldableObject):
         # The backend is already set when parsing subprojects
         if self.backend is not None:
             return
-        backend = self.coredata.get_option(OptionKey('backend'))
         from ..backend import backends
-        self.backend = backends.get_backend_from_name(backend, self.build, self)
+
+        if OptionKey('genvslite') in self.user_defined_options.cmd_line_options.keys():
+            # Use of the '--genvslite vsxxxx' option ultimately overrides any '--backend xxx'
+            # option the user may specify.
+            backend_name = self.coredata.get_option(OptionKey('genvslite'))
+            self.backend = backends.get_genvslite_backend(backend_name, self.build, self)
+        else:
+            backend_name = self.coredata.get_option(OptionKey('backend'))
+            self.backend = backends.get_backend_from_name(backend_name, self.build, self)
 
         if self.backend is None:
-            raise InterpreterException(f'Unknown backend "{backend}".')
-        if backend != self.backend.name:
+            raise InterpreterException(f'Unknown backend "{backend_name}".')
+        if backend_name != self.backend.name:
             if self.backend.name.startswith('vs'):
                 mlog.log('Auto detected Visual Studio backend:', mlog.bold(self.backend.name))
             if not self.environment.first_invocation:
-                raise MesonBugException(f'Backend changed from {backend} to {self.backend.name}')
+                raise MesonBugException(f'Backend changed from {backend_name} to {self.backend.name}')
             self.coredata.set_option(OptionKey('backend'), self.backend.name, first_invocation=True)
 
         # Only init backend options on first invocation otherwise it would
         # override values previously set from command line.
         if self.environment.first_invocation:
-            self.coredata.init_backend_options(backend)
+            self.coredata.init_backend_options(backend_name)
 
         options = {k: v for k, v in self.environment.options.items() if k.is_backend()}
         self.coredata.set_options(options)
@@ -2513,7 +2520,7 @@ class Interpreter(InterpreterBase, HoldableObject):
         exclude = (set(kwargs['exclude_files']), set(kwargs['exclude_directories']))
 
         srcdir = os.path.join(self.environment.source_dir, self.subdir, args[0])
-        if not os.path.isdir(srcdir) or not any(os.scandir(srcdir)):
+        if not os.path.isdir(srcdir) or not any(os.listdir(srcdir)):
             FeatureNew.single_use('install_subdir with empty directory', '0.47.0', self.subproject, location=node)
             FeatureDeprecated.single_use('install_subdir with empty directory', '0.60.0', self.subproject,
                                          'It worked by accident and is buggy. Use install_emptydir instead.', node)

@@ -1,4 +1,4 @@
-# Copyright 2012-2023 The Meson development team
+# Copyright 2013-2023 The Meson development team
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
@@ -59,7 +59,7 @@ if T.TYPE_CHECKING:
 #
 # Pip requires that RCs are named like this: '0.1.0.rc1'
 # But the corresponding Git tag needs to be '0.1.0rc1'
-version = '1.1.99'
+version = '1.2.0.rc1'
 
 # The next stable version when we are in dev. This is used to allow projects to
 # require meson version >=1.2.0 when using 1.1.99. FeatureNew won't warn when
@@ -72,11 +72,17 @@ if stable_version.endswith('.99'):
     stable_version = '.'.join(stable_version_array)
 
 backendlist = ['ninja', 'vs', 'vs2010', 'vs2012', 'vs2013', 'vs2015', 'vs2017', 'vs2019', 'vs2022', 'xcode', 'none']
+genvslitelist = ['vs2022']
+buildtypelist = ['plain', 'debug', 'debugoptimized', 'release', 'minsize', 'custom']
 
 DEFAULT_YIELDING = False
 
 # Can't bind this near the class method it seems, sadly.
 _T = T.TypeVar('_T')
+
+
+def get_genvs_default_buildtype_list() -> list:
+    return buildtypelist[1:-2] # just debug, debugoptimized, and release for now but this should probably be configurable through some extra option, alongside --genvslite.
 
 
 class MesonVersionMismatchException(MesonException):
@@ -324,11 +330,10 @@ class DependencyCacheType(enum.Enum):
 
     @classmethod
     def from_type(cls, dep: 'dependencies.Dependency') -> 'DependencyCacheType':
-        from . import dependencies
         # As more types gain search overrides they'll need to be added here
-        if isinstance(dep, dependencies.PkgConfigDependency):
+        if dep.type_name == 'pkgconfig':
             return cls.PKG_CONFIG
-        if isinstance(dep, dependencies.CMakeDependency):
+        if dep.type_name == 'cmake':
             return cls.CMAKE
         return cls.OTHER
 
@@ -717,13 +722,13 @@ class CoreData:
 
         return dirty
 
-    def clear_cache(self):
+    def clear_cache(self) -> None:
         self.deps.host.clear()
         self.deps.build.clear()
         self.compiler_check_cache.clear()
         self.run_check_cache.clear()
 
-    def get_nondefault_buildtype_args(self):
+    def get_nondefault_buildtype_args(self) -> T.List[T.Union[T.Tuple[str, str, str], T.Tuple[str, bool, bool]]]:
         result = []
         value = self.options[OptionKey('buildtype')].value
         if value == 'plain':
@@ -1249,8 +1254,17 @@ BUILTIN_CORE_OPTIONS: 'MutableKeyedOptionDictType' = OrderedDict([
     (OptionKey('auto_features'),   BuiltinOption(UserFeatureOption, "Override value of all 'auto' features", 'auto')),
     (OptionKey('backend'),         BuiltinOption(UserComboOption, 'Backend to use', 'ninja', choices=backendlist,
                                                  readonly=True)),
+    (OptionKey('genvslite'),
+     BuiltinOption(
+         UserComboOption,
+         'Setup multiple buildtype-suffixed ninja-backend build directories (e.g. builddir_[debug/release/etc.]) '
+         'and generate [builddir]_vs containing a Visual Studio solution with multiple configurations that invoke a meson compile of the newly '
+         'setup build directories, as appropriate for the current build configuration (buildtype)',
+         'vs2022',
+         choices=genvslitelist)
+     ),
     (OptionKey('buildtype'),       BuiltinOption(UserComboOption, 'Build type to use', 'debug',
-                                                 choices=['plain', 'debug', 'debugoptimized', 'release', 'minsize', 'custom'])),
+                                                 choices=buildtypelist)),
     (OptionKey('debug'),           BuiltinOption(UserBooleanOption, 'Enable debug symbols and other information', True)),
     (OptionKey('default_library'), BuiltinOption(UserComboOption, 'Default library type', 'shared', choices=['shared', 'static', 'both'],
                                                  yielding=False)),

@@ -24,14 +24,17 @@ import subprocess
 import textwrap
 import typing as T
 
-from . import ExtensionModule, ModuleInfo
-from . import ModuleReturnValue
+from . import (
+    ExtensionModule, GirTarget, GResourceHeaderTarget, GResourceTarget, ModuleInfo,
+    ModuleReturnValue, TypelibTarget, VapiTarget,
+)
 from .. import build
 from .. import interpreter
 from .. import mesonlib
 from .. import mlog
 from ..build import CustomTarget, CustomTargetIndex, Executable, GeneratedList, InvalidArguments
-from ..dependencies import Dependency, PkgConfigDependency, InternalDependency
+from ..dependencies import Dependency, InternalDependency
+from ..dependencies.pkgconfig import PkgConfigDependency
 from ..interpreter.type_checking import DEPENDS_KW, DEPEND_FILES_KW, ENV_KW, INSTALL_DIR_KW, INSTALL_KW, NoneType, SOURCES_KW, in_set_validator
 from ..interpreterbase import noPosargs, noKwargs, FeatureNew, FeatureDeprecated
 from ..interpreterbase import typed_kwargs, KwargInfo, ContainerTypeInfo
@@ -247,21 +250,6 @@ def annotations_validator(annotations: T.List[T.Union[str, T.List[str]]]) -> T.O
             if len(annot) != 3 or not all(isinstance(i, str) for i in annot):
                 return f'element {c+1} {badlist}'
     return None
-
-class GResourceTarget(build.CustomTarget):
-    pass
-
-class GResourceHeaderTarget(build.CustomTarget):
-    pass
-
-class GirTarget(build.CustomTarget):
-    pass
-
-class TypelibTarget(build.CustomTarget):
-    pass
-
-class VapiTarget(build.CustomTarget):
-    pass
 
 # gresource compilation is broken due to the way
 # the resource compiler and Ninja clash about it

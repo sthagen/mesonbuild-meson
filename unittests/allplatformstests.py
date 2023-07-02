@@ -41,7 +41,7 @@ from mesonbuild.mesonlib import (
     BuildDirLock, MachineChoice, is_windows, is_osx, is_cygwin, is_dragonflybsd,
     is_sunos, windows_proof_rmtree, python_command, version_compare, split_args, quote_arg,
     relpath, is_linux, git, search_version, do_conf_file, do_conf_str, default_prefix,
-    MesonException, EnvironmentException, OptionKey, ExecutableSerialisation, EnvironmentVariables,
+    MesonException, EnvironmentException, OptionKey,
     windows_proof_rm
 )
 from mesonbuild.programs import ExternalProgram
@@ -55,8 +55,9 @@ from mesonbuild.compilers import (
     detect_static_linker, detect_c_compiler, compiler_from_language,
     detect_compiler_for
 )
+from mesonbuild.linkers import linkers
 
-from mesonbuild.dependencies import PkgConfigDependency
+from mesonbuild.dependencies.pkgconfig import PkgConfigDependency
 from mesonbuild.build import Target, ConfigurationData, Executable, SharedLibrary, StaticLibrary
 import mesonbuild.modules.pkgconfig
 from mesonbuild.scripts import destdir_join
@@ -354,7 +355,7 @@ class AllPlatformTests(BasePlatformTests):
         static_linker = detect_static_linker(env, cc)
         if is_windows():
             raise SkipTest('https://github.com/mesonbuild/meson/issues/1526')
-        if not isinstance(static_linker, mesonbuild.linkers.ArLinker):
+        if not isinstance(static_linker, linkers.ArLinker):
             raise SkipTest('static linker is not `ar`')
         # Configure
         self.init(testdir)
@@ -983,8 +984,8 @@ class AllPlatformTests(BasePlatformTests):
         intel = IntelGnuLikeCompiler
         msvc = (VisualStudioCCompiler, VisualStudioCPPCompiler)
         clangcl = (ClangClCCompiler, ClangClCPPCompiler)
-        ar = mesonbuild.linkers.ArLinker
-        lib = mesonbuild.linkers.VisualStudioLinker
+        ar = linkers.ArLinker
+        lib = linkers.VisualStudioLinker
         langs = [('c', 'CC'), ('cpp', 'CXX')]
         if not is_windows() and platform.machine().lower() != 'e2k':
             langs += [('objc', 'OBJC'), ('objcpp', 'OBJCXX')]
@@ -1028,39 +1029,39 @@ class AllPlatformTests(BasePlatformTests):
             if isinstance(cc, gnu):
                 self.assertIsInstance(linker, ar)
                 if is_osx():
-                    self.assertIsInstance(cc.linker, mesonbuild.linkers.AppleDynamicLinker)
+                    self.assertIsInstance(cc.linker, linkers.AppleDynamicLinker)
                 elif is_sunos():
-                    self.assertIsInstance(cc.linker, (mesonbuild.linkers.SolarisDynamicLinker, mesonbuild.linkers.GnuLikeDynamicLinkerMixin))
+                    self.assertIsInstance(cc.linker, (linkers.SolarisDynamicLinker, linkers.GnuLikeDynamicLinkerMixin))
                 else:
-                    self.assertIsInstance(cc.linker, mesonbuild.linkers.GnuLikeDynamicLinkerMixin)
+                    self.assertIsInstance(cc.linker, linkers.GnuLikeDynamicLinkerMixin)
             if isinstance(cc, clangcl):
                 self.assertIsInstance(linker, lib)
-                self.assertIsInstance(cc.linker, mesonbuild.linkers.ClangClDynamicLinker)
+                self.assertIsInstance(cc.linker, linkers.ClangClDynamicLinker)
             if isinstance(cc, clang):
                 self.assertIsInstance(linker, ar)
                 if is_osx():
-                    self.assertIsInstance(cc.linker, mesonbuild.linkers.AppleDynamicLinker)
+                    self.assertIsInstance(cc.linker, linkers.AppleDynamicLinker)
                 elif is_windows():
                     # This is clang, not clang-cl. This can be either an
                     # ld-like linker of link.exe-like linker (usually the
                     # former for msys2, the latter otherwise)
-                    self.assertIsInstance(cc.linker, (mesonbuild.linkers.MSVCDynamicLinker, mesonbuild.linkers.GnuLikeDynamicLinkerMixin))
+                    self.assertIsInstance(cc.linker, (linkers.MSVCDynamicLinker, linkers.GnuLikeDynamicLinkerMixin))
                 else:
-                    self.assertIsInstance(cc.linker, mesonbuild.linkers.GnuLikeDynamicLinkerMixin)
+                    self.assertIsInstance(cc.linker, linkers.GnuLikeDynamicLinkerMixin)
             if isinstance(cc, intel):
                 self.assertIsInstance(linker, ar)
                 if is_osx():
-                    self.assertIsInstance(cc.linker, mesonbuild.linkers.AppleDynamicLinker)
+                    self.assertIsInstance(cc.linker, linkers.AppleDynamicLinker)
                 elif is_windows():
-                    self.assertIsInstance(cc.linker, mesonbuild.linkers.XilinkDynamicLinker)
+                    self.assertIsInstance(cc.linker, linkers.XilinkDynamicLinker)
                 else:
-                    self.assertIsInstance(cc.linker, mesonbuild.linkers.GnuDynamicLinker)
+                    self.assertIsInstance(cc.linker, linkers.GnuDynamicLinker)
             if isinstance(cc, msvc):
                 self.assertTrue(is_windows())
                 self.assertIsInstance(linker, lib)
                 self.assertEqual(cc.id, 'msvc')
                 self.assertTrue(hasattr(cc, 'is_64'))
-                self.assertIsInstance(cc.linker, mesonbuild.linkers.MSVCDynamicLinker)
+                self.assertIsInstance(cc.linker, linkers.MSVCDynamicLinker)
                 # If we're on Windows CI, we know what the compiler will be
                 if 'arch' in os.environ:
                     if os.environ['arch'] == 'x64':
@@ -4357,6 +4358,9 @@ class AllPlatformTests(BasePlatformTests):
             Path(installpath, 'usr/share/foo2.h'),
             Path(installpath, 'usr/share/out1.txt'),
             Path(installpath, 'usr/share/out2.txt'),
+            Path(installpath, 'usr/share/install tag'),
+            Path(installpath, 'usr/share/install tag/aaa.txt'),
+            Path(installpath, 'usr/share/install tag/bbb.txt'),
         }
 
         def do_install(tags, expected_files, expected_scripts):
@@ -4416,140 +4420,182 @@ class AllPlatformTests(BasePlatformTests):
                 f'{self.builddir}/out1-notag.txt': {
                     'destination': '{datadir}/out1-notag.txt',
                     'tag': None,
+                    'subproject': None,
                 },
                 f'{self.builddir}/out2-notag.txt': {
                     'destination': '{datadir}/out2-notag.txt',
                     'tag': None,
+                    'subproject': None,
                 },
                 f'{self.builddir}/libstatic.a': {
                     'destination': '{libdir_static}/libstatic.a',
                     'tag': 'devel',
+                    'subproject': None,
                 },
                 f'{self.builddir}/' + exe_name('app'): {
                     'destination': '{bindir}/' + exe_name('app'),
                     'tag': 'runtime',
+                    'subproject': None,
                 },
                 f'{self.builddir}/' + exe_name('app-otherdir'): {
                     'destination': '{prefix}/otherbin/' + exe_name('app-otherdir'),
                     'tag': 'runtime',
+                    'subproject': None,
                 },
                 f'{self.builddir}/subdir/' + exe_name('app2'): {
                     'destination': '{bindir}/' + exe_name('app2'),
                     'tag': 'runtime',
+                    'subproject': None,
                 },
                 f'{self.builddir}/' + shared_lib_name('shared'): {
                     'destination': '{libdir_shared}/' + shared_lib_name('shared'),
                     'tag': 'runtime',
+                    'subproject': None,
                 },
                 f'{self.builddir}/' + shared_lib_name('both'): {
                     'destination': '{libdir_shared}/' + shared_lib_name('both'),
                     'tag': 'runtime',
+                    'subproject': None,
                 },
                 f'{self.builddir}/' + static_lib_name('both'): {
                     'destination': '{libdir_static}/' + static_lib_name('both'),
                     'tag': 'devel',
+                    'subproject': None,
                 },
                 f'{self.builddir}/' + shared_lib_name('bothcustom'): {
                     'destination': '{libdir_shared}/' + shared_lib_name('bothcustom'),
                     'tag': 'custom',
+                    'subproject': None,
                 },
                 f'{self.builddir}/' + static_lib_name('bothcustom'): {
                     'destination': '{libdir_static}/' + static_lib_name('bothcustom'),
                     'tag': 'custom',
+                    'subproject': None,
                 },
                 f'{self.builddir}/subdir/' + shared_lib_name('both2'): {
                     'destination': '{libdir_shared}/' + shared_lib_name('both2'),
                     'tag': 'runtime',
+                    'subproject': None,
                 },
                 f'{self.builddir}/subdir/' + static_lib_name('both2'): {
                     'destination': '{libdir_static}/' + static_lib_name('both2'),
                     'tag': 'devel',
+                    'subproject': None,
                 },
                 f'{self.builddir}/out1-custom.txt': {
                     'destination': '{datadir}/out1-custom.txt',
                     'tag': 'custom',
+                    'subproject': None,
                 },
                 f'{self.builddir}/out2-custom.txt': {
                     'destination': '{datadir}/out2-custom.txt',
                     'tag': 'custom',
+                    'subproject': None,
                 },
                 f'{self.builddir}/out3-custom.txt': {
                     'destination': '{datadir}/out3-custom.txt',
                     'tag': 'custom',
+                    'subproject': None,
                 },
                 f'{self.builddir}/subdir/out1.txt': {
                     'destination': '{datadir}/out1.txt',
                     'tag': None,
+                    'subproject': None,
                 },
                 f'{self.builddir}/subdir/out2.txt': {
                     'destination': '{datadir}/out2.txt',
                     'tag': None,
+                    'subproject': None,
                 },
                 f'{self.builddir}/out-devel.h': {
                     'destination': '{includedir}/out-devel.h',
                     'tag': 'devel',
+                    'subproject': None,
                 },
                 f'{self.builddir}/out3-notag.txt': {
                     'destination': '{datadir}/out3-notag.txt',
                     'tag': None,
+                    'subproject': None,
                 },
             },
             'configure': {
                 f'{self.builddir}/foo-notag.h': {
                     'destination': '{datadir}/foo-notag.h',
                     'tag': None,
+                    'subproject': None,
                 },
                 f'{self.builddir}/foo2-devel.h': {
                     'destination': '{includedir}/foo2-devel.h',
                     'tag': 'devel',
+                    'subproject': None,
                 },
                 f'{self.builddir}/foo-custom.h': {
                     'destination': '{datadir}/foo-custom.h',
                     'tag': 'custom',
+                    'subproject': None,
                 },
                 f'{self.builddir}/subdir/foo2.h': {
                     'destination': '{datadir}/foo2.h',
                     'tag': None,
+                    'subproject': None,
                 },
             },
             'data': {
                 f'{testdir}/bar-notag.txt': {
                     'destination': '{datadir}/bar-notag.txt',
                     'tag': None,
+                    'subproject': None,
                 },
                 f'{testdir}/bar-devel.h': {
                     'destination': '{includedir}/bar-devel.h',
                     'tag': 'devel',
+                    'subproject': None,
                 },
                 f'{testdir}/bar-custom.txt': {
                     'destination': '{datadir}/bar-custom.txt',
                     'tag': 'custom',
+                    'subproject': None,
                 },
                 f'{testdir}/subdir/bar2-devel.h': {
                     'destination': '{includedir}/bar2-devel.h',
                     'tag': 'devel',
+                    'subproject': None,
+                },
+                f'{testdir}/subprojects/subproject/aaa.txt': {
+                    'destination': '{datadir}/install tag/aaa.txt',
+                    'tag': None,
+                    'subproject': 'subproject',
+                },
+                f'{testdir}/subprojects/subproject/bbb.txt': {
+                    'destination': '{datadir}/install tag/bbb.txt',
+                    'tag': 'data',
+                    'subproject': 'subproject',
                 },
             },
             'headers': {
                 f'{testdir}/foo1-devel.h': {
                     'destination': '{includedir}/foo1-devel.h',
                     'tag': 'devel',
+                    'subproject': None,
                 },
                 f'{testdir}/subdir/foo3-devel.h': {
                     'destination': '{includedir}/foo3-devel.h',
                     'tag': 'devel',
+                    'subproject': None,
                 },
             },
             'install_subdirs': {
                 f'{testdir}/custom_files': {
                     'destination': '{datadir}/custom_files',
                     'tag': 'custom',
+                    'subproject': None,
                     'exclude_dirs': [],
                     'exclude_files': [],
                 },
                 f'{testdir}/excludes': {
                     'destination': '{datadir}/excludes',
                     'tag': 'custom',
+                    'subproject': None,
                     'exclude_dirs': ['excluded'],
                     'exclude_files': ['excluded.txt'],
                 }
@@ -4678,31 +4724,3 @@ class AllPlatformTests(BasePlatformTests):
             self.assertNotEqual(olddata, newdata)
             olddata = newdata
             oldmtime = newmtime
-
-    def test_scripts_loaded_modules(self):
-        '''
-        Simulate a wrapped command, as done for custom_target() that capture
-        output. The script will print all python modules loaded and we verify
-        that it contains only an acceptable subset. Loading too many modules
-        slows down the build when many custom targets get wrapped.
-        '''
-        es = ExecutableSerialisation(python_command + ['-c', 'exit(0)'], env=EnvironmentVariables())
-        p = Path(self.builddir, 'exe.dat')
-        with p.open('wb') as f:
-            pickle.dump(es, f)
-        cmd = self.meson_command + ['--internal', 'test_loaded_modules', '--unpickle', str(p)]
-        p = subprocess.run(cmd, stdout=subprocess.PIPE)
-        all_modules = json.loads(p.stdout.splitlines()[0])
-        meson_modules = [m for m in all_modules if m.startswith('mesonbuild')]
-        expected_meson_modules = [
-            'mesonbuild',
-            'mesonbuild._pathlib',
-            'mesonbuild.utils',
-            'mesonbuild.utils.core',
-            'mesonbuild.mesonmain',
-            'mesonbuild.mlog',
-            'mesonbuild.scripts',
-            'mesonbuild.scripts.meson_exe',
-            'mesonbuild.scripts.test_loaded_modules'
-        ]
-        self.assertEqual(sorted(expected_meson_modules), sorted(meson_modules))

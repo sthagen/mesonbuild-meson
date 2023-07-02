@@ -30,16 +30,15 @@ import typing as T
 
 from . import backends
 from .. import modules
-from ..modules import gnome
 from .. import environment, mesonlib
 from .. import build
 from .. import mlog
 from .. import compilers
 from ..arglist import CompilerArgs
 from ..compilers import Compiler
-from ..linkers import ArLinker, RSPFileSyntax
+from ..linkers import ArLikeLinker, RSPFileSyntax
 from ..mesonlib import (
-    File, LibType, MachineChoice, MesonException, OrderedSet, PerMachine,
+    File, LibType, MachineChoice, MesonBugException, MesonException, OrderedSet, PerMachine,
     ProgressBar, quote_arg
 )
 from ..mesonlib import get_compiler_for_source, has_path_sep, OptionKey
@@ -52,7 +51,7 @@ if T.TYPE_CHECKING:
     from .._typing import ImmutableListProtocol
     from ..build import ExtractedObjects, LibTypes
     from ..interpreter import Interpreter
-    from ..linkers import DynamicLinker, StaticLinker
+    from ..linkers.linkers import DynamicLinker, StaticLinker
     from ..compilers.cs import CsCompiler
     from ..compilers.fortran import FortranCompiler
 
@@ -576,7 +575,13 @@ class NinjaBackend(backends.Backend):
 
         raise MesonException(f'Could not determine vs dep dependency prefix string. output: {stderr} {stdout}')
 
-    def generate(self):
+    def generate(self,
+                 capture: bool = False,
+                 captured_compile_args_per_buildtype_and_target: dict = None) -> T.Optional[dict]:
+        if captured_compile_args_per_buildtype_and_target:
+            # We don't yet have a use case where we'd expect to make use of this,
+            # so no harm in catching and reporting something unexpected.
+            raise MesonBugException('We do not expect the ninja backend to be given a valid \'captured_compile_args_per_buildtype_and_target\'')
         ninja = environment.detect_ninja_command_and_version(log=True)
         if self.environment.coredata.get_option(OptionKey('vsenv')):
             builddir = Path(self.environment.get_build_dir())
@@ -615,6 +620,14 @@ class NinjaBackend(backends.Backend):
             self.build_elements = []
             self.generate_phony()
             self.add_build_comment(NinjaComment('Build rules for targets'))
+
+            # Optionally capture compile args per target, for later use (i.e. VisStudio project's NMake intellisense include dirs, defines, and compile options).
+            if capture:
+                captured_compile_args_per_target = {}
+                for target in self.build.get_targets().values():
+                    if isinstance(target, build.BuildTarget):
+                        captured_compile_args_per_target[target.get_id()] = self.generate_common_compile_args_per_src_type(target)
+
             for t in ProgressBar(self.build.get_targets().values(), desc='Generating targets'):
                 self.generate_target(t)
             self.add_build_comment(NinjaComment('Test rules'))
@@ -652,6 +665,9 @@ class NinjaBackend(backends.Backend):
             subprocess.call(self.ninja_command + ['-t', 'cleandead'])
         self.generate_compdb()
         self.generate_rust_project_json()
+
+        if capture:
+            return captured_compile_args_per_target
 
     def generate_rust_project_json(self) -> None:
         """Generate a rust-analyzer compatible rust-project.json file."""
@@ -1035,6 +1051,11 @@ class NinjaBackend(backends.Backend):
         elem = self.generate_link(target, outname, final_obj_list, linker, pch_objects, stdlib_args=stdlib_args)
         self.generate_dependency_scan_target(target, compiled_sources, source2object, generated_source_files, fortran_order_deps)
         self.add_build(elem)
+        #In AIX, we archive shared libraries. If the instance is a shared library, we add a command to archive the shared library
+        #object and create the build element.
+        if isinstance(target, build.SharedLibrary) and self.environment.machines[target.for_machine].is_aix():
+            elem = NinjaBuildElement(self.all_outputs, linker.get_archive_name(outname), 'AIX_LINKER', [outname])
+            self.add_build(elem)
 
     def should_use_dyndeps_for_target(self, target: 'build.BuildTarget') -> bool:
         if mesonlib.version_compare(self.ninja_version, '<1.10.0'):
@@ -1687,7 +1708,7 @@ class NinjaBackend(backends.Backend):
                     target.install_dir[3] = os.path.join(self.environment.get_datadir(), 'gir-1.0')
         # Detect gresources and add --gresources arguments for each
         for gensrc in other_src[1].values():
-            if isinstance(gensrc, gnome.GResourceTarget):
+            if isinstance(gensrc, modules.GResourceTarget):
                 gres_xml, = self.get_custom_target_sources(gensrc)
                 args += ['--gresources=' + gres_xml]
         extra_args = []
@@ -1944,6 +1965,49 @@ class NinjaBackend(backends.Backend):
         args += output
         linkdirs = mesonlib.OrderedSet()
         external_deps = target.external_deps.copy()
+
+        # Have we already injected msvc-crt args?
+        #
+        # If we don't have A C, C++, or Fortran compiler that is
+        # VisualStudioLike treat this as if we've already injected them
+        #
+        # We handle this here rather than in the rust compiler because in
+        # general we don't want to link rust targets to a non-default crt.
+        # However, because of the way that MSCRTs work you can only link to one
+        # per target, so if A links to the debug one, and B links to the normal
+        # one you can't link A and B. Rust is hardcoded to the default one,
+        # so if we compile C/C++ code and link against a non-default MSCRT then
+        # linking will fail. We can work around this by injecting MSCRT link
+        # arguments early in the rustc command line
+        # https://github.com/rust-lang/rust/issues/39016
+        crt_args_injected = not any(x is not None and x.get_argument_syntax() == 'msvc' for x in
+                                    (self.environment.coredata.compilers[target.for_machine].get(l)
+                                     for l in ['c', 'cpp', 'fortran']))
+
+        crt_link_args: T.List[str] = []
+        try:
+            buildtype = self.environment.coredata.options[OptionKey('buildtype')].value
+            crt = self.environment.coredata.options[OptionKey('b_vscrt')].value
+            is_debug = buildtype == 'debug'
+
+            if crt == 'from_buildtype':
+                crt = 'mdd' if is_debug else 'md'
+            elif crt == 'static_from_buildtype':
+                crt = 'mtd' if is_debug else 'mt'
+
+            if crt == 'mdd':
+                crt_link_args = ['-l', 'static=msvcrtd']
+            elif crt == 'md':
+                # this is the default, no need to inject anything
+                crt_args_injected = True
+            elif crt == 'mtd':
+                crt_link_args = ['-l', 'static=libcmtd']
+            elif crt == 'mt':
+                crt_link_args = ['-l', 'static=libcmt']
+
+        except KeyError:
+            crt_args_injected = True
+
         # TODO: we likely need to use verbatim to handle name_prefix and name_suffix
         for d in target.link_targets:
             linkdirs.add(d.subdir)
@@ -1957,7 +2021,13 @@ class NinjaBackend(backends.Backend):
                 d_name = self._get_rust_dependency_name(target, d)
                 args += ['--extern', '{}={}'.format(d_name, os.path.join(d.subdir, d.filename))]
                 project_deps.append(RustDep(d_name, self.rust_crates[d.name].order))
-            elif isinstance(d, build.StaticLibrary):
+                continue
+
+            if not crt_args_injected and not {'c', 'cpp', 'fortran'}.isdisjoint(d.compilers):
+                args += crt_link_args
+                crt_args_injected = True
+
+            if isinstance(d, build.StaticLibrary):
                 # Rustc doesn't follow Meson's convention that static libraries
                 # are called .a, and import libraries are .lib, so we have to
                 # manually handle that.
@@ -1997,6 +2067,10 @@ class NinjaBackend(backends.Backend):
                 args += ['--extern', '{}={}'.format(d_name, os.path.join(d.subdir, d.filename))]
                 project_deps.append(RustDep(d_name, self.rust_crates[d.name].order))
             else:
+                if not crt_args_injected and not {'c', 'cpp', 'fortran'}.isdisjoint(d.compilers):
+                    crt_args_injected = True
+                    crt_args_injected = True
+
                 if rustc.linker.id in {'link', 'lld-link'}:
                     if verbatim:
                         # If we can use the verbatim modifier, then everything is great
@@ -2041,6 +2115,11 @@ class NinjaBackend(backends.Backend):
             if d == '':
                 d = '.'
             args += ['-L', d]
+
+        # Because of the way rustc links, this must come after any potential
+        # library need to link with their stdlibs (C++ and Fortran, for example)
+        args.extend(target.get_used_stdlib_args('rust'))
+
         target_deps = target.get_dependencies()
         has_shared_deps = any(isinstance(dep, build.SharedLibrary) for dep in target_deps)
         has_rust_shared_deps = any(dep.uses_rust()
@@ -2272,7 +2351,7 @@ class NinjaBackend(backends.Backend):
             #        them out to fix this properly on Windows. See:
             # https://github.com/mesonbuild/meson/issues/1517
             # https://github.com/mesonbuild/meson/issues/1526
-            if isinstance(static_linker, ArLinker) and not mesonlib.is_windows():
+            if isinstance(static_linker, ArLikeLinker) and not mesonlib.is_windows():
                 # `ar` has no options to overwrite archives. It always appends,
                 # which is never what we want. Delete an existing library first if
                 # it exists. https://github.com/mesonbuild/meson/issues/1355
@@ -2307,6 +2386,13 @@ class NinjaBackend(backends.Backend):
 
                 options = self._rsp_options(compiler)
                 self.add_rule(NinjaRule(rule, command, args, description, **options, extra=pool))
+            if self.environment.machines[for_machine].is_aix():
+                rule = 'AIX_LINKER{}'.format(self.get_rule_suffix(for_machine))
+                description = 'Archiving AIX shared library'
+                cmdlist = compiler.get_command_to_archive_shlib()
+                args = []
+                options = {}
+                self.add_rule(NinjaRule(rule, cmdlist, args, description, **options, extra=None))
 
         args = self.environment.get_build_command() + \
             ['--internal',
@@ -2853,6 +2939,34 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
         commands += compiler.get_include_args(self.get_target_private_dir(target), False)
         return commands
 
+    # Returns a dictionary, mapping from each compiler src type (e.g. 'c', 'cpp', etc.) to a list of compiler arg strings
+    # used for that respective src type.
+    # Currently used for the purpose of populating VisualStudio intellisense fields but possibly useful in other scenarios.
+    def generate_common_compile_args_per_src_type(self, target: build.BuildTarget) -> dict[str, list[str]]:
+        src_type_to_args = {}
+
+        use_pch = self.environment.coredata.options.get(OptionKey('b_pch'))
+
+        for src_type_str in target.compilers.keys():
+            compiler = target.compilers[src_type_str]
+            commands = self._generate_single_compile_base_args(target, compiler)
+
+            # Include PCH header as first thing as it must be the first one or it will be
+            # ignored by gcc https://gcc.gnu.org/bugzilla/show_bug.cgi?id=100462
+            if use_pch and 'mw' not in compiler.id:
+                commands += self.get_pch_include_args(compiler, target)
+
+            commands += self._generate_single_compile_target_args(target, compiler, is_generated=False)
+
+            # Metrowerks compilers require PCH include args to come after intraprocedural analysis args
+            if use_pch and 'mw' in compiler.id:
+                commands += self.get_pch_include_args(compiler, target)
+
+            commands = commands.compiler.compiler_args(commands)
+
+            src_type_to_args[src_type_str] = commands.to_native()
+        return src_type_to_args
+
     def generate_single_compile(self, target: build.BuildTarget, src,
                                 is_generated=False, header_deps=None,
                                 order_deps: T.Optional[T.List['mesonlib.FileOrString']] = None,
@@ -3379,6 +3493,11 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
         else:
             dependencies = target.get_dependencies()
         internal = self.build_target_link_arguments(linker, dependencies)
+        #In AIX since shared libraries are archived the dependencies must
+        #depend on .a file with the .so and not directly on the .so file.
+        if self.environment.machines[target.for_machine].is_aix():
+            for i, val in enumerate(internal):
+                internal[i] = linker.get_archive_name(val)
         commands += internal
         # Only non-static built targets need link args and link dependencies
         if not isinstance(target, build.StaticLibrary):
@@ -3582,6 +3701,11 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
             for t in deps.values():
                 # Add the first output of each target to the 'all' target so that
                 # they are all built
+                #Add archive file if shared library in AIX for build all.
+                if isinstance(t, build.SharedLibrary):
+                    if self.environment.machines[t.for_machine].is_aix():
+                        linker, stdlib_args = self.determine_linker_and_stdlib_args(t)
+                        t.get_outputs()[0] = linker.get_archive_name(t.get_outputs()[0])
                 targetlist.append(os.path.join(self.get_target_dir(t), t.get_outputs()[0]))
 
             elem = NinjaBuildElement(self.all_outputs, targ, 'phony', targetlist)

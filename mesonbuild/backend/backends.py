@@ -46,7 +46,7 @@ if T.TYPE_CHECKING:
     from ..compilers import Compiler
     from ..environment import Environment
     from ..interpreter import Interpreter, Test
-    from ..linkers import StaticLinker
+    from ..linkers.linkers import StaticLinker
     from ..mesonlib import FileMode, FileOrString
 
     from typing_extensions import TypedDict
@@ -256,6 +256,13 @@ def get_backend_from_name(backend: str, build: T.Optional[build.Build] = None, i
         return nonebackend.NoneBackend(build, interpreter)
     return None
 
+
+def get_genvslite_backend(genvsname: str, build: T.Optional[build.Build] = None, interpreter: T.Optional['Interpreter'] = None) -> T.Optional['Backend']:
+    if genvsname == 'vs2022':
+        from . import vs2022backend
+        return vs2022backend.Vs2022Backend(build, interpreter, gen_lite = True)
+    return None
+
 # This class contains the basic functionality that is needed by all backends.
 # Feel free to move stuff in and out of it as you see fit.
 class Backend:
@@ -280,7 +287,17 @@ class Backend:
         self.src_to_build = mesonlib.relpath(self.environment.get_build_dir(),
                                              self.environment.get_source_dir())
 
-    def generate(self) -> None:
+    # If requested via 'capture = True', returns captured compile args per
+    # target (e.g. captured_args[target]) that can be used later, for example,
+    # to populate things like intellisense fields in generated visual studio
+    # projects (as is the case when using '--genvslite').
+    #
+    # 'captured_compile_args_per_buildtype_and_target' is only provided when
+    # we expect this backend setup/generation to make use of previously captured
+    # compile args (as is the case when using '--genvslite').
+    def generate(self,
+                 capture: bool = False,
+                 captured_compile_args_per_buildtype_and_target: dict = None) -> T.Optional[dict]:
         raise RuntimeError(f'generate is not implemented in {type(self).__name__}')
 
     def get_target_filename(self, t: T.Union[build.Target, build.CustomTargetIndex], *, warn_multi_output: bool = True) -> str:
@@ -740,7 +757,7 @@ class Backend:
         srcdir = self.environment.get_source_dir()
 
         for dep in target.external_deps:
-            if not isinstance(dep, (dependencies.ExternalLibrary, dependencies.PkgConfigDependency)):
+            if dep.type_name not in {'library', 'pkgconfig'}:
                 continue
             for libpath in dep.link_args:
                 # For all link args that are absolute paths to a library file, add RPATH args
@@ -1006,7 +1023,8 @@ class Backend:
                 continue
 
             if compiler.language == 'vala':
-                if isinstance(dep, dependencies.PkgConfigDependency):
+                if dep.type_name == 'pkgconfig':
+                    assert isinstance(dep, dependencies.ExternalDependency)
                     if dep.name == 'glib-2.0' and dep.version_reqs is not None:
                         for req in dep.version_reqs:
                             if req.startswith(('>=', '==')):
@@ -1075,7 +1093,7 @@ class Backend:
         results = set()
         for dep in target.external_deps:
 
-            if isinstance(dep, dependencies.PkgConfigDependency):
+            if dep.type_name == 'pkgconfig':
                 # If by chance pkg-config knows the bin dir...
                 bindir = dep.get_pkgconfig_variable('bindir', [], default='')
                 if bindir:
