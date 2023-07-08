@@ -59,7 +59,7 @@ if T.TYPE_CHECKING:
 #
 # Pip requires that RCs are named like this: '0.1.0.rc1'
 # But the corresponding Git tag needs to be '0.1.0rc1'
-version = '1.2.0.rc1'
+version = '1.2.0.rc2'
 
 # The next stable version when we are in dev. This is used to allow projects to
 # require meson version >=1.2.0 when using 1.1.99. FeatureNew won't warn when
@@ -82,7 +82,9 @@ _T = T.TypeVar('_T')
 
 
 def get_genvs_default_buildtype_list() -> list:
-    return buildtypelist[1:-2] # just debug, debugoptimized, and release for now but this should probably be configurable through some extra option, alongside --genvslite.
+    # just debug, debugoptimized, and release for now
+    # but this should probably be configurable through some extra option, alongside --genvslite.
+    return buildtypelist[1:-2]
 
 
 class MesonVersionMismatchException(MesonException):
@@ -1257,9 +1259,8 @@ BUILTIN_CORE_OPTIONS: 'MutableKeyedOptionDictType' = OrderedDict([
     (OptionKey('genvslite'),
      BuiltinOption(
          UserComboOption,
-         'Setup multiple buildtype-suffixed ninja-backend build directories (e.g. builddir_[debug/release/etc.]) '
-         'and generate [builddir]_vs containing a Visual Studio solution with multiple configurations that invoke a meson compile of the newly '
-         'setup build directories, as appropriate for the current build configuration (buildtype)',
+         'Setup multiple buildtype-suffixed ninja-backend build directories, '
+         'and a [builddir]_vs containing a Visual Studio meta-backend with multiple configurations that calls into them',
          'vs2022',
          choices=genvslitelist)
      ),

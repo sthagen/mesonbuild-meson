@@ -174,20 +174,15 @@ class MesonApp:
         return src_dir, build_dir
 
     # See class Backend's 'generate' for comments on capture args and returned dictionary.
-    def generate(self,
-                 capture: bool = False,
-                 captured_compile_args_per_buildtype_and_target: dict = None) -> T.Optional[dict]:
+    def generate(self, capture: bool = False, vslite_ctx: dict = None) -> T.Optional[dict]:
         env = environment.Environment(self.source_dir, self.build_dir, self.options)
         mlog.initialize(env.get_log_dir(), self.options.fatal_warnings)
         if self.options.profile:
             mlog.set_timestamp_start(time.monotonic())
         with mesonlib.BuildDirLock(self.build_dir):
-            return self._generate(env, capture = capture, captured_compile_args_per_buildtype_and_target = captured_compile_args_per_buildtype_and_target)
+            return self._generate(env, capture, vslite_ctx)
 
-    def _generate(self,
-                  env: environment.Environment,
-                  capture: bool,
-                  captured_compile_args_per_buildtype_and_target: dict) -> T.Optional[dict]:
+    def _generate(self, env: environment.Environment, capture: bool, vslite_ctx: dict) -> T.Optional[dict]:
         # Get all user defined options, including options that have been defined
         # during a previous invocation or using meson configure.
         user_defined_options = argparse.Namespace(**vars(self.options))
@@ -236,7 +231,7 @@ class MesonApp:
             raise
 
         cdf: T.Optional[str] = None
-        captured_compile_args = None
+        captured_compile_args: T.Optional[dict] = None
         try:
             dumpfile = os.path.join(env.get_scratch_dir(), 'build.dat')
             # We would like to write coredata as late as possible since we use the existence of
@@ -251,11 +246,11 @@ class MesonApp:
             if self.options.profile:
                 fname = f'profile-{intr.backend.name}-backend.log'
                 fname = os.path.join(self.build_dir, 'meson-logs', fname)
-                profile.runctx('intr.backend.generate()', globals(), locals(), filename=fname)
+                profile.runctx('gen_result = intr.backend.generate(capture, vslite_ctx)', globals(), locals(), filename=fname)
+                captured_compile_args = locals()['gen_result']
+                assert captured_compile_args is None or isinstance(captured_compile_args, dict)
             else:
-                captured_compile_args = intr.backend.generate(
-                    capture = capture,
-                    captured_compile_args_per_buildtype_and_target = captured_compile_args_per_buildtype_and_target)
+                captured_compile_args = intr.backend.generate(capture, vslite_ctx)
 
             build.save(b, dumpfile)
             if env.first_invocation:
@@ -330,22 +325,24 @@ def run_genvslite_setup(options: argparse.Namespace) -> None:
     k_backend = mesonlib.OptionKey('backend')
     if k_backend in options.cmd_line_options.keys():
         if options.cmd_line_options[k_backend] != 'ninja':
-            raise MesonException('Explicitly specifying a backend option with \'genvslite\' is not necessary (the ninja backend is always used) but specifying a non-ninja backend conflicts with a \'genvslite\' setup')
+            raise MesonException('Explicitly specifying a backend option with \'genvslite\' is not necessary '
+                                 '(the ninja backend is always used) but specifying a non-ninja backend '
+                                 'conflicts with a \'genvslite\' setup')
     else:
         options.cmd_line_options[k_backend] = 'ninja'
     buildtypes_list = coredata.get_genvs_default_buildtype_list()
-    captured_compile_args_per_buildtype_and_target = {}
+    vslite_ctx = {}
 
     for buildtypestr in buildtypes_list:
         options.builddir = f'{builddir_prefix}_{buildtypestr}' # E.g. builddir_release
         options.cmd_line_options[mesonlib.OptionKey('buildtype')] = buildtypestr
         app = MesonApp(options)
-        captured_compile_args_per_buildtype_and_target[buildtypestr] = app.generate(capture = True)
+        vslite_ctx[buildtypestr] = app.generate(capture=True)
     #Now for generating the 'lite' solution and project files, which will use these builds we've just set up, above.
     options.builddir = f'{builddir_prefix}_vs'
     options.cmd_line_options[mesonlib.OptionKey('genvslite')] = genvsliteval
     app = MesonApp(options)
-    app.generate(capture = False, captured_compile_args_per_buildtype_and_target = captured_compile_args_per_buildtype_and_target)
+    app.generate(capture=False, vslite_ctx=vslite_ctx)
 
 def run(options: T.Union[argparse.Namespace, T.List[str]]) -> int:
     if not isinstance(options, argparse.Namespace):
