@@ -72,6 +72,26 @@ GNU_ERROR_RETURNCODE = 99
 # Exit if 3 Ctrl-C's are received within one second
 MAX_CTRLC = 3
 
+# Define unencodable xml characters' regex for replacing them with their
+# printable representation
+UNENCODABLE_XML_UNICHRS: T.List[T.Tuple[int, int]] = [
+    (0x00, 0x08), (0x0B, 0x0C), (0x0E, 0x1F), (0x7F, 0x84),
+    (0x86, 0x9F), (0xFDD0, 0xFDEF), (0xFFFE, 0xFFFF)]
+# Not narrow build
+if sys.maxunicode >= 0x10000:
+    UNENCODABLE_XML_UNICHRS.extend([
+        (0x1FFFE, 0x1FFFF), (0x2FFFE, 0x2FFFF),
+        (0x3FFFE, 0x3FFFF), (0x4FFFE, 0x4FFFF),
+        (0x5FFFE, 0x5FFFF), (0x6FFFE, 0x6FFFF),
+        (0x7FFFE, 0x7FFFF), (0x8FFFE, 0x8FFFF),
+        (0x9FFFE, 0x9FFFF), (0xAFFFE, 0xAFFFF),
+        (0xBFFFE, 0xBFFFF), (0xCFFFE, 0xCFFFF),
+        (0xDFFFE, 0xDFFFF), (0xEFFFE, 0xEFFFF),
+        (0xFFFFE, 0xFFFFF), (0x10FFFE, 0x10FFFF)])
+UNENCODABLE_XML_CHR_RANGES = [fr'{chr(low)}-{chr(high)}' for (low, high) in UNENCODABLE_XML_UNICHRS]
+UNENCODABLE_XML_CHRS_RE = re.compile('([' + ''.join(UNENCODABLE_XML_CHR_RANGES) + '])')
+
+
 def is_windows() -> bool:
     platname = platform.system().lower()
     return platname == 'windows'
@@ -1148,14 +1168,21 @@ class TestRunRust(TestRun):
 
 TestRun.PROTOCOL_TO_CLASS[TestProtocol.RUST] = TestRunRust
 
+# Check unencodable characters in xml output and replace them with
+# their printable representation
+def replace_unencodable_xml_chars(original_str: str) -> str:
+    # [1:-1] is needed for removing `'` characters from both start and end
+    # of the string
+    replacement_lambda = lambda illegal_chr: repr(illegal_chr.group())[1:-1]
+    return UNENCODABLE_XML_CHRS_RE.sub(replacement_lambda, original_str)
 
 def decode(stream: T.Union[None, bytes]) -> str:
     if stream is None:
         return ''
     try:
-        return stream.decode('utf-8')
+        return replace_unencodable_xml_chars(stream.decode('utf-8'))
     except UnicodeDecodeError:
-        return stream.decode('iso-8859-1', errors='ignore')
+        return replace_unencodable_xml_chars(stream.decode('iso-8859-1', errors='ignore'))
 
 async def read_decode(reader: asyncio.StreamReader,
                       queue: T.Optional['asyncio.Queue[T.Optional[str]]'],
@@ -1606,9 +1633,12 @@ class TestHarness:
             # happen before rebuild_deps(), because we need the correct list of
             # tests and their dependencies to compute
             if not self.options.no_rebuild:
-                ret = subprocess.run(self.ninja + ['build.ninja']).returncode
-                if ret != 0:
-                    raise TestException(f'Could not configure {self.options.wd!r}')
+                teststdo = subprocess.run(self.ninja + ['-n', 'build.ninja'], capture_output=True).stdout
+                if b'ninja: no work to do.' not in teststdo and b'samu: nothing to do' not in teststdo:
+                    stdo = sys.stderr if self.options.list else sys.stdout
+                    ret = subprocess.run(self.ninja + ['build.ninja'], stdout=stdo.fileno())
+                    if ret.returncode != 0:
+                        raise TestException(f'Could not configure {self.options.wd!r}')
 
             self.build_data = build.load(os.getcwd())
             if not self.options.setup:
@@ -1903,9 +1933,9 @@ class TestHarness:
                     # succeed on an invalid pattern.
                     raise MesonException(f'{arg} test name does not match any test')
 
-    def get_tests(self) -> T.List[TestSerialisation]:
+    def get_tests(self, errorfile: T.Optional[T.IO] = sys.stdout) -> T.List[TestSerialisation]:
         if not self.tests:
-            print('No tests defined.')
+            print('No tests defined.', file=errorfile)
             return []
 
         tests = [t for t in self.tests if self.test_suitable(t)]
@@ -1913,7 +1943,7 @@ class TestHarness:
             tests = list(self.tests_from_args(tests))
 
         if not tests:
-            print('No suitable tests defined.')
+            print('No suitable tests defined.', file=errorfile)
             return []
 
         return tests
@@ -2071,7 +2101,7 @@ class TestHarness:
                 await l.finish(self)
 
 def list_tests(th: TestHarness) -> bool:
-    tests = th.get_tests()
+    tests = th.get_tests(errorfile=sys.stderr)
     for t in tests:
         print(th.get_pretty_suite(t))
     return not tests

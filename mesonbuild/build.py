@@ -755,8 +755,19 @@ class BuildTarget(Target):
         self.process_objectlist(objects)
         self.process_kwargs(kwargs)
         self.missing_languages = self.process_compilers()
-        self.link(extract_as_list(kwargs, 'link_with'))
-        self.link_whole(extract_as_list(kwargs, 'link_whole'))
+
+        # self.link_targets and self.link_whole_targets contains libraries from
+        # dependencies (see add_deps()). They have not been processed yet because
+        # we have to call process_compilers() first and we need to process libraries
+        # from link_with and link_whole first.
+        # See https://github.com/mesonbuild/meson/pull/11957#issuecomment-1629243208.
+        link_targets = extract_as_list(kwargs, 'link_with') + self.link_targets
+        link_whole_targets = extract_as_list(kwargs, 'link_whole') + self.link_whole_targets
+        self.link_targets.clear()
+        self.link_whole_targets.clear()
+        self.link(link_targets)
+        self.link_whole(link_whole_targets)
+
         if not any([self.sources, self.generated, self.objects, self.link_whole_targets, self.structured_sources,
                     kwargs.pop('_allow_no_sources', False)]):
             mlog.warning(f'Build target {name} has no sources. '
@@ -1337,8 +1348,8 @@ class BuildTarget(Target):
                 self.extra_files.extend(f for f in dep.extra_files if f not in self.extra_files)
                 self.add_include_dirs(dep.include_directories, dep.get_include_type())
                 self.objects.extend(dep.objects)
-                self.link(dep.libraries)
-                self.link_whole(dep.whole_libraries)
+                self.link_targets.extend(dep.libraries)
+                self.link_whole_targets.extend(dep.whole_libraries)
                 if dep.get_compile_args() or dep.get_link_args():
                     # Those parts that are external.
                     extpart = dependencies.InternalDependency('undefined',
@@ -1398,7 +1409,8 @@ You probably should put it in link_with instead.''')
                 elif t.is_internal():
                     # When we're a static library and we link_with to an
                     # internal/convenience library, promote to link_whole.
-                    return self.link_whole([t])
+                    self.link_whole([t])
+                    continue
             if not isinstance(t, (Target, CustomTargetIndex)):
                 if isinstance(t, dependencies.ExternalLibrary):
                     raise MesonException(textwrap.dedent('''\
@@ -1704,6 +1716,9 @@ class FileInTargetPrivateDir:
     def __init__(self, fname: str):
         self.fname = fname
 
+    def __str__(self) -> str:
+        return self.fname
+
 class FileMaybeInTargetPrivateDir:
     """Union between 'File' and 'FileInTargetPrivateDir'"""
 
@@ -1723,6 +1738,9 @@ class FileMaybeInTargetPrivateDir:
         if isinstance(self.inner, FileInTargetPrivateDir):
             raise RuntimeError('Unreachable code')
         return self.inner.absolute_path(srcdir, builddir)
+
+    def __str__(self) -> str:
+        return self.fname
 
 class Generator(HoldableObject):
     def __init__(self, exe: T.Union['Executable', programs.ExternalProgram],

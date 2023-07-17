@@ -1024,7 +1024,7 @@ class LinuxlikeTests(BasePlatformTests):
 
     def test_cross_find_program(self):
         testdir = os.path.join(self.unit_test_dir, '11 cross prog')
-        crossfile = tempfile.NamedTemporaryFile(mode='w')
+        crossfile = tempfile.NamedTemporaryFile(mode='w', encoding='utf-8')
         print(os.path.join(testdir, 'some_cross_tool.py'))
 
         tool_path = os.path.join(testdir, 'some_cross_tool.py')
@@ -1517,14 +1517,14 @@ class LinuxlikeTests(BasePlatformTests):
     def test_identity_cross(self):
         testdir = os.path.join(self.unit_test_dir, '60 identity cross')
 
-        constantsfile = tempfile.NamedTemporaryFile(mode='w')
+        constantsfile = tempfile.NamedTemporaryFile(mode='w', encoding='utf-8')
         constantsfile.write(textwrap.dedent('''\
             [constants]
             py_ext = '.py'
             '''))
         constantsfile.flush()
 
-        nativefile = tempfile.NamedTemporaryFile(mode='w')
+        nativefile = tempfile.NamedTemporaryFile(mode='w', encoding='utf-8')
         nativefile.write(textwrap.dedent('''\
             [binaries]
             c = ['{}' + py_ext]
@@ -1532,7 +1532,7 @@ class LinuxlikeTests(BasePlatformTests):
         nativefile.flush()
         self.meson_native_files = [constantsfile.name, nativefile.name]
 
-        crossfile = tempfile.NamedTemporaryFile(mode='w')
+        crossfile = tempfile.NamedTemporaryFile(mode='w', encoding='utf-8')
         crossfile.write(textwrap.dedent('''\
             [binaries]
             c = ['{}' + py_ext]
@@ -1549,7 +1549,7 @@ class LinuxlikeTests(BasePlatformTests):
             'CC_FOR_BUILD': '"' + os.path.join(testdir, 'build_wrapper.py') + '"',
             'CC': '"' + os.path.join(testdir, 'host_wrapper.py') + '"',
         }
-        crossfile = tempfile.NamedTemporaryFile(mode='w')
+        crossfile = tempfile.NamedTemporaryFile(mode='w', encoding='utf-8')
         crossfile.write('')
         crossfile.flush()
         self.meson_cross_files = [crossfile.name]
@@ -1845,3 +1845,5 @@ class LinuxlikeTests(BasePlatformTests):
         self.assertIn('build t4-e1: c_LINKER t4-e1.p/main.c.o | libt4-s2.so.p/libt4-s2.so.symbols libt4-s3.a\n', content)
         self.assertIn('build t5-e1: c_LINKER t5-e1.p/main.c.o | libt5-s1.so.p/libt5-s1.so.symbols libt5-s3.a\n', content)
         self.assertIn('build t6-e1: c_LINKER t6-e1.p/main.c.o | libt6-s2.a libt6-s3.a\n', content)
+        self.assertIn('build t7-e1: c_LINKER t7-e1.p/main.c.o | libt7-s3.a\n', content)
+        self.assertIn('build t8-e1: c_LINKER t8-e1.p/main.c.o | libt8-s1.a libt8-s2.a libt8-s3.a\n', content)
