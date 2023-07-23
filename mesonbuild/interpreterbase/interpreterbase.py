@@ -22,7 +22,6 @@ from .baseobjects import (
     InterpreterObject,
     MesonInterpreterObject,
     MutableInterpreterObject,
-    InterpreterObjectTypeVar,
     ObjectHolder,
     IterableObject,
     ContextManagerObject,
@@ -36,7 +35,6 @@ from .exceptions import (
     InterpreterException,
     InvalidArguments,
     InvalidCode,
-    MesonException,
     SubdirDoneRequest,
 )
 
@@ -51,7 +49,7 @@ import typing as T
 import textwrap
 
 if T.TYPE_CHECKING:
-    from .baseobjects import SubProject, TYPE_kwargs, TYPE_var
+    from .baseobjects import InterpreterObjectTypeVar, SubProject, TYPE_kwargs, TYPE_var
     from ..interpreter import Interpreter
 
     HolderMapType = T.Dict[
@@ -319,12 +317,12 @@ class InterpreterBase:
     def evaluate_comparison(self, node: mparser.ComparisonNode) -> InterpreterObject:
         val1 = self.evaluate_statement(node.left)
         if val1 is None:
-            raise MesonException('Cannot compare a void statement on the left-hand side')
+            raise mesonlib.MesonException('Cannot compare a void statement on the left-hand side')
         if isinstance(val1, Disabler):
             return val1
         val2 = self.evaluate_statement(node.right)
         if val2 is None:
-            raise MesonException('Cannot compare a void statement on the right-hand side')
+            raise mesonlib.MesonException('Cannot compare a void statement on the right-hand side')
         if isinstance(val2, Disabler):
             return val2
 
@@ -350,7 +348,7 @@ class InterpreterBase:
     def evaluate_andstatement(self, cur: mparser.AndNode) -> InterpreterObject:
         l = self.evaluate_statement(cur.left)
         if l is None:
-            raise MesonException('Cannot compare a void statement on the left-hand side')
+            raise mesonlib.MesonException('Cannot compare a void statement on the left-hand side')
         if isinstance(l, Disabler):
             return l
         l_bool = l.operator_call(MesonOperator.BOOL, None)
@@ -358,7 +356,7 @@ class InterpreterBase:
             return self._holderify(l_bool)
         r = self.evaluate_statement(cur.right)
         if r is None:
-            raise MesonException('Cannot compare a void statement on the right-hand side')
+            raise mesonlib.MesonException('Cannot compare a void statement on the right-hand side')
         if isinstance(r, Disabler):
             return r
         return self._holderify(r.operator_call(MesonOperator.BOOL, None))
@@ -366,7 +364,7 @@ class InterpreterBase:
     def evaluate_orstatement(self, cur: mparser.OrNode) -> InterpreterObject:
         l = self.evaluate_statement(cur.left)
         if l is None:
-            raise MesonException('Cannot compare a void statement on the left-hand side')
+            raise mesonlib.MesonException('Cannot compare a void statement on the left-hand side')
         if isinstance(l, Disabler):
             return l
         l_bool = l.operator_call(MesonOperator.BOOL, None)
@@ -374,7 +372,7 @@ class InterpreterBase:
             return self._holderify(l_bool)
         r = self.evaluate_statement(cur.right)
         if r is None:
-            raise MesonException('Cannot compare a void statement on the right-hand side')
+            raise mesonlib.MesonException('Cannot compare a void statement on the right-hand side')
         if isinstance(r, Disabler):
             return r
         return self._holderify(r.operator_call(MesonOperator.BOOL, None))
@@ -413,7 +411,7 @@ class InterpreterBase:
         assert isinstance(node, mparser.TernaryNode)
         result = self.evaluate_statement(node.condition)
         if result is None:
-            raise MesonException('Cannot use a void statement as condition for ternary operator.')
+            raise mesonlib.MesonException('Cannot use a void statement as condition for ternary operator.')
         if isinstance(result, Disabler):
             return result
         result.current_node = node

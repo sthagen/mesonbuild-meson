@@ -12,7 +12,7 @@ from typing_extensions import TypedDict, Literal, Protocol
 from .. import build
 from .. import coredata
 from ..compilers import Compiler
-from ..mesonlib import MachineChoice, File, FileMode, FileOrString, OptionKey
+from ..mesonlib import EnvironmentVariables, MachineChoice, File, FileMode, FileOrString, OptionKey
 from ..modules.cmake import CMakeSubprojectOptions
 from ..programs import ExternalProgram
 
@@ -42,7 +42,7 @@ class BaseTest(TypedDict):
     workdir: T.Optional[str]
     depends: T.List[T.Union[build.CustomTarget, build.BuildTarget]]
     priority: int
-    env: build.EnvironmentVariables
+    env: EnvironmentVariables
     suite: T.List[str]
 
 
@@ -164,7 +164,7 @@ class RunTarget(TypedDict):
 
     command: T.List[T.Union[str, build.BuildTarget, build.CustomTarget, ExternalProgram, File]]
     depends: T.List[T.Union[build.BuildTarget, build.CustomTarget]]
-    env: build.EnvironmentVariables
+    env: EnvironmentVariables
 
 
 class CustomTarget(TypedDict):
@@ -179,7 +179,7 @@ class CustomTarget(TypedDict):
     depend_files: T.List[FileOrString]
     depends: T.List[T.Union[build.BuildTarget, build.CustomTarget]]
     depfile: T.Optional[str]
-    env: build.EnvironmentVariables
+    env: EnvironmentVariables
     feed: bool
     input: T.List[T.Union[str, build.BuildTarget, build.CustomTarget, build.CustomTargetIndex,
                           build.ExtractedObjects, build.GeneratedList, ExternalProgram, File]]
@@ -196,7 +196,7 @@ class AddTestSetup(TypedDict):
     timeout_multiplier: int
     is_default: bool
     exclude_suites: T.List[str]
-    env: build.EnvironmentVariables
+    env: EnvironmentVariables
 
 
 class Project(TypedDict):
@@ -240,7 +240,7 @@ class RunCommand(TypedDict):
 
     check: bool
     capture: T.Optional[bool]
-    env: build.EnvironmentVariables
+    env: EnvironmentVariables
 
 
 class FeatureOptionRequire(TypedDict):
@@ -308,3 +308,52 @@ class DoSubproject(ExtractRequired):
     version: T.List[str]
     cmake_options: T.List[str]
     options: T.Optional[CMakeSubprojectOptions]
+
+
+class _BaseBuildTarget(TypedDict):
+
+    """Arguments used by all BuildTarget like functions.
+
+    This really exists because Jar is so different than all of the other
+    BuildTarget functions.
+    """
+
+    override_options: T.Dict[OptionKey, T.Union[str, int, bool, T.List[str]]]
+
+
+class _BuildTarget(_BaseBuildTarget):
+
+    """Arguments shared by non-JAR functions"""
+
+
+class Executable(_BuildTarget):
+    pass
+
+
+class StaticLibrary(_BuildTarget):
+    pass
+
+
+class SharedLibrary(_BuildTarget):
+    pass
+
+
+class SharedModule(_BuildTarget):
+    pass
+
+
+class Library(_BuildTarget):
+
+    """For library, both_library, and as a base for build_target"""
+
+
+class BuildTarget(Library):
+
+    target_type: Literal['executable', 'shared_library', 'static_library',
+                         'shared_module', 'both_libraries', 'library', 'jar']
+
+
+class Jar(_BaseBuildTarget):
+
+    main_class: str
+    java_resources: T.Optional[build.StructuredSources]

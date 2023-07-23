@@ -23,7 +23,7 @@ from .. import compilers
 from .. import envconfig
 from ..wrap import wrap, WrapMode
 from .. import mesonlib
-from ..mesonlib import (MesonBugException, MesonException, HoldableObject,
+from ..mesonlib import (EnvironmentVariables, ExecutableSerialisation, MesonBugException, MesonException, HoldableObject,
                         FileMode, MachineChoice, OptionKey, listify,
                         extract_as_list, has_path_sep, PerMachine)
 from ..programs import ExternalProgram, NonExistingExternalProgram
@@ -36,7 +36,6 @@ from ..interpreterbase import Disabler, disablerIfNotFound
 from ..interpreterbase import FeatureNew, FeatureDeprecated, FeatureBroken, FeatureNewKwargs, FeatureDeprecatedKwargs
 from ..interpreterbase import ObjectHolder, ContextManagerObject
 from ..modules import ExtensionModule, ModuleObject, MutableModuleObject, NewExtensionModule, NotFoundExtensionModule
-from ..backend.backends import ExecutableSerialisation
 
 from . import interpreterobjects as OBJ
 from . import compiler as compilerOBJ
@@ -51,12 +50,16 @@ from .interpreterobjects import (
     NullSubprojectInterpreter,
 )
 from .type_checking import (
+    BUILD_TARGET_KWS,
     COMMAND_KW,
     CT_BUILD_ALWAYS,
     CT_BUILD_ALWAYS_STALE,
     CT_BUILD_BY_DEFAULT,
     CT_INPUT_KW,
     CT_INSTALL_DIR_KW,
+    EXECUTABLE_KWS,
+    JAR_KWS,
+    LIBRARY_KWS,
     MULTI_OUTPUT_KW,
     OUTPUT_KW,
     DEFAULT_OPTIONS,
@@ -79,10 +82,12 @@ from .type_checking import (
     INSTALL_TAG_KW,
     LANGUAGE_KW,
     NATIVE_KW,
-    OVERRIDE_OPTIONS_KW,
     PRESERVE_PATH_KW,
     REQUIRED_KW,
+    SHARED_LIB_KWS,
+    SHARED_MOD_KWS,
     SOURCES_KW,
+    STATIC_LIB_KWS,
     VARIABLES_KW,
     TEST_KWS,
     NoneType,
@@ -199,7 +204,7 @@ class Summary:
     def dump_value(self, arr, list_sep, indent):
         lines_sep = '\n' + ' ' * indent
         if list_sep is None:
-            mlog.log(*arr, sep=lines_sep)
+            mlog.log(*arr, sep=lines_sep, display_timestamp=False)
             return
         max_len = shutil.get_terminal_size().columns
         line = []
@@ -213,7 +218,7 @@ class Summary:
                 line = []
             line.append(v)
             line_len += v_len
-        mlog.log(*line, sep=list_sep)
+        mlog.log(*line, sep=list_sep, display_timestamp=False)
 
 known_library_kwargs = (
     build.known_shlib_kwargs |
@@ -458,7 +463,7 @@ class Interpreter(InterpreterBase, HoldableObject):
             build.SymlinkData: OBJ.SymlinkDataHolder,
             build.InstallDir: OBJ.InstallDirHolder,
             build.IncludeDirs: OBJ.IncludeDirsHolder,
-            build.EnvironmentVariables: OBJ.EnvironmentVariablesHolder,
+            mesonlib.EnvironmentVariables: OBJ.EnvironmentVariablesHolder,
             build.StructuredSources: OBJ.StructuredSourcesHolder,
             compilers.RunResult: compilerOBJ.TryRunResultHolder,
             dependencies.ExternalLibrary: OBJ.ExternalLibraryHolder,
@@ -1806,82 +1811,78 @@ class Interpreter(InterpreterBase, HoldableObject):
     @FeatureDeprecatedKwargs('executable', '0.56.0', ['gui_app'], extra_message="Use 'win_subsystem' instead.")
     @permittedKwargs(build.known_exe_kwargs)
     @typed_pos_args('executable', str, varargs=(str, mesonlib.File, build.CustomTarget, build.CustomTargetIndex, build.GeneratedList, build.StructuredSources, build.ExtractedObjects, build.BuildTarget))
-    @typed_kwargs('executable', OVERRIDE_OPTIONS_KW, allow_unknown=True)
+    @typed_kwargs('executable', *EXECUTABLE_KWS, allow_unknown=True)
     def func_executable(self, node: mparser.BaseNode,
                         args: T.Tuple[str, T.List[BuildTargetSource]],
-                        kwargs) -> build.Executable:
+                        kwargs: kwtypes.Executable) -> build.Executable:
         return self.build_target(node, args, kwargs, build.Executable)
 
     @permittedKwargs(build.known_stlib_kwargs)
     @typed_pos_args('static_library', str, varargs=(str, mesonlib.File, build.CustomTarget, build.CustomTargetIndex, build.GeneratedList, build.StructuredSources, build.ExtractedObjects, build.BuildTarget))
-    @typed_kwargs('static_library', OVERRIDE_OPTIONS_KW, allow_unknown=True)
+    @typed_kwargs('static_library', *STATIC_LIB_KWS, allow_unknown=True)
     def func_static_lib(self, node: mparser.BaseNode,
                         args: T.Tuple[str, T.List[BuildTargetSource]],
-                        kwargs) -> build.StaticLibrary:
+                        kwargs: kwtypes.StaticLibrary) -> build.StaticLibrary:
         return self.build_target(node, args, kwargs, build.StaticLibrary)
 
     @permittedKwargs(build.known_shlib_kwargs)
     @typed_pos_args('shared_library', str, varargs=(str, mesonlib.File, build.CustomTarget, build.CustomTargetIndex, build.GeneratedList, build.StructuredSources, build.ExtractedObjects, build.BuildTarget))
-    @typed_kwargs('shared_library', OVERRIDE_OPTIONS_KW, allow_unknown=True)
+    @typed_kwargs('shared_library', *SHARED_LIB_KWS, allow_unknown=True)
     def func_shared_lib(self, node: mparser.BaseNode,
                         args: T.Tuple[str, T.List[BuildTargetSource]],
-                        kwargs) -> build.SharedLibrary:
+                        kwargs: kwtypes.SharedLibrary) -> build.SharedLibrary:
         holder = self.build_target(node, args, kwargs, build.SharedLibrary)
         holder.shared_library_only = True
         return holder
 
     @permittedKwargs(known_library_kwargs)
     @typed_pos_args('both_libraries', str, varargs=(str, mesonlib.File, build.CustomTarget, build.CustomTargetIndex, build.GeneratedList, build.StructuredSources, build.ExtractedObjects, build.BuildTarget))
-    @typed_kwargs('both_libraries', OVERRIDE_OPTIONS_KW, allow_unknown=True)
+    @typed_kwargs('both_libraries', *LIBRARY_KWS, allow_unknown=True)
     def func_both_lib(self, node: mparser.BaseNode,
                       args: T.Tuple[str, T.List[BuildTargetSource]],
-                      kwargs) -> build.BothLibraries:
+                      kwargs: kwtypes.Library) -> build.BothLibraries:
         return self.build_both_libraries(node, args, kwargs)
 
     @FeatureNew('shared_module', '0.37.0')
     @permittedKwargs(build.known_shmod_kwargs)
     @typed_pos_args('shared_module', str, varargs=(str, mesonlib.File, build.CustomTarget, build.CustomTargetIndex, build.GeneratedList, build.StructuredSources, build.ExtractedObjects, build.BuildTarget))
-    @typed_kwargs('shared_module', OVERRIDE_OPTIONS_KW, allow_unknown=True)
+    @typed_kwargs('shared_module', *SHARED_MOD_KWS, allow_unknown=True)
     def func_shared_module(self, node: mparser.BaseNode,
                            args: T.Tuple[str, T.List[BuildTargetSource]],
-                           kwargs) -> build.SharedModule:
+                           kwargs: kwtypes.SharedModule) -> build.SharedModule:
         return self.build_target(node, args, kwargs, build.SharedModule)
 
     @permittedKwargs(known_library_kwargs)
     @typed_pos_args('library', str, varargs=(str, mesonlib.File, build.CustomTarget, build.CustomTargetIndex, build.GeneratedList, build.StructuredSources, build.ExtractedObjects, build.BuildTarget))
-    @typed_kwargs('library', OVERRIDE_OPTIONS_KW, allow_unknown=True)
+    @typed_kwargs('library', *LIBRARY_KWS, allow_unknown=True)
     def func_library(self, node: mparser.BaseNode,
                      args: T.Tuple[str, T.List[BuildTargetSource]],
-                     kwargs) -> build.Executable:
+                     kwargs: kwtypes.Library) -> build.Executable:
         return self.build_library(node, args, kwargs)
 
     @permittedKwargs(build.known_jar_kwargs)
     @typed_pos_args('jar', str, varargs=(str, mesonlib.File, build.CustomTarget, build.CustomTargetIndex, build.GeneratedList, build.ExtractedObjects, build.BuildTarget))
-    @typed_kwargs('jar', OVERRIDE_OPTIONS_KW, allow_unknown=True)
+    @typed_kwargs('jar', *JAR_KWS, allow_unknown=True)
     def func_jar(self, node: mparser.BaseNode,
                  args: T.Tuple[str, T.List[T.Union[str, mesonlib.File, build.GeneratedTypes]]],
-                 kwargs) -> build.Jar:
+                 kwargs: kwtypes.Jar) -> build.Jar:
         return self.build_target(node, args, kwargs, build.Jar)
 
     @FeatureNewKwargs('build_target', '0.40.0', ['link_whole', 'override_options'])
     @permittedKwargs(known_build_target_kwargs)
     @typed_pos_args('build_target', str, varargs=(str, mesonlib.File, build.CustomTarget, build.CustomTargetIndex, build.GeneratedList, build.StructuredSources, build.ExtractedObjects, build.BuildTarget))
-    @typed_kwargs('build_target', OVERRIDE_OPTIONS_KW, allow_unknown=True)
+    @typed_kwargs('build_target', *BUILD_TARGET_KWS, allow_unknown=True)
     def func_build_target(self, node: mparser.BaseNode,
                           args: T.Tuple[str, T.List[BuildTargetSource]],
-                          kwargs) -> T.Union[build.Executable, build.StaticLibrary, build.SharedLibrary,
-                                             build.SharedModule, build.BothLibraries, build.Jar]:
-        if 'target_type' not in kwargs:
-            raise InterpreterException('Missing target_type keyword argument')
-        target_type = kwargs.pop('target_type')
+                          kwargs: kwtypes.BuildTarget
+                          ) -> T.Union[build.Executable, build.StaticLibrary, build.SharedLibrary,
+                                       build.SharedModule, build.BothLibraries, build.Jar]:
+        target_type = kwargs['target_type']
         if target_type == 'executable':
             return self.build_target(node, args, kwargs, build.Executable)
         elif target_type == 'shared_library':
             return self.build_target(node, args, kwargs, build.SharedLibrary)
         elif target_type == 'shared_module':
-            FeatureNew.single_use(
-                'build_target(target_type: \'shared_module\')',
-                '0.51.0', self.subproject, location=node)
             return self.build_target(node, args, kwargs, build.SharedModule)
         elif target_type == 'static_library':
             return self.build_target(node, args, kwargs, build.StaticLibrary)
@@ -1889,10 +1890,7 @@ class Interpreter(InterpreterBase, HoldableObject):
             return self.build_both_libraries(node, args, kwargs)
         elif target_type == 'library':
             return self.build_library(node, args, kwargs)
-        elif target_type == 'jar':
-            return self.build_target(node, args, kwargs, build.Jar)
-        else:
-            raise InterpreterException('Unknown target_type.')
+        return self.build_target(node, args, kwargs, build.Jar)
 
     @noPosargs
     @typed_kwargs(
@@ -2166,10 +2164,10 @@ class Interpreter(InterpreterBase, HoldableObject):
                   kwargs: 'kwtypes.FuncTest') -> None:
         self.add_test(node, args, kwargs, True)
 
-    def unpack_env_kwarg(self, kwargs: T.Union[build.EnvironmentVariables, T.Dict[str, 'TYPE_var'], T.List['TYPE_var'], str]) -> build.EnvironmentVariables:
+    def unpack_env_kwarg(self, kwargs: T.Union[EnvironmentVariables, T.Dict[str, 'TYPE_var'], T.List['TYPE_var'], str]) -> EnvironmentVariables:
         envlist = kwargs.get('env')
         if envlist is None:
-            return build.EnvironmentVariables()
+            return EnvironmentVariables()
         msg = ENV_KW.validator(envlist)
         if msg:
             raise InvalidArguments(f'"env": {msg}')
@@ -2687,7 +2685,7 @@ class Interpreter(InterpreterBase, HoldableObject):
             mlog.log('Configuring', mlog.bold(output), 'with command')
             cmd, *args = _cmd
             res = self.run_command_impl(node, (cmd, args),
-                                        {'capture': True, 'check': True, 'env': build.EnvironmentVariables()},
+                                        {'capture': True, 'check': True, 'env': EnvironmentVariables()},
                                         True)
             if kwargs['capture']:
                 dst_tmp = ofile_abs + '~'
@@ -2967,7 +2965,7 @@ class Interpreter(InterpreterBase, HoldableObject):
     @typed_pos_args('environment', optargs=[(str, list, dict)])
     @typed_kwargs('environment', ENV_METHOD_KW, ENV_SEPARATOR_KW.evolve(since='0.62.0'))
     def func_environment(self, node: mparser.FunctionNode, args: T.Tuple[T.Union[None, str, T.List['TYPE_var'], T.Dict[str, 'TYPE_var']]],
-                         kwargs: 'TYPE_kwargs') -> build.EnvironmentVariables:
+                         kwargs: 'TYPE_kwargs') -> EnvironmentVariables:
         init = args[0]
         if init is not None:
             FeatureNew.single_use('environment positional arguments', '0.52.0', self.subproject, location=node)
@@ -2977,7 +2975,7 @@ class Interpreter(InterpreterBase, HoldableObject):
             if isinstance(init, dict) and any(i for i in init.values() if isinstance(i, list)):
                 FeatureNew.single_use('List of string in dictionary value', '0.62.0', self.subproject, location=node)
             return env_convertor_with_method(init, kwargs['method'], kwargs['separator'])
-        return build.EnvironmentVariables()
+        return EnvironmentVariables()
 
     @typed_pos_args('join_paths', varargs=str, min_varargs=1)
     @noKwargs

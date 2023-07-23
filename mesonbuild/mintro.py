@@ -429,7 +429,7 @@ def list_deps(coredata: cdata.CoreData, backend: backends.Backend) -> T.List[T.D
             d = holder.held_object
             if isinstance(d, Dependency) and d.found():
                 if d.name in result:
-                    T.cast(T.List[str], result[d.name]['meson_variables']).append(varname)
+                    T.cast('T.List[str]', result[d.name]['meson_variables']).append(varname)
                 else:
                     result[d.name] = _create_result(d, varname)
 
@@ -444,7 +444,7 @@ def get_test_list(testdata: T.List[backends.TestSerialisation]) -> T.List[T.Dict
         else:
             fname = t.fname
         to['cmd'] = fname + t.cmd_args
-        if isinstance(t.env, build.EnvironmentVariables):
+        if isinstance(t.env, mesonlib.EnvironmentVariables):
             to['env'] = t.env.get_env({})
         else:
             to['env'] = t.env

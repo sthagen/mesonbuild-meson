@@ -10,7 +10,7 @@ import typing as T
 from .. import compilers
 from ..build import (CustomTarget, BuildTarget,
                      CustomTargetIndex, ExtractedObjects, GeneratedList, IncludeDirs,
-                     BothLibraries, SharedLibrary, StaticLibrary, Jar, Executable)
+                     BothLibraries, SharedLibrary, StaticLibrary, Jar, Executable, StructuredSources)
 from ..coredata import UserFeatureOption
 from ..dependencies import Dependency, InternalDependency
 from ..interpreterbase.decorators import KwargInfo, ContainerTypeInfo
@@ -478,4 +478,98 @@ TEST_KWS: T.List[KwargInfo] = [
     DEPENDS_KW.evolve(since='0.46.0'),
     KwargInfo('suite', ContainerTypeInfo(list, str), listify=True, default=['']),  # yes, a list of empty string
     KwargInfo('verbose', bool, default=False, since='0.62.0'),
+]
+
+# Applies to all build_target like classes
+_ALL_TARGET_KWS: T.List[KwargInfo] = [
+    OVERRIDE_OPTIONS_KW,
+]
+
+# Applies to all build_target classes except jar
+_BUILD_TARGET_KWS: T.List[KwargInfo] = [
+    *_ALL_TARGET_KWS,
+]
+
+# Arguments exclusive to Executable. These are separated to make integrating
+# them into build_target easier
+_EXCLUSIVE_EXECUTABLE_KWS: T.List[KwargInfo] = []
+
+# The total list of arguments used by Executable
+EXECUTABLE_KWS = [
+    *_BUILD_TARGET_KWS,
+    *_EXCLUSIVE_EXECUTABLE_KWS,
+]
+
+# Arguments exclusive to StaticLibrary. These are separated to make integrating
+# them into build_target easier
+_EXCLUSIVE_STATIC_LIB_KWS: T.List[KwargInfo] = []
+
+# The total list of arguments used by StaticLibrary
+STATIC_LIB_KWS = [
+    *_BUILD_TARGET_KWS,
+    *_EXCLUSIVE_STATIC_LIB_KWS,
+]
+
+# Arguments exclusive to SharedLibrary. These are separated to make integrating
+# them into build_target easier
+_EXCLUSIVE_SHARED_LIB_KWS: T.List[KwargInfo] = []
+
+# The total list of arguments used by SharedLibrary
+SHARED_LIB_KWS = [
+    *_BUILD_TARGET_KWS,
+    *_EXCLUSIVE_SHARED_LIB_KWS,
+]
+
+# Arguments exclusive to SharedModule. These are separated to make integrating
+# them into build_target easier
+_EXCLUSIVE_SHARED_MOD_KWS: T.List[KwargInfo] = []
+
+# The total list of arguments used by SharedModule
+SHARED_MOD_KWS = [
+    *_BUILD_TARGET_KWS,
+    *_EXCLUSIVE_SHARED_MOD_KWS,
+]
+
+# Arguments exclusive to JAR. These are separated to make integrating
+# them into build_target easier
+_EXCLUSIVE_JAR_KWS: T.List[KwargInfo] = [
+    KwargInfo('main_class', str, default=''),
+    KwargInfo('java_resources', (StructuredSources, NoneType), since='0.62.0'),
+]
+
+# The total list of arguments used by JAR
+JAR_KWS = [
+    *_ALL_TARGET_KWS,
+    *_EXCLUSIVE_JAR_KWS,
+]
+
+# Arguments used by both_library and library
+LIBRARY_KWS = [
+    *_BUILD_TARGET_KWS,
+    *_EXCLUSIVE_SHARED_LIB_KWS,
+    *_EXCLUSIVE_SHARED_MOD_KWS,
+    *_EXCLUSIVE_STATIC_LIB_KWS,
+]
+
+# Arguments used by build_Target
+BUILD_TARGET_KWS = [
+    *LIBRARY_KWS,
+    *_EXCLUSIVE_EXECUTABLE_KWS,
+    *[a.evolve(deprecated='1.3.0', deprecated_message='The use of "jar" in "build_target()" is deprecated, and this argument is only used by jar()')
+      for a in _EXCLUSIVE_JAR_KWS],
+    KwargInfo(
+        'target_type',
+        str,
+        required=True,
+        validator=in_set_validator({
+            'executable', 'shared_library', 'static_library', 'shared_module',
+            'both_libraries', 'library', 'jar'
+        }),
+        since_values={
+            'shared_module': '0.51.0',
+        },
+        deprecated_values={
+            'jar': ('1.3.0', 'use the "jar()" function directly'),
+        }
+    )
 ]
