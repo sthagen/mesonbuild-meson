@@ -161,7 +161,7 @@ class Properties:
             self,
             properties: T.Optional[T.Dict[str, T.Optional[T.Union[str, bool, int, T.List[str]]]]] = None,
     ):
-        self.properties = properties or {}  # type: T.Dict[str, T.Optional[T.Union[str, bool, int, T.List[str]]]]
+        self.properties = properties or {}
 
     def has_stdlib(self, language: str) -> bool:
         return language + '_stdlib' in self.properties
@@ -460,7 +460,7 @@ class BinaryTable:
 class CMakeVariables:
     def __init__(self, variables: T.Optional[T.Dict[str, T.Any]] = None) -> None:
         variables = variables or {}
-        self.variables = {}  # type: T.Dict[str, T.List[str]]
+        self.variables: T.Dict[str, T.List[str]] = {}
 
         for key, value in variables.items():
             value = mesonlib.listify(value)

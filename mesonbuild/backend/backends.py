@@ -510,8 +510,8 @@ class Backend:
             self, cmd: T.Sequence[T.Union[programs.ExternalProgram, build.BuildTarget, build.CustomTarget, File, str]],
             workdir: T.Optional[str] = None,
             extra_bdeps: T.Optional[T.List[build.BuildTarget]] = None,
-            capture: T.Optional[bool] = None,
-            feed: T.Optional[bool] = None,
+            capture: T.Optional[str] = None,
+            feed: T.Optional[str] = None,
             env: T.Optional[mesonlib.EnvironmentVariables] = None,
             tag: T.Optional[str] = None,
             verbose: bool = False,
@@ -582,8 +582,8 @@ class Backend:
                              cmd_args: T.Sequence[T.Union[str, mesonlib.File, build.BuildTarget, build.CustomTarget, programs.ExternalProgram]],
                              workdir: T.Optional[str] = None,
                              extra_bdeps: T.Optional[T.List[build.BuildTarget]] = None,
-                             capture: T.Optional[bool] = None,
-                             feed: T.Optional[bool] = None,
+                             capture: T.Optional[str] = None,
+                             feed: T.Optional[str] = None,
                              force_serialize: bool = False,
                              env: T.Optional[mesonlib.EnvironmentVariables] = None,
                              verbose: bool = False) -> T.Tuple[T.Sequence[T.Union[str, File, build.Target, programs.ExternalProgram]], str]:
@@ -638,9 +638,9 @@ class Backend:
                 return es.cmd_args, ''
             args: T.List[str] = []
             if capture:
-                args += ['--capture', str(capture)]
+                args += ['--capture', capture]
             if feed:
-                args += ['--feed', str(feed)]
+                args += ['--feed', feed]
 
             return (
                 self.environment.get_build_command() + ['--internal', 'exe'] + args + ['--'] + es.cmd_args,
@@ -1098,6 +1098,34 @@ class Backend:
                 paths.update(cc.get_library_dirs(self.environment))
         return list(paths)
 
+    @staticmethod
+    @lru_cache(maxsize=None)
+    def search_dll_path(link_arg: str) -> T.Optional[str]:
+        if link_arg.startswith(('-l', '-L')):
+            link_arg = link_arg[2:]
+
+        p = Path(link_arg)
+        if not p.is_absolute():
+            return None
+
+        try:
+            p = p.resolve(strict=True)
+        except FileNotFoundError:
+            return None
+
+        for f in p.parent.glob('*.dll'):
+            # path contains dlls
+            return str(p.parent)
+
+        if p.is_file():
+            p = p.parent
+        # Heuristic: replace *last* occurence of '/lib'
+        binpath = Path('/bin'.join(p.as_posix().rsplit('/lib', maxsplit=1)))
+        for _ in binpath.glob('*.dll'):
+            return str(binpath)
+
+        return None
+
     @classmethod
     @lru_cache(maxsize=None)
     def extract_dll_paths(cls, target: build.BuildTarget) -> T.Set[str]:
@@ -1116,32 +1144,9 @@ class Backend:
                 bindir = dep.get_pkgconfig_variable('bindir', [], default='')
                 if bindir:
                     results.add(bindir)
-
-            for link_arg in dep.link_args:
-                if link_arg.startswith(('-l', '-L')):
-                    link_arg = link_arg[2:]
-                p = Path(link_arg)
-                if not p.is_absolute():
                     continue
 
-                try:
-                    p = p.resolve(strict=True)
-                except FileNotFoundError:
-                    continue
-
-                for _ in p.parent.glob('*.dll'):
-                    # path contains dlls
-                    results.add(str(p.parent))
-                    break
-
-                else:
-                    if p.is_file():
-                        p = p.parent
-                    # Heuristic: replace *last* occurence of '/lib'
-                    binpath = Path('/bin'.join(p.as_posix().rsplit('/lib', maxsplit=1)))
-                    for _ in binpath.glob('*.dll'):
-                        results.add(str(binpath))
-                        break
+            results.update(filter(None, map(cls.search_dll_path, dep.link_args)))  # pylint: disable=bad-builtin
 
         for i in chain(target.link_targets, target.link_whole_targets):
             if isinstance(i, build.BuildTarget):
@@ -1866,9 +1871,6 @@ class Backend:
             assert isinstance(de, build.Data)
             subdir = de.install_dir
             subdir_name = de.install_dir_name
-            if not subdir:
-                subdir = os.path.join(self.environment.get_datadir(), self.interpreter.build.project_name)
-                subdir_name = os.path.join('{datadir}', self.interpreter.build.project_name)
             for src_file, dst_name in zip(de.sources, de.rename):
                 assert isinstance(src_file, mesonlib.File)
                 dst_abs = os.path.join(subdir, dst_name)

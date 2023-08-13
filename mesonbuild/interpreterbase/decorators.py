@@ -270,7 +270,7 @@ def typed_pos_args(name: str, *types: T.Union[T.Type, T.Tuple[T.Type, ...]],
                     diff = num_types + len(optargs) - num_args
                     nargs[i] = tuple(list(args) + [None] * diff)
                 else:
-                    nargs[i] = args
+                    nargs[i] = tuple(args)
             else:
                 nargs[i] = tuple(args)
             return f(*nargs, **wrapped_kwargs)
@@ -606,9 +606,9 @@ class FeatureCheckBase(metaclass=abc.ABCMeta):
     unconditional = False
 
     def __init__(self, feature_name: str, feature_version: str, extra_message: str = ''):
-        self.feature_name = feature_name  # type: str
-        self.feature_version = feature_version    # type: str
-        self.extra_message = extra_message  # type: str
+        self.feature_name = feature_name
+        self.feature_version = feature_version
+        self.extra_message = extra_message
 
     @staticmethod
     def get_target_version(subproject: str) -> str:

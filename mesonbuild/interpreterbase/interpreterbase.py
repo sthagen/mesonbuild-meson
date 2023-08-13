@@ -40,7 +40,7 @@ from .exceptions import (
 
 from .decorators import FeatureNew
 from .disabler import Disabler, is_disabled
-from .helpers import default_resolve_key, flatten, resolve_second_level_holders
+from .helpers import default_resolve_key, flatten, resolve_second_level_holders, stringifyUserArguments
 from .operator import MesonOperator
 from ._unholder import _unholder
 
@@ -93,12 +93,12 @@ class InterpreterBase:
         self.current_lineno = -1
         # Current node set during a function call. This can be used as location
         # when printing a warning message during a method call.
-        self.current_node = None  # type: mparser.BaseNode
+        self.current_node: mparser.BaseNode = None
         # This is set to `version_string` when this statement is evaluated:
         # meson.version().compare_version(version_string)
         # If it was part of a if-clause, it is used to temporally override the
         # current meson version target within that if-block.
-        self.tmp_meson_version = None # type: T.Optional[str]
+        self.tmp_meson_version: T.Optional[str] = None
 
     def handle_meson_version_from_ast(self, strict: bool = True) -> None:
         # do nothing in an AST interpreter
@@ -433,11 +433,12 @@ class InterpreterBase:
             var = str(match.group(1))
             try:
                 val = _unholder(self.variables[var])
-                if not isinstance(val, (str, int, float, bool)):
-                    raise InvalidCode(f'Identifier "{var}" does not name a formattable variable ' +
-                                      '(has to be an integer, a string, a floating point number or a boolean).')
-
-                return str(val)
+                if isinstance(val, (list, dict)):
+                    FeatureNew.single_use('List or dictionary in f-string', '1.3.0', self.subproject, location=self.current_node)
+                try:
+                    return stringifyUserArguments(val, self.subproject)
+                except InvalidArguments as e:
+                    raise InvalidArguments(f'f-string: {str(e)}')
             except KeyError:
                 raise InvalidCode(f'Identifier "{var}" does not name a variable.')
 

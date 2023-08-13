@@ -153,10 +153,19 @@ class AllPlatformTests(BasePlatformTests):
             (result, missing_variables, confdata_useless) = do_conf_str('configuration_file', in_data, confdata, variable_format = vformat)
             return '\n'.join(result)
 
-        def check_formats(confdata, result):
+        def check_meson_format(confdata, result):
             self.assertEqual(conf_str(['#mesondefine VAR'], confdata, 'meson'), result)
+
+        def check_cmake_format_simple(confdata, result):
+            self.assertEqual(conf_str(['#cmakedefine VAR'], confdata, 'cmake'), result)
+
+        def check_cmake_formats_full(confdata, result):
             self.assertEqual(conf_str(['#cmakedefine VAR ${VAR}'], confdata, 'cmake'), result)
             self.assertEqual(conf_str(['#cmakedefine VAR @VAR@'], confdata, 'cmake@'), result)
+
+        def check_formats(confdata, result):
+            check_meson_format(confdata, result)
+            check_cmake_formats_full(confdata, result)
 
         confdata = ConfigurationData()
         # Key error as they do not exists
@@ -164,9 +173,13 @@ class AllPlatformTests(BasePlatformTests):
 
         # Check boolean
         confdata.values = {'VAR': (False, 'description')}
-        check_formats(confdata, '#undef VAR\n')
+        check_meson_format(confdata, '#undef VAR\n')
+        check_cmake_formats_full(confdata, '/* #undef VAR */\n')
+
         confdata.values = {'VAR': (True, 'description')}
-        check_formats(confdata, '#define VAR\n')
+        check_meson_format(confdata, '#define VAR\n')
+        check_cmake_format_simple(confdata, '#define VAR\n')
+        check_cmake_formats_full(confdata, '#define VAR 1\n')
 
         # Check string
         confdata.values = {'VAR': ('value', 'description')}
@@ -175,6 +188,25 @@ class AllPlatformTests(BasePlatformTests):
         # Check integer
         confdata.values = {'VAR': (10, 'description')}
         check_formats(confdata, '#define VAR 10\n')
+
+        # Checking if cmakedefine behaves as it does with cmake
+        confdata.values = {'VAR': ("var", 'description')}
+        self.assertEqual(conf_str(['#cmakedefine VAR @VAR@'], confdata, 'cmake@'), '#define VAR var\n')
+
+        confdata.values = {'VAR': (True, 'description')}
+        self.assertEqual(conf_str(['#cmakedefine01 VAR'], confdata, 'cmake'), '#define VAR 1\n')
+
+        confdata.values = {'VAR': (0, 'description')}
+        self.assertEqual(conf_str(['#cmakedefine01 VAR'], confdata, 'cmake'), '#define VAR 0\n')
+        confdata.values = {'VAR': (False, 'description')}
+        self.assertEqual(conf_str(['#cmakedefine01 VAR'], confdata, 'cmake'), '#define VAR 0\n')
+
+        confdata.values = {}
+        self.assertEqual(conf_str(['#cmakedefine01 VAR'], confdata, 'cmake'), '#define VAR 0\n')
+        self.assertEqual(conf_str(['#cmakedefine VAR @VAR@'], confdata, 'cmake@'), '/* #undef VAR */\n')
+
+        confdata.values = {'VAR': (5, 'description')}
+        self.assertEqual(conf_str(['#cmakedefine VAR'], confdata, 'cmake'), '#define VAR\n')
 
         # Check multiple string with cmake formats
         confdata.values = {'VAR': ('value', 'description')}
@@ -1369,8 +1401,8 @@ class AllPlatformTests(BasePlatformTests):
         targets = self.introspect('--targets')
         # This assumes all of the targets support lto
         for t in targets:
-            for s in t['target_sources']:
-                self.assertTrue(expected.issubset(set(s['parameters'])), f'Incorrect values for {t["name"]}')
+            for src in t['target_sources']:
+                self.assertTrue(expected.issubset(set(src['parameters'])), f'Incorrect values for {t["name"]}')
 
     def test_dist_git(self):
         if not shutil.which('git'):
@@ -2215,7 +2247,7 @@ class AllPlatformTests(BasePlatformTests):
 
         langs = ['c']
         env = get_fake_env()
-        for l in ['cpp', 'cs', 'd', 'java', 'cuda', 'fortran', 'objc', 'objcpp', 'rust']:
+        for l in ['cpp', 'cs', 'd', 'java', 'cuda', 'fortran', 'objc', 'objcpp', 'rust', 'vala']:
             try:
                 comp = detect_compiler_for(env, l, MachineChoice.HOST, True)
                 with tempfile.TemporaryDirectory() as d:
@@ -2231,31 +2263,32 @@ class AllPlatformTests(BasePlatformTests):
 
         for lang in langs:
             for target_type in ('executable', 'library'):
-                if is_windows() and lang == 'fortran' and target_type == 'library':
-                    # non-Gfortran Windows Fortran compilers do not do shared libraries in a Fortran standard way
-                    # see "test cases/fortran/6 dynamic"
-                    fc = detect_compiler_for(env, 'fortran', MachineChoice.HOST, True)
-                    if fc.get_id() in {'intel-cl', 'pgi'}:
-                        continue
-                # test empty directory
-                with tempfile.TemporaryDirectory() as tmpdir:
-                    self._run(self.meson_command + ['init', '--language', lang, '--type', target_type],
-                              workdir=tmpdir)
-                    self._run(self.setup_command + ['--backend=ninja', 'builddir'],
-                              workdir=tmpdir)
-                    self._run(ninja,
-                              workdir=os.path.join(tmpdir, 'builddir'))
-            # test directory with existing code file
-            if lang in {'c', 'cpp', 'd'}:
-                with tempfile.TemporaryDirectory() as tmpdir:
-                    with open(os.path.join(tmpdir, 'foo.' + lang), 'w', encoding='utf-8') as f:
-                        f.write('int main(void) {}')
-                    self._run(self.meson_command + ['init', '-b'], workdir=tmpdir)
-            elif lang in {'java'}:
-                with tempfile.TemporaryDirectory() as tmpdir:
-                    with open(os.path.join(tmpdir, 'Foo.' + lang), 'w', encoding='utf-8') as f:
-                        f.write('public class Foo { public static void main() {} }')
-                    self._run(self.meson_command + ['init', '-b'], workdir=tmpdir)
+                with self.subTest(f'Language: {lang}; type: {target_type}'):
+                    if is_windows() and lang == 'fortran' and target_type == 'library':
+                        # non-Gfortran Windows Fortran compilers do not do shared libraries in a Fortran standard way
+                        # see "test cases/fortran/6 dynamic"
+                        fc = detect_compiler_for(env, 'fortran', MachineChoice.HOST, True)
+                        if fc.get_id() in {'intel-cl', 'pgi'}:
+                            continue
+                    # test empty directory
+                    with tempfile.TemporaryDirectory() as tmpdir:
+                        self._run(self.meson_command + ['init', '--language', lang, '--type', target_type],
+                                  workdir=tmpdir)
+                        self._run(self.setup_command + ['--backend=ninja', 'builddir'],
+                                  workdir=tmpdir)
+                        self._run(ninja,
+                                  workdir=os.path.join(tmpdir, 'builddir'))
+                # test directory with existing code file
+                if lang in {'c', 'cpp', 'd'}:
+                    with tempfile.TemporaryDirectory() as tmpdir:
+                        with open(os.path.join(tmpdir, 'foo.' + lang), 'w', encoding='utf-8') as f:
+                            f.write('int main(void) {}')
+                        self._run(self.meson_command + ['init', '-b'], workdir=tmpdir)
+                elif lang in {'java'}:
+                    with tempfile.TemporaryDirectory() as tmpdir:
+                        with open(os.path.join(tmpdir, 'Foo.' + lang), 'w', encoding='utf-8') as f:
+                            f.write('public class Foo { public static void main() {} }')
+                        self._run(self.meson_command + ['init', '-b'], workdir=tmpdir)
 
     def test_compiler_run_command(self):
         '''
@@ -2721,7 +2754,7 @@ class AllPlatformTests(BasePlatformTests):
         with tempfile.NamedTemporaryFile(mode='w', delete=False, encoding='utf-8') as crossfile:
             crossfile.write(textwrap.dedent(
                 '''[binaries]
-                pkgconfig = '{}'
+                pkg-config = '{}'
 
                 [properties]
 
@@ -2748,7 +2781,7 @@ class AllPlatformTests(BasePlatformTests):
         with tempfile.NamedTemporaryFile(mode='w', delete=False, encoding='utf-8') as crossfile:
             crossfile.write(textwrap.dedent(
                 '''[binaries]
-                pkgconfig = 'pkg-config'
+                pkg-config = 'pkg-config'
 
                 [properties]
                 pkg_config_libdir = ['{}']
@@ -3529,7 +3562,7 @@ class AllPlatformTests(BasePlatformTests):
 
                 string : bar
                 integer: 1
-                boolean: True
+                boolean: true
 
             subsub undefined
 
@@ -3538,12 +3571,12 @@ class AllPlatformTests(BasePlatformTests):
             My Project 1.0
 
               Configuration
-                Some boolean   : False
-                Another boolean: True
+                Some boolean   : false
+                Another boolean: true
                 Some string    : Hello World
                 A list         : string
                                  1
-                                 True
+                                 true
                 empty list     :
                 enabled_opt    : enabled
                 A number       : 1
@@ -4129,7 +4162,8 @@ class AllPlatformTests(BasePlatformTests):
         ]
         bar_expected = [
             'bar',
-            'share/foo/bar.dat',
+            'share/bar',
+            'share/bar/bar.dat',
             'include/bar.h',
             'bin/bar' + exe_suffix,
             'bar/barfile'
@@ -4409,9 +4443,9 @@ class AllPlatformTests(BasePlatformTests):
             Path(installpath, 'usr/share/foo2.h'),
             Path(installpath, 'usr/share/out1.txt'),
             Path(installpath, 'usr/share/out2.txt'),
-            Path(installpath, 'usr/share/install tag'),
-            Path(installpath, 'usr/share/install tag/aaa.txt'),
-            Path(installpath, 'usr/share/install tag/bbb.txt'),
+            Path(installpath, 'usr/share/subproject'),
+            Path(installpath, 'usr/share/subproject/aaa.txt'),
+            Path(installpath, 'usr/share/subproject/bbb.txt'),
         }
 
         def do_install(tags, expected_files, expected_scripts):
@@ -4612,12 +4646,12 @@ class AllPlatformTests(BasePlatformTests):
                     'subproject': None,
                 },
                 f'{testdir}/subprojects/subproject/aaa.txt': {
-                    'destination': '{datadir}/install tag/aaa.txt',
+                    'destination': '{datadir}/subproject/aaa.txt',
                     'tag': None,
                     'subproject': 'subproject',
                 },
                 f'{testdir}/subprojects/subproject/bbb.txt': {
-                    'destination': '{datadir}/install tag/bbb.txt',
+                    'destination': '{datadir}/subproject/bbb.txt',
                     'tag': 'data',
                     'subproject': 'subproject',
                 },

@@ -45,7 +45,7 @@ from mesonbuild.compilers.c import AppleClangCCompiler
 from mesonbuild.compilers.cpp import AppleClangCPPCompiler
 from mesonbuild.compilers.objc import AppleClangObjCCompiler
 from mesonbuild.compilers.objcpp import AppleClangObjCPPCompiler
-from mesonbuild.dependencies.pkgconfig import PkgConfigDependency
+from mesonbuild.dependencies.pkgconfig import PkgConfigDependency, PkgConfigCLI
 import mesonbuild.modules.pkgconfig
 
 PKG_CONFIG = os.environ.get('PKG_CONFIG', 'pkg-config')
@@ -173,7 +173,8 @@ class LinuxlikeTests(BasePlatformTests):
         self.assertEqual(libhello_nolib.get_compile_args(), [])
         self.assertEqual(libhello_nolib.get_pkgconfig_variable('foo', [], None), 'bar')
         self.assertEqual(libhello_nolib.get_pkgconfig_variable('prefix', [], None), self.prefix)
-        if version_compare(PkgConfigDependency.check_pkgconfig(env, libhello_nolib.pkgbin),">=0.29.1"):
+        impl = libhello_nolib.pkgconfig
+        if not isinstance(impl, PkgConfigCLI) or version_compare(PkgConfigCLI.check_pkgconfig(env, impl.pkgbin),">=0.29.1"):
             self.assertEqual(libhello_nolib.get_pkgconfig_variable('escaped_var', [], None), r'hello\ world')
         self.assertEqual(libhello_nolib.get_pkgconfig_variable('unescaped_var', [], None), 'hello world')
 
@@ -517,6 +518,15 @@ class LinuxlikeTests(BasePlatformTests):
         has_cpp20 = (compiler.get_id() not in {'clang', 'gcc'} or
                      compiler.get_id() == 'clang' and _clang_at_least(compiler, '>=10.0.0', None) or
                      compiler.get_id() == 'gcc' and version_compare(compiler.version, '>=10.0.0'))
+        has_cpp2b = (compiler.get_id() not in {'clang', 'gcc'} or
+                     compiler.get_id() == 'clang' and _clang_at_least(compiler, '>=12.0.0', None) or
+                     compiler.get_id() == 'gcc' and version_compare(compiler.version, '>=12.2.0'))
+        has_cpp23 = (compiler.get_id() not in {'clang', 'gcc'} or
+                     compiler.get_id() == 'clang' and _clang_at_least(compiler, '>=17.0.0', None) or
+                     compiler.get_id() == 'gcc' and version_compare(compiler.version, '>=12.2.0'))
+        has_cpp26 = (compiler.get_id() not in {'clang', 'gcc'} or
+                     compiler.get_id() == 'clang' and _clang_at_least(compiler, '>=17.0.0', None) or
+                     compiler.get_id() == 'gcc' and version_compare(compiler.version, '>=14.0.0'))
         has_c18 = (compiler.get_id() not in {'clang', 'gcc'} or
                    compiler.get_id() == 'clang' and _clang_at_least(compiler, '>=8.0.0', '>=11.0') or
                    compiler.get_id() == 'gcc' and version_compare(compiler.version, '>=8.0.0'))
@@ -532,6 +542,12 @@ class LinuxlikeTests(BasePlatformTests):
             elif '++2a' in v and not has_cpp2a_c17:  # https://en.cppreference.com/w/cpp/compiler_support
                 continue
             elif '++20' in v and not has_cpp20:
+                continue
+            elif '++2b' in v and not has_cpp2b:
+                continue
+            elif '++23' in v and not has_cpp23:
+                continue
+            elif ('++26' in v or '++2c' in v) and not has_cpp26:
                 continue
             # now C
             elif '17' in v and not has_cpp2a_c17:
@@ -1153,7 +1169,7 @@ class LinuxlikeTests(BasePlatformTests):
 
         # Regression test: This used to modify the value of `pkg_config_path`
         # option, adding the meson-uninstalled directory to it.
-        PkgConfigDependency.setup_env({}, env, MachineChoice.HOST, uninstalled=True)
+        PkgConfigCLI.setup_env({}, env, MachineChoice.HOST, uninstalled=True)
 
         pkg_config_path = env.coredata.options[OptionKey('pkg_config_path')].value
         self.assertEqual(pkg_config_path, [pkg_dir])
@@ -1847,3 +1863,6 @@ class LinuxlikeTests(BasePlatformTests):
         self.assertIn('build t6-e1: c_LINKER t6-e1.p/main.c.o | libt6-s2.a libt6-s3.a\n', content)
         self.assertIn('build t7-e1: c_LINKER t7-e1.p/main.c.o | libt7-s3.a\n', content)
         self.assertIn('build t8-e1: c_LINKER t8-e1.p/main.c.o | libt8-s1.a libt8-s2.a libt8-s3.a\n', content)
+        self.assertIn('build t9-e1: c_LINKER t9-e1.p/main.c.o | libt9-s1.a libt9-s2.a libt9-s3.a\n', content)
+        self.assertIn('build t12-e1: c_LINKER t12-e1.p/main.c.o | libt12-s1.a libt12-s2.a libt12-s3.a\n', content)
+        self.assertIn('build t13-e1: c_LINKER t13-e1.p/main.c.o | libt12-s1.a libt13-s3.a\n', content)

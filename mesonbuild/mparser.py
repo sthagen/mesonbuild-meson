@@ -163,7 +163,7 @@ class Lexer:
         col = 0
         while loc < len(self.code):
             matched = False
-            value = None  # type: T.Union[str, bool, int]
+            value: T.Union[str, bool, int] = None
             for (tid, reg) in self.token_specification:
                 mo = reg.match(self.code, loc)
                 if mo:
@@ -610,7 +610,7 @@ class Parser:
     def __init__(self, code: str, filename: str):
         self.lexer = Lexer(code)
         self.stream = self.lexer.lex(filename)
-        self.current = Token('eof', '', 0, 0, 0, (0, 0), None)  # type: Token
+        self.current: Token = Token('eof', '', 0, 0, 0, (0, 0), None)
         self.getsym()
         self.in_ternary = False
 
@@ -811,7 +811,7 @@ class Parser:
         return EmptyNode(self.current.lineno, self.current.colno, self.current.filename)
 
     def key_values(self) -> ArgumentNode:
-        s = self.statement()  # type: BaseNode
+        s = self.statement()
         a = ArgumentNode(self.current)
 
         while not isinstance(s, EmptyNode):
@@ -828,7 +828,7 @@ class Parser:
         return a
 
     def args(self) -> ArgumentNode:
-        s = self.statement()  # type: BaseNode
+        s = self.statement()
         a = ArgumentNode(self.current)
 
         while not isinstance(s, EmptyNode):
@@ -875,7 +875,7 @@ class Parser:
         self.expect('id')
         assert isinstance(t.value, str)
         varname = t
-        varnames = [t.value]  # type: T.List[str]
+        varnames = [t.value]
 
         if self.accept('comma'):
             t = self.current

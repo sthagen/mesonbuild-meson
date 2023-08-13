@@ -20,13 +20,13 @@ from . import ExtensionModule, ModuleInfo
 from .. import mesonlib
 from .. import mlog
 from ..coredata import UserFeatureOption
-from ..build import known_shmod_kwargs
+from ..build import known_shmod_kwargs, CustomTarget, CustomTargetIndex, BuildTarget, GeneratedList, StructuredSources, ExtractedObjects, SharedModule
 from ..dependencies import NotFoundDependency
 from ..dependencies.detect import get_dep_identifier, find_external_dependency
 from ..dependencies.python import BasicPythonExternalProgram, python_factory, _PythonDependencyBase
-from ..interpreter import ExternalProgramHolder, extract_required_kwarg, permitted_dependency_kwargs
-from ..interpreter import primitives as P_OBJ
-from ..interpreter.type_checking import NoneType, PRESERVE_PATH_KW
+from ..interpreter import extract_required_kwarg, permitted_dependency_kwargs, primitives as P_OBJ
+from ..interpreter.interpreterobjects import _ExternalProgramHolder
+from ..interpreter.type_checking import NoneType, PRESERVE_PATH_KW, SHARED_MOD_KWS
 from ..interpreterbase import (
     noPosargs, noKwargs, permittedKwargs, ContainerTypeInfo,
     InvalidArguments, typed_pos_args, typed_kwargs, KwargInfo,
@@ -36,13 +36,14 @@ from ..mesonlib import MachineChoice
 from ..programs import ExternalProgram, NonExistingExternalProgram
 
 if T.TYPE_CHECKING:
-    from typing_extensions import TypedDict
+    from typing_extensions import TypedDict, NotRequired
 
     from . import ModuleState
-    from ..build import Build, SharedModule, Data
+    from ..build import Build, Data
     from ..dependencies import Dependency
     from ..interpreter import Interpreter
-    from ..interpreter.kwargs import ExtractRequired
+    from ..interpreter.interpreter import BuildTargetSource
+    from ..interpreter.kwargs import ExtractRequired, SharedModule as SharedModuleKw
     from ..interpreterbase.baseobjects import TYPE_var, TYPE_kwargs
 
     class PyInstallKw(TypedDict):
@@ -57,10 +58,18 @@ if T.TYPE_CHECKING:
         modules: T.List[str]
         pure: T.Optional[bool]
 
+    class ExtensionModuleKw(SharedModuleKw):
+
+        subdir: NotRequired[T.Optional[str]]
+
+    MaybePythonProg = T.Union[NonExistingExternalProgram, 'PythonExternalProgram']
+
 
 mod_kwargs = {'subdir'}
 mod_kwargs.update(known_shmod_kwargs)
 mod_kwargs -= {'name_prefix', 'name_suffix'}
+
+_MOD_KWARGS = [k for k in SHARED_MOD_KWS if k.name not in {'name_prefix', 'name_suffix'}]
 
 
 class PythonExternalProgram(BasicPythonExternalProgram):
@@ -77,12 +86,12 @@ class PythonExternalProgram(BasicPythonExternalProgram):
             self.purelib = self._get_path(state, 'purelib')
         return ret
 
-    def _get_path(self, state: T.Optional['ModuleState'], key: str) -> None:
+    def _get_path(self, state: T.Optional['ModuleState'], key: str) -> str:
         rel_path = self.info['install_paths'][key][1:]
         if not state:
             # This happens only from run_project_tests.py
             return rel_path
-        value = state.get_option(f'{key}dir', module='python')
+        value = T.cast('str', state.get_option(f'{key}dir', module='python'))
         if value:
             if state.is_user_defined_option('install_env', module='python'):
                 raise mesonlib.MesonException(f'python.{key}dir and python.install_env are mutually exclusive')
@@ -105,11 +114,11 @@ class PythonExternalProgram(BasicPythonExternalProgram):
 
 _PURE_KW = KwargInfo('pure', (bool, NoneType))
 _SUBDIR_KW = KwargInfo('subdir', str, default='')
+_DEFAULTABLE_SUBDIR_KW = KwargInfo('subdir', (str, NoneType))
 
-
-class PythonInstallation(ExternalProgramHolder):
+class PythonInstallation(_ExternalProgramHolder['PythonExternalProgram']):
     def __init__(self, python: 'PythonExternalProgram', interpreter: 'Interpreter'):
-        ExternalProgramHolder.__init__(self, python, interpreter)
+        _ExternalProgramHolder.__init__(self, python, interpreter)
         info = python.info
         prefix = self.interpreter.environment.coredata.get_option(mesonlib.OptionKey('prefix'))
         assert isinstance(prefix, str), 'for mypy'
@@ -138,14 +147,17 @@ class PythonInstallation(ExternalProgramHolder):
         })
 
     @permittedKwargs(mod_kwargs)
-    def extension_module_method(self, args: T.List['TYPE_var'], kwargs: 'TYPE_kwargs') -> 'SharedModule':
+    @typed_pos_args('python.extension_module', str, varargs=(str, mesonlib.File, CustomTarget, CustomTargetIndex, GeneratedList, StructuredSources, ExtractedObjects, BuildTarget))
+    @typed_kwargs('python.extension_module', *_MOD_KWARGS, _DEFAULTABLE_SUBDIR_KW, allow_unknown=True)
+    def extension_module_method(self, args: T.Tuple[str, T.List[BuildTargetSource]], kwargs: ExtensionModuleKw) -> 'SharedModule':
         if 'install_dir' in kwargs:
-            if 'subdir' in kwargs:
+            if kwargs['subdir'] is not None:
                 raise InvalidArguments('"subdir" and "install_dir" are mutually exclusive')
         else:
-            subdir = kwargs.pop('subdir', '')
-            if not isinstance(subdir, str):
-                raise InvalidArguments('"subdir" argument must be a string.')
+            # We want to remove 'subdir', but it may be None and we want to replace it with ''
+            # It must be done this way since we don't allow both `install_dir`
+            # and `subdir` to be set at the same time
+            subdir = kwargs.pop('subdir') or ''
 
             kwargs['install_dir'] = self._get_install_dir_impl(False, subdir)
 
@@ -164,7 +176,7 @@ class PythonInstallation(ExternalProgramHolder):
         # msys2's python3 has "-cpython-36m.dll", we have to be clever
         # FIXME: explain what the specific cleverness is here
         split, suffix = self.suffix.rsplit('.', 1)
-        args[0] += split
+        args = (args[0] + split, args[1])
 
         kwargs['name_prefix'] = ''
         kwargs['name_suffix'] = suffix
@@ -173,7 +185,7 @@ class PythonInstallation(ExternalProgramHolder):
                 (self.is_pypy or mesonlib.version_compare(self.version, '>=3.9')):
             kwargs['gnu_symbol_visibility'] = 'inlineshidden'
 
-        return self.interpreter.func_shared_module(None, args, kwargs)
+        return self.interpreter.build_target(self.current_node, args, kwargs, SharedModule)
 
     def _dependency_method_impl(self, kwargs: TYPE_kwargs) -> Dependency:
         for_machine = self.interpreter.machine_from_native_kwarg(kwargs)
@@ -224,7 +236,6 @@ class PythonInstallation(ExternalProgramHolder):
             self.interpreter.source_strings_to_files(args[0]),
             install_dir,
             mesonlib.FileMode(), rename=None, tag=tag, install_data_type='python',
-            install_dir_name=install_dir.optname,
             preserve_path=kwargs['preserve_path'])
 
     @noPosargs
@@ -294,7 +305,7 @@ class PythonModule(ExtensionModule):
 
     def __init__(self, interpreter: 'Interpreter') -> None:
         super().__init__(interpreter)
-        self.installations: T.Dict[str, ExternalProgram] = {}
+        self.installations: T.Dict[str, MaybePythonProg] = {}
         self.methods.update({
             'find_installation': self.find_installation,
         })
@@ -368,7 +379,7 @@ class PythonModule(ExtensionModule):
         else:
             return None
 
-    def _find_installation_impl(self, state: 'ModuleState', display_name: str, name_or_path: str, required: bool) -> ExternalProgram:
+    def _find_installation_impl(self, state: 'ModuleState', display_name: str, name_or_path: str, required: bool) -> MaybePythonProg:
         if not name_or_path:
             python = PythonExternalProgram('python3', mesonlib.python_command)
         else:
@@ -411,7 +422,7 @@ class PythonModule(ExtensionModule):
         _PURE_KW.evolve(default=True, since='0.64.0'),
     )
     def find_installation(self, state: 'ModuleState', args: T.Tuple[T.Optional[str]],
-                          kwargs: 'FindInstallationKw') -> ExternalProgram:
+                          kwargs: 'FindInstallationKw') -> MaybePythonProg:
         feature_check = FeatureNew('Passing "feature" option to find_installation', '0.48.0')
         disabled, required, feature = extract_required_kwarg(kwargs, state.subproject, feature_check)
 
@@ -473,6 +484,7 @@ class PythonModule(ExtensionModule):
                 raise mesonlib.MesonException('{} is missing modules: {}'.format(name_or_path or 'python', ', '.join(missing_modules)))
             return NonExistingExternalProgram(python.name)
         else:
+            assert isinstance(python, PythonExternalProgram), 'for mypy'
             python = copy.copy(python)
             python.pure = kwargs['pure']
             python.run_bytecompile.setdefault(python.info['version'], False)

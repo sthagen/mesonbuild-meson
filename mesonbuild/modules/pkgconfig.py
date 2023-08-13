@@ -26,7 +26,7 @@ from .. import dependencies
 from .. import mesonlib
 from .. import mlog
 from ..coredata import BUILTIN_DIR_OPTIONS
-from ..dependencies.pkgconfig import PkgConfigDependency
+from ..dependencies.pkgconfig import PkgConfigDependency, PkgConfigCLI
 from ..interpreter.type_checking import D_MODULE_VERSIONS_KW, INSTALL_DIR_KW, VARIABLES_KW, NoneType
 from ..interpreterbase import FeatureNew, FeatureDeprecated
 from ..interpreterbase.decorators import ContainerTypeInfo, KwargInfo, typed_kwargs, typed_pos_args
@@ -391,7 +391,8 @@ class PkgConfigModule(NewExtensionModule):
         })
 
     def postconf_hook(self, b: build.Build) -> None:
-        b.devenv.append(self.devenv)
+        if self.devenv is not None:
+            b.devenv.append(self.devenv)
 
     def _get_lname(self, l: T.Union[build.SharedLibrary, build.StaticLibrary, build.CustomTarget, build.CustomTargetIndex],
                    msg: str, pcfile: str) -> str:
@@ -740,7 +741,7 @@ class PkgConfigModule(NewExtensionModule):
                     self._metadata[lib.get_id()] = MetaData(
                         filebase, name, state.current_node)
         if self.devenv is None:
-            self.devenv = PkgConfigDependency.get_env(state.environment, mesonlib.MachineChoice.HOST, uninstalled=True)
+            self.devenv = PkgConfigCLI.get_env(state.environment, mesonlib.MachineChoice.HOST, uninstalled=True)
         return ModuleReturnValue(res, [res])
 
 

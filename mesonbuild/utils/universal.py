@@ -487,6 +487,9 @@ class MachineChoice(enum.IntEnum):
     BUILD = 0
     HOST = 1
 
+    def __str__(self) -> str:
+        return f'{self.get_lower_case_name()} machine'
+
     def get_lower_case_name(self) -> str:
         return PerMachine('build', 'host')[self]
 
@@ -1204,6 +1207,8 @@ def do_replacement(regex: T.Pattern[str], line: str,
                 var, _ = confdata.get(varname)
                 if isinstance(var, str):
                     var_str = var
+                elif isinstance(var, bool):
+                    var_str = str(int(var))
                 elif isinstance(var, int):
                     var_str = str(var)
                 else:
@@ -1217,8 +1222,17 @@ def do_replacement(regex: T.Pattern[str], line: str,
 
 def do_define(regex: T.Pattern[str], line: str, confdata: 'ConfigurationData',
               variable_format: Literal['meson', 'cmake', 'cmake@'], subproject: T.Optional[SubProject] = None) -> str:
+    cmake_bool_define = False
+    if variable_format != "meson":
+        cmake_bool_define = "cmakedefine01" in line
+
     def get_cmake_define(line: str, confdata: 'ConfigurationData') -> str:
         arr = line.split()
+
+        if cmake_bool_define:
+            (v, desc) = confdata.get(arr[1])
+            return str(int(bool(v)))
+
         define_value: T.List[str] = []
         for token in arr[2:]:
             try:
@@ -1240,22 +1254,29 @@ def do_define(regex: T.Pattern[str], line: str, confdata: 'ConfigurationData',
     try:
         v, _ = confdata.get(varname)
     except KeyError:
-        return '/* #undef %s */\n' % varname
-    if isinstance(v, bool):
+        if cmake_bool_define:
+            return '#define %s 0\n' % varname
+        else:
+            return '/* #undef %s */\n' % varname
+
+    if isinstance(v, str) or variable_format != "meson":
+        if variable_format == 'meson':
+            result = v
+        else:
+            if not cmake_bool_define and not v:
+                return '/* #undef %s */\n' % varname
+
+            result = get_cmake_define(line, confdata)
+        result = f'#define {varname} {result}'.strip() + '\n'
+        result, _ = do_replacement(regex, result, variable_format, confdata)
+        return result
+    elif isinstance(v, bool):
         if v:
             return '#define %s\n' % varname
         else:
             return '#undef %s\n' % varname
     elif isinstance(v, int):
         return '#define %s %d\n' % (varname, v)
-    elif isinstance(v, str):
-        if variable_format == 'meson':
-            result = v
-        else:
-            result = get_cmake_define(line, confdata)
-        result = f'#define {varname} {result}\n'
-        result, _ = do_replacement(regex, result, variable_format, confdata)
-        return result
     else:
         raise MesonException('#mesondefine argument "%s" is of unknown type.' % varname)
 
@@ -1292,7 +1313,7 @@ def do_conf_str(src: str, data: T.List[str], confdata: 'ConfigurationData',
     # during substitution so we can warn the user to use the `copy:` kwarg.
     confdata_useless = not confdata.keys()
     for line in data:
-        if line.startswith(search_token):
+        if line.lstrip().startswith(search_token):
             confdata_useless = False
             line = do_define(regex, line, confdata, variable_format, subproject)
         else:
@@ -1505,7 +1526,7 @@ def Popen_safe_legacy(args: T.List[str], write: T.Optional[str] = None,
                       **kwargs: T.Any) -> T.Tuple['subprocess.Popen[str]', str, str]:
     p = subprocess.Popen(args, universal_newlines=False, close_fds=False,
                          stdin=stdin, stdout=stdout, stderr=stderr, **kwargs)
-    input_ = None  # type: T.Optional[bytes]
+    input_: T.Optional[bytes] = None
     if write is not None:
         input_ = write.encode('utf-8')
     o, e = p.communicate(input_)
@@ -1526,7 +1547,13 @@ def Popen_safe_logged(args: T.List[str], msg: str = 'Called', **kwargs: T.Any) -
     '''
     Wrapper around Popen_safe that assumes standard piped o/e and logs this to the meson log.
     '''
-    p, o, e = Popen_safe(args, **kwargs)
+    try:
+        p, o, e = Popen_safe(args, **kwargs)
+    except Exception as excp:
+        mlog.debug('-----------')
+        mlog.debug(f'{msg}: `{join_args(args)}` -> {excp}')
+        raise
+
     rc, out, err = p.returncode, o.strip(), e.strip()
     mlog.debug('-----------')
     mlog.debug(f'{msg}: `{join_args(args)}` -> {rc}')

@@ -721,9 +721,9 @@ class BuildTarget(Target):
             environment: environment.Environment,
             compilers: T.Dict[str, 'Compiler'],
             kwargs):
-        super().__init__(name, subdir, subproject, True, for_machine, environment)
+        super().__init__(name, subdir, subproject, True, for_machine, environment, install=kwargs.get('install', False))
         self.all_compilers = compilers
-        self.compilers = OrderedDict() # type: OrderedDict[str, Compiler]
+        self.compilers: OrderedDict[str, Compiler] = OrderedDict()
         self.objects: T.List[ObjectTypes] = []
         self.structured_sources = structured_sources
         self.external_deps: T.List[dependencies.Dependency] = []
@@ -739,7 +739,6 @@ class BuildTarget(Target):
         # The list of all files outputted by this target. Useful in cases such
         # as Vala which generates .vapi and .h besides the compiled output.
         self.outputs = [self.filename]
-        self.need_install = False
         self.pch: T.Dict[str, T.List[str]] = {}
         self.extra_args: T.Dict[str, T.List['FileOrString']] = {}
         self.sources: T.List[File] = []
@@ -805,7 +804,7 @@ class BuildTarget(Target):
         return unity_opt == 'on' or (unity_opt == 'subprojects' and self.subproject != '')
 
     def validate_install(self):
-        if self.for_machine is MachineChoice.BUILD and self.need_install:
+        if self.for_machine is MachineChoice.BUILD and self.install:
             if self.environment.is_cross_build():
                 raise InvalidArguments('Tried to install a target for the build machine in a cross build.')
             else:
@@ -1091,8 +1090,6 @@ class BuildTarget(Target):
     def process_kwargs(self, kwargs):
         self.process_kwargs_base(kwargs)
         self.original_kwargs = kwargs
-        kwargs.get('modules', [])
-        self.need_install = kwargs.get('install', self.need_install)
 
         for lang in all_languages:
             lang_args = extract_as_list(kwargs, f'{lang}_args')
@@ -1150,21 +1147,12 @@ class BuildTarget(Target):
                                         (str, bool))
         self.install_mode = kwargs.get('install_mode', None)
         self.install_tag = stringlistify(kwargs.get('install_tag', [None]))
-        if isinstance(self, Executable):
-            # This kwarg is deprecated. The value of "none" means that the kwarg
-            # was not specified and win_subsystem should be used instead.
-            self.gui_app = None
-            if 'gui_app' in kwargs:
-                if 'win_subsystem' in kwargs:
-                    raise InvalidArguments('Can specify only gui_app or win_subsystem for a target, not both.')
-                self.gui_app = kwargs['gui_app']
-                if not isinstance(self.gui_app, bool):
-                    raise InvalidArguments('Argument gui_app must be boolean.')
-            self.win_subsystem = self.validate_win_subsystem(kwargs.get('win_subsystem', 'console'))
-        elif 'gui_app' in kwargs:
-            raise InvalidArguments('Argument gui_app can only be used on executables.')
-        elif 'win_subsystem' in kwargs:
-            raise InvalidArguments('Argument win_subsystem can only be used on executables.')
+        if not isinstance(self, Executable):
+            # build_target will always populate these as `None`, which is fine
+            if kwargs.get('gui_app') is not None:
+                raise InvalidArguments('Argument gui_app can only be used on executables.')
+            if kwargs.get('win_subsystem') is not None:
+                raise InvalidArguments('Argument win_subsystem can only be used on executables.')
         extra_files = extract_as_list(kwargs, 'extra_files')
         for i in extra_files:
             assert isinstance(i, File)
@@ -1245,12 +1233,6 @@ class BuildTarget(Target):
             raise InvalidArguments(f'Invalid rust_dependency_map "{rust_dependency_map}": must be a dictionary with string values.')
         self.rust_dependency_map = rust_dependency_map
 
-    def validate_win_subsystem(self, value: str) -> str:
-        value = value.lower()
-        if re.fullmatch(r'(boot_application|console|efi_application|efi_boot_service_driver|efi_rom|efi_runtime_driver|native|posix|windows)(,\d+(\.\d+)?)?', value) is None:
-            raise InvalidArguments(f'Invalid value for win_subsystem: {value}.')
-        return value
-
     def _extract_pic_pie(self, kwargs, arg: str, option: str):
         # Check if we have -fPIC, -fpic, -fPIE, or -fpie in cflags
         all_flags = self.extra_args['c'] + self.extra_args['cpp']
@@ -1323,7 +1305,7 @@ class BuildTarget(Target):
         return self.generated
 
     def should_install(self) -> bool:
-        return self.need_install
+        return self.install
 
     def has_pch(self) -> bool:
         return bool(self.pch)
@@ -1364,8 +1346,8 @@ class BuildTarget(Target):
                     self.process_sourcelist(dep.get_sources())
                 self.add_deps(dep.ext_deps)
             elif isinstance(dep, BuildTarget):
-                raise InvalidArguments('''Tried to use a build target as a dependency.
-You probably should put it in link_with instead.''')
+                raise InvalidArguments(f'Tried to use a build target {dep.name} as a dependency of target {self.name}.\n'
+                                       'You probably should put it in link_with instead.')
             else:
                 # This is a bit of a hack. We do not want Build to know anything
                 # about the interpreter so we can't import it and use isinstance.
@@ -1398,17 +1380,6 @@ You probably should put it in link_with instead.''')
 
     def link(self, targets):
         for t in targets:
-            if isinstance(self, StaticLibrary) and self.need_install:
-                if isinstance(t, (CustomTarget, CustomTargetIndex)):
-                    if not t.should_install():
-                        mlog.warning(f'Try to link an installed static library target {self.name} with a'
-                                     'custom target that is not installed, this might cause problems'
-                                     'when you try to use this static library')
-                elif t.is_internal():
-                    # When we're a static library and we link_with to an
-                    # internal/convenience library, promote to link_whole.
-                    self.link_whole([t])
-                    continue
             if not isinstance(t, (Target, CustomTargetIndex)):
                 if isinstance(t, dependencies.ExternalLibrary):
                     raise MesonException(textwrap.dedent('''\
@@ -1421,6 +1392,11 @@ You probably should put it in link_with instead.''')
                 raise InvalidArguments(f'{t!r} is not a target.')
             if not t.is_linkable_target():
                 raise InvalidArguments(f"Link target '{t!s}' is not linkable.")
+            if isinstance(self, StaticLibrary) and self.install and t.is_internal():
+                # When we're a static library and we link_with to an
+                # internal/convenience library, promote to link_whole.
+                self.link_whole([t], promoted=True)
+                continue
             if isinstance(self, SharedLibrary) and isinstance(t, StaticLibrary) and not t.pic:
                 msg = f"Can't link non-PIC static library {t.name!r} into shared library {self.name!r}. "
                 msg += "Use the 'pic' option to static_library to build with PIC."
@@ -1433,7 +1409,7 @@ You probably should put it in link_with instead.''')
                     mlog.warning(msg + ' This will fail in cross build.')
             self.link_targets.append(t)
 
-    def link_whole(self, targets):
+    def link_whole(self, targets, promoted: bool = False):
         for t in targets:
             if isinstance(t, (CustomTarget, CustomTargetIndex)):
                 if not t.is_linkable_target():
@@ -1453,40 +1429,49 @@ You probably should put it in link_with instead.''')
                 else:
                     mlog.warning(msg + ' This will fail in cross build.')
             if isinstance(self, StaticLibrary) and not self.uses_rust():
-                if isinstance(t, (CustomTarget, CustomTargetIndex)) or t.uses_rust():
-                    # There are cases we cannot do this, however. In Rust, for
-                    # example, this can't be done with Rust ABI libraries, though
-                    # it could be done with C ABI libraries, though there are
-                    # several meson issues that need to be fixed:
-                    # https://github.com/mesonbuild/meson/issues/10722
-                    # https://github.com/mesonbuild/meson/issues/10723
-                    # https://github.com/mesonbuild/meson/issues/10724
-                    # FIXME: We could extract the .a archive to get object files
-                    raise InvalidArguments('Cannot link_whole a custom or Rust target into a static library')
                 # When we're a static library and we link_whole: to another static
                 # library, we need to add that target's objects to ourselves.
+                self.check_can_extract_objects(t, origin=self, promoted=promoted)
                 self.objects += [t.extract_all_objects()]
                 # If we install this static library we also need to include objects
                 # from all uninstalled static libraries it depends on.
-                if self.need_install:
-                    for lib in t.get_internal_static_libraries():
+                if self.install:
+                    for lib in t.get_internal_static_libraries(origin=self):
                         self.objects += [lib.extract_all_objects()]
             self.link_whole_targets.append(t)
 
     @lru_cache(maxsize=None)
-    def get_internal_static_libraries(self) -> OrderedSet[Target]:
+    def get_internal_static_libraries(self, origin: StaticLibrary) -> OrderedSet[Target]:
         result: OrderedSet[Target] = OrderedSet()
-        self.get_internal_static_libraries_recurse(result)
+        self.get_internal_static_libraries_recurse(result, origin)
         return result
 
-    def get_internal_static_libraries_recurse(self, result: OrderedSet[Target]) -> None:
+    def get_internal_static_libraries_recurse(self, result: OrderedSet[Target], origin: StaticLibrary) -> None:
         for t in self.link_targets:
             if t.is_internal() and t not in result:
+                self.check_can_extract_objects(t, origin, promoted=True)
                 result.add(t)
-                t.get_internal_static_libraries_recurse(result)
+                t.get_internal_static_libraries_recurse(result, origin)
         for t in self.link_whole_targets:
             if t.is_internal():
-                t.get_internal_static_libraries_recurse(result)
+                t.get_internal_static_libraries_recurse(result, origin)
+
+    def check_can_extract_objects(self, t: T.Union[Target, CustomTargetIndex], origin: StaticLibrary, promoted: bool = False) -> None:
+        if isinstance(t, (CustomTarget, CustomTargetIndex)) or t.uses_rust():
+            # To extract objects from a custom target we would have to extract
+            # the archive, WIP implementation can be found in
+            # https://github.com/mesonbuild/meson/pull/9218.
+            # For Rust C ABI we could in theory have access to objects, but there
+            # are several meson issues that need to be fixed:
+            # https://github.com/mesonbuild/meson/issues/10722
+            # https://github.com/mesonbuild/meson/issues/10723
+            # https://github.com/mesonbuild/meson/issues/10724
+            m = (f'Cannot link_whole a custom or Rust target {t.name!r} into a static library {origin.name!r}. '
+                 'Instead, pass individual object files with the "objects:" keyword argument if possible.')
+            if promoted:
+                m += (f' Meson had to promote link to link_whole because {origin.name!r} is installed but not {t.name!r},'
+                      f' and thus has to include objects from {t.name!r} to be usable.')
+            raise InvalidArguments(m)
 
     def add_pch(self, language: str, pchlist: T.List[str]) -> None:
         if not pchlist:
@@ -1554,7 +1539,7 @@ You probably should put it in link_with instead.''')
 
         See: https://github.com/mesonbuild/meson/issues/1653
         '''
-        langs = [] # type: T.List[str]
+        langs: T.List[str] = []
 
         # Check if any of the external libraries were written in this language
         for dep in self.external_deps:
@@ -1912,6 +1897,7 @@ class Executable(BuildTarget):
             kwargs['pie'] = environment.coredata.options[key].value
         super().__init__(name, subdir, subproject, for_machine, sources, structured_sources, objects,
                          environment, compilers, kwargs)
+        self.win_subsystem = kwargs.get('win_subsystem') or 'console'
         # Check for export_dynamic
         self.export_dynamic = kwargs.get('export_dynamic', False)
         if not isinstance(self.export_dynamic, bool):
@@ -2133,7 +2119,7 @@ class StaticLibrary(BuildTarget):
         return True
 
     def is_internal(self) -> bool:
-        return not self.need_install
+        return not self.install
 
 class SharedLibrary(BuildTarget):
     known_kwargs = known_shlib_kwargs
@@ -2400,7 +2386,7 @@ class SharedLibrary(BuildTarget):
             elif isinstance(path, File):
                 # When passing a generated file.
                 self.vs_module_defs = path
-            elif hasattr(path, 'get_filename'):
+            elif isinstance(path, CustomTarget):
                 # When passing output of a Custom Target
                 self.vs_module_defs = File.from_built_file(path.subdir, path.get_filename())
             else:

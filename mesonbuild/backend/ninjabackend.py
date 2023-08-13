@@ -167,7 +167,7 @@ class NinjaCommandArg:
         return self.s
 
     @staticmethod
-    def list(l: str, q: Quoting) -> T.List[NinjaCommandArg]:
+    def list(l: T.List[str], q: Quoting) -> T.List[NinjaCommandArg]:
         return [NinjaCommandArg(i, q) for i in l]
 
 @dataclass
@@ -299,7 +299,7 @@ class NinjaRule:
         return estimate
 
 class NinjaBuildElement:
-    def __init__(self, all_outputs, outfilenames, rulename, infilenames, implicit_outs=None):
+    def __init__(self, all_outputs: T.Set[str], outfilenames, rulename, infilenames, implicit_outs=None):
         self.implicit_outfilenames = implicit_outs or []
         if isinstance(outfilenames, str):
             self.outfilenames = [outfilenames]
@@ -317,7 +317,7 @@ class NinjaBuildElement:
         self.all_outputs = all_outputs
         self.output_errors = ''
 
-    def add_dep(self, dep):
+    def add_dep(self, dep: T.Union[str, T.List[str]]) -> None:
         if isinstance(dep, list):
             self.deps.update(dep)
         else:
@@ -329,7 +329,7 @@ class NinjaBuildElement:
         else:
             self.orderdeps.add(dep)
 
-    def add_item(self, name, elems):
+    def add_item(self, name: str, elems: T.Union[str, T.List[str, CompilerArgs]]) -> None:
         # Always convert from GCC-style argument naming to the naming used by the
         # current compiler. Also filter system include paths, deduplicate, etc.
         if isinstance(elems, CompilerArgs):
@@ -426,7 +426,7 @@ class NinjaBuildElement:
         for n in self.outfilenames:
             if n in self.all_outputs:
                 self.output_errors = f'Multiple producers for Ninja target "{n}". Please rename your targets.'
-            self.all_outputs[n] = True
+            self.all_outputs.add(n)
 
 @dataclass
 class RustDep:
@@ -485,13 +485,13 @@ class NinjaBackend(backends.Backend):
         self.name = 'ninja'
         self.ninja_filename = 'build.ninja'
         self.fortran_deps = {}
-        self.all_outputs = {}
+        self.all_outputs: T.Set[str] = set()
         self.introspection_data = {}
         self.created_llvm_ir_rule = PerMachine(False, False)
         self.rust_crates: T.Dict[str, RustCrate] = {}
         self.implicit_meson_outs = []
 
-    def create_phony_target(self, all_outputs, dummy_outfile, rulename, phony_infilename, implicit_outs=None):
+    def create_phony_target(self, dummy_outfile: str, rulename: str, phony_infilename: str) -> NinjaBuildElement:
         '''
         We need to use aliases for targets that might be used as directory
         names to workaround a Ninja bug that breaks `ninja -t clean`.
@@ -503,10 +503,10 @@ class NinjaBackend(backends.Backend):
             raise AssertionError(f'Invalid usage of create_phony_target with {dummy_outfile!r}')
 
         to_name = f'meson-internal__{dummy_outfile}'
-        elem = NinjaBuildElement(all_outputs, dummy_outfile, 'phony', to_name)
+        elem = NinjaBuildElement(self.all_outputs, dummy_outfile, 'phony', to_name)
         self.add_build(elem)
 
-        return NinjaBuildElement(all_outputs, to_name, rulename, phony_infilename, implicit_outs)
+        return NinjaBuildElement(self.all_outputs, to_name, rulename, phony_infilename)
 
     def detect_vs_dep_prefix(self, tempfilename):
         '''VS writes its dependency in a locale dependent format.
@@ -1083,7 +1083,7 @@ class NinjaBackend(backends.Backend):
             return False
         return True
 
-    def generate_dependency_scan_target(self, target, compiled_sources, source2object, generated_source_files: T.List[mesonlib.File],
+    def generate_dependency_scan_target(self, target: build.BuildTarget, compiled_sources, source2object, generated_source_files: T.List[mesonlib.File],
                                         object_deps: T.List['mesonlib.FileOrString']) -> None:
         if not self.should_use_dyndeps_for_target(target):
             return
@@ -1209,7 +1209,7 @@ class NinjaBackend(backends.Backend):
                                                               env=target_env,
                                                               verbose=True)
             cmd_type = f' (wrapped by meson {reason})' if reason else ''
-            elem = self.create_phony_target(self.all_outputs, target_name, 'CUSTOM_COMMAND', [])
+            elem = self.create_phony_target(target_name, 'CUSTOM_COMMAND', [])
             elem.add_item('COMMAND', meson_exe_cmd)
             elem.add_item('description', f'Running external command {target.name}{cmd_type}')
             elem.add_item('pool', 'console')
@@ -1240,38 +1240,38 @@ class NinjaBackend(backends.Backend):
                       (['--use_llvm_cov'] if use_llvm_cov else []))
 
     def generate_coverage_rules(self, gcovr_exe: T.Optional[str], gcovr_version: T.Optional[str]):
-        e = self.create_phony_target(self.all_outputs, 'coverage', 'CUSTOM_COMMAND', 'PHONY')
+        e = self.create_phony_target('coverage', 'CUSTOM_COMMAND', 'PHONY')
         self.generate_coverage_command(e, [])
         e.add_item('description', 'Generates coverage reports')
         self.add_build(e)
         self.generate_coverage_legacy_rules(gcovr_exe, gcovr_version)
 
     def generate_coverage_legacy_rules(self, gcovr_exe: T.Optional[str], gcovr_version: T.Optional[str]):
-        e = self.create_phony_target(self.all_outputs, 'coverage-html', 'CUSTOM_COMMAND', 'PHONY')
+        e = self.create_phony_target('coverage-html', 'CUSTOM_COMMAND', 'PHONY')
         self.generate_coverage_command(e, ['--html'])
         e.add_item('description', 'Generates HTML coverage report')
         self.add_build(e)
 
         if gcovr_exe:
-            e = self.create_phony_target(self.all_outputs, 'coverage-xml', 'CUSTOM_COMMAND', 'PHONY')
+            e = self.create_phony_target('coverage-xml', 'CUSTOM_COMMAND', 'PHONY')
             self.generate_coverage_command(e, ['--xml'])
             e.add_item('description', 'Generates XML coverage report')
             self.add_build(e)
 
-            e = self.create_phony_target(self.all_outputs, 'coverage-text', 'CUSTOM_COMMAND', 'PHONY')
+            e = self.create_phony_target('coverage-text', 'CUSTOM_COMMAND', 'PHONY')
             self.generate_coverage_command(e, ['--text'])
             e.add_item('description', 'Generates text coverage report')
             self.add_build(e)
 
             if mesonlib.version_compare(gcovr_version, '>=4.2'):
-                e = self.create_phony_target(self.all_outputs, 'coverage-sonarqube', 'CUSTOM_COMMAND', 'PHONY')
+                e = self.create_phony_target('coverage-sonarqube', 'CUSTOM_COMMAND', 'PHONY')
                 self.generate_coverage_command(e, ['--sonarqube'])
                 e.add_item('description', 'Generates Sonarqube XML coverage report')
                 self.add_build(e)
 
     def generate_install(self):
         self.create_install_data_files()
-        elem = self.create_phony_target(self.all_outputs, 'install', 'CUSTOM_COMMAND', 'PHONY')
+        elem = self.create_phony_target('install', 'CUSTOM_COMMAND', 'PHONY')
         elem.add_dep('all')
         elem.add_item('DESC', 'Installing files.')
         elem.add_item('COMMAND', self.environment.get_build_command() + ['install', '--no-rebuild'])
@@ -1285,7 +1285,7 @@ class NinjaBackend(backends.Backend):
             cmd += ['--no-stdsplit']
         if self.environment.coredata.get_option(OptionKey('errorlogs')):
             cmd += ['--print-errorlogs']
-        elem = self.create_phony_target(self.all_outputs, 'test', 'CUSTOM_COMMAND', ['all', 'PHONY'])
+        elem = self.create_phony_target('test', 'CUSTOM_COMMAND', ['all', 'PHONY'])
         elem.add_item('COMMAND', cmd)
         elem.add_item('DESC', 'Running all tests.')
         elem.add_item('pool', 'console')
@@ -1295,7 +1295,7 @@ class NinjaBackend(backends.Backend):
         cmd = self.environment.get_build_command(True) + [
             'test', '--benchmark', '--logbase',
             'benchmarklog', '--num-processes=1', '--no-rebuild']
-        elem = self.create_phony_target(self.all_outputs, 'benchmark', 'CUSTOM_COMMAND', ['all', 'PHONY'])
+        elem = self.create_phony_target('benchmark', 'CUSTOM_COMMAND', ['all', 'PHONY'])
         elem.add_item('COMMAND', cmd)
         elem.add_item('DESC', 'Running benchmark suite.')
         elem.add_item('pool', 'console')
@@ -1335,19 +1335,19 @@ class NinjaBackend(backends.Backend):
                                 'Regenerating build files.',
                                 extra='generator = 1'))
 
-    def add_rule_comment(self, comment):
+    def add_rule_comment(self, comment: NinjaComment) -> None:
         self.rules.append(comment)
 
-    def add_build_comment(self, comment):
+    def add_build_comment(self, comment: NinjaComment) -> None:
         self.build_elements.append(comment)
 
-    def add_rule(self, rule):
+    def add_rule(self, rule: NinjaRule) -> None:
         if rule.name in self.ruledict:
             raise MesonException(f'Tried to add rule {rule.name} twice.')
         self.rules.append(rule)
         self.ruledict[rule.name] = rule
 
-    def add_build(self, build):
+    def add_build(self, build: NinjaBuildElement) -> None:
         build.check_outputs()
         self.build_elements.append(build)
 
@@ -1358,7 +1358,7 @@ class NinjaBackend(backends.Backend):
             else:
                 mlog.warning(f"build statement for {build.outfilenames} references nonexistent rule {build.rulename}")
 
-    def write_rules(self, outfile):
+    def write_rules(self, outfile: T.TextIO) -> None:
         for b in self.build_elements:
             if isinstance(b, NinjaBuildElement):
                 b.count_rule_references()
@@ -1366,12 +1366,12 @@ class NinjaBackend(backends.Backend):
         for r in self.rules:
             r.write(outfile)
 
-    def write_builds(self, outfile):
+    def write_builds(self, outfile: T.TextIO) -> None:
         for b in ProgressBar(self.build_elements, desc='Writing build.ninja'):
             b.write(outfile)
         mlog.log_timestamp("build.ninja generated")
 
-    def generate_phony(self):
+    def generate_phony(self) -> None:
         self.add_build_comment(NinjaComment('Phony build target, always out of date'))
         elem = NinjaBuildElement(self.all_outputs, 'PHONY', 'phony', '')
         self.add_build(elem)
@@ -3095,7 +3095,7 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
         assert isinstance(rel_src, str)
         return (rel_obj, rel_src.replace('\\', '/'))
 
-    def add_dependency_scanner_entries_to_element(self, target, compiler, element, src):
+    def add_dependency_scanner_entries_to_element(self, target: build.BuildTarget, compiler, element, src):
         if not self.should_use_dyndeps_for_target(target):
             return
         if isinstance(target, build.CompileTarget):
@@ -3109,7 +3109,7 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
         element.add_item('dyndep', dep_scan_file)
         element.add_orderdep(dep_scan_file)
 
-    def get_dep_scan_file_for(self, target):
+    def get_dep_scan_file_for(self, target: build.BuildTarget) -> str:
         return os.path.join(self.get_target_private_dir(target), 'depscan.dd')
 
     def add_header_deps(self, target, ninja_element, header_deps):
@@ -3120,7 +3120,7 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
                 d = os.path.join(self.get_target_private_dir(target), d)
             ninja_element.add_dep(d)
 
-    def has_dir_part(self, fname):
+    def has_dir_part(self, fname: mesonlib.FileOrString) -> bool:
         # FIXME FIXME: The usage of this is a terrible and unreliable hack
         if isinstance(fname, File):
             return fname.subdir != ''
@@ -3277,16 +3277,13 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
     def get_target_type_link_args_post_dependencies(self, target, linker):
         commands = []
         if isinstance(target, build.Executable):
-            # If gui_app is significant on this platform, add the appropriate linker arguments.
+            # If win_subsystem is significant on this platform, add the appropriate linker arguments.
             # Unfortunately this can't be done in get_target_type_link_args, because some misguided
             # libraries (such as SDL2) add -mwindows to their link flags.
             m = self.environment.machines[target.for_machine]
 
             if m.is_windows() or m.is_cygwin():
-                if target.gui_app is not None:
-                    commands += linker.get_gui_app_args(target.gui_app)
-                else:
-                    commands += linker.get_win_subsystem_args(target.win_subsystem)
+                commands += linker.get_win_subsystem_args(target.win_subsystem)
         return commands
 
     def get_link_whole_args(self, linker, target):
@@ -3582,7 +3579,7 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
                 self.implicit_meson_outs.append(aliasfile)
 
     def generate_custom_target_clean(self, trees: T.List[str]) -> str:
-        e = self.create_phony_target(self.all_outputs, 'clean-ctlist', 'CUSTOM_COMMAND', 'PHONY')
+        e = self.create_phony_target('clean-ctlist', 'CUSTOM_COMMAND', 'PHONY')
         d = CleanTrees(self.environment.get_build_dir(), trees)
         d_file = os.path.join(self.environment.get_scratch_dir(), 'cleantrees.dat')
         e.add_item('COMMAND', self.environment.get_build_command() + ['--internal', 'cleantrees', d_file])
@@ -3593,13 +3590,13 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
             pickle.dump(d, ofile)
         return 'clean-ctlist'
 
-    def generate_gcov_clean(self):
-        gcno_elem = self.create_phony_target(self.all_outputs, 'clean-gcno', 'CUSTOM_COMMAND', 'PHONY')
+    def generate_gcov_clean(self) -> None:
+        gcno_elem = self.create_phony_target('clean-gcno', 'CUSTOM_COMMAND', 'PHONY')
         gcno_elem.add_item('COMMAND', mesonlib.get_meson_command() + ['--internal', 'delwithsuffix', '.', 'gcno'])
         gcno_elem.add_item('description', 'Deleting gcno files')
         self.add_build(gcno_elem)
 
-        gcda_elem = self.create_phony_target(self.all_outputs, 'clean-gcda', 'CUSTOM_COMMAND', 'PHONY')
+        gcda_elem = self.create_phony_target('clean-gcda', 'CUSTOM_COMMAND', 'PHONY')
         gcda_elem.add_item('COMMAND', mesonlib.get_meson_command() + ['--internal', 'delwithsuffix', '.', 'gcda'])
         gcda_elem.add_item('description', 'Deleting gcda files')
         self.add_build(gcda_elem)
@@ -3614,14 +3611,14 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
         # affect behavior in any other way.
         return sorted(cmds)
 
-    def generate_dist(self):
-        elem = self.create_phony_target(self.all_outputs, 'dist', 'CUSTOM_COMMAND', 'PHONY')
+    def generate_dist(self) -> None:
+        elem = self.create_phony_target('dist', 'CUSTOM_COMMAND', 'PHONY')
         elem.add_item('DESC', 'Creating source packages')
         elem.add_item('COMMAND', self.environment.get_build_command() + ['dist'])
         elem.add_item('pool', 'console')
         self.add_build(elem)
 
-    def generate_scanbuild(self):
+    def generate_scanbuild(self) -> None:
         if not environment.detect_scanbuild():
             return
         if 'scan-build' in self.all_outputs:
@@ -3629,12 +3626,12 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
         cmd = self.environment.get_build_command() + \
             ['--internal', 'scanbuild', self.environment.source_dir, self.environment.build_dir] + \
             self.environment.get_build_command() + self.get_user_option_args()
-        elem = self.create_phony_target(self.all_outputs, 'scan-build', 'CUSTOM_COMMAND', 'PHONY')
+        elem = self.create_phony_target('scan-build', 'CUSTOM_COMMAND', 'PHONY')
         elem.add_item('COMMAND', cmd)
         elem.add_item('pool', 'console')
         self.add_build(elem)
 
-    def generate_clangtool(self, name, extra_arg=None):
+    def generate_clangtool(self, name: str, extra_arg: T.Optional[str] = None) -> None:
         target_name = 'clang-' + name
         extra_args = []
         if extra_arg:
@@ -3648,24 +3645,24 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
         cmd = self.environment.get_build_command() + \
             ['--internal', 'clang' + name, self.environment.source_dir, self.environment.build_dir] + \
             extra_args
-        elem = self.create_phony_target(self.all_outputs, target_name, 'CUSTOM_COMMAND', 'PHONY')
+        elem = self.create_phony_target(target_name, 'CUSTOM_COMMAND', 'PHONY')
         elem.add_item('COMMAND', cmd)
         elem.add_item('pool', 'console')
         self.add_build(elem)
 
-    def generate_clangformat(self):
+    def generate_clangformat(self) -> None:
         if not environment.detect_clangformat():
             return
         self.generate_clangtool('format')
         self.generate_clangtool('format', 'check')
 
-    def generate_clangtidy(self):
+    def generate_clangtidy(self) -> None:
         import shutil
         if not shutil.which('clang-tidy'):
             return
         self.generate_clangtool('tidy')
 
-    def generate_tags(self, tool, target_name):
+    def generate_tags(self, tool: str, target_name: str) -> None:
         import shutil
         if not shutil.which(tool):
             return
@@ -3673,13 +3670,13 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
             return
         cmd = self.environment.get_build_command() + \
             ['--internal', 'tags', tool, self.environment.source_dir]
-        elem = self.create_phony_target(self.all_outputs, target_name, 'CUSTOM_COMMAND', 'PHONY')
+        elem = self.create_phony_target(target_name, 'CUSTOM_COMMAND', 'PHONY')
         elem.add_item('COMMAND', cmd)
         elem.add_item('pool', 'console')
         self.add_build(elem)
 
     # For things like scan-build and other helper tools we might have.
-    def generate_utils(self):
+    def generate_utils(self) -> None:
         self.generate_scanbuild()
         self.generate_clangformat()
         self.generate_clangtidy()
@@ -3687,12 +3684,12 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
         self.generate_tags('ctags', 'ctags')
         self.generate_tags('cscope', 'cscope')
         cmd = self.environment.get_build_command() + ['--internal', 'uninstall']
-        elem = self.create_phony_target(self.all_outputs, 'uninstall', 'CUSTOM_COMMAND', 'PHONY')
+        elem = self.create_phony_target('uninstall', 'CUSTOM_COMMAND', 'PHONY')
         elem.add_item('COMMAND', cmd)
         elem.add_item('pool', 'console')
         self.add_build(elem)
 
-    def generate_ending(self):
+    def generate_ending(self) -> None:
         for targ, deps in [
                 ('all', self.get_build_by_default_targets()),
                 ('meson-test-prereq', self.get_testlike_targets()),
@@ -3715,7 +3712,7 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
             elem = NinjaBuildElement(self.all_outputs, targ, 'phony', targetlist)
             self.add_build(elem)
 
-        elem = self.create_phony_target(self.all_outputs, 'clean', 'CUSTOM_COMMAND', 'PHONY')
+        elem = self.create_phony_target('clean', 'CUSTOM_COMMAND', 'PHONY')
         elem.add_item('COMMAND', self.ninja_command + ['-t', 'clean'])
         elem.add_item('description', 'Cleaning')
 
@@ -3818,7 +3815,7 @@ def _scan_fortran_file_deps(src: Path, srcdir: Path, dirname: Path, tdeps, compi
                     # a common occurrence, which would lead to lots of
                     # distracting noise.
                     continue
-                srcfile = srcdir / tdeps[usename].fname  # type: Path
+                srcfile = srcdir / tdeps[usename].fname
                 if not srcfile.is_file():
                     if srcfile.name != src.name:  # generated source file
                         pass
@@ -3840,7 +3837,7 @@ def _scan_fortran_file_deps(src: Path, srcdir: Path, dirname: Path, tdeps, compi
                     ancestor_child = '_'.join(parents)
                     if ancestor_child not in tdeps:
                         raise MesonException("submodule {} relies on ancestor module {} that was not found.".format(submodmatch.group(2).lower(), ancestor_child.split('_', maxsplit=1)[0]))
-                    submodsrcfile = srcdir / tdeps[ancestor_child].fname  # type: Path
+                    submodsrcfile = srcdir / tdeps[ancestor_child].fname
                     if not submodsrcfile.is_file():
                         if submodsrcfile.name != src.name:  # generated source file
                             pass

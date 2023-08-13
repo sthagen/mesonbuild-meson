@@ -807,7 +807,7 @@ class CoreData:
                 continue
 
             oldval = self.options[key]
-            if type(oldval) != type(value):
+            if type(oldval) is not type(value):
                 self.options[key] = value
             elif oldval.choices != value.choices:
                 # If the choices have changed, use the new value, but attempt
@@ -992,9 +992,11 @@ class MachineFileParser():
             value = value.replace('\\', '\\\\')
             try:
                 ast = mparser.Parser(value, 'machinefile').parse()
+                if not ast.lines:
+                    raise EnvironmentException('value cannot be empty')
                 res = self._evaluate_statement(ast.lines[0])
-            except MesonException:
-                raise EnvironmentException(f'Malformed value in machine file variable {entry!r}.')
+            except MesonException as e:
+                raise EnvironmentException(f'Malformed value in machine file variable {entry!r}: {str(e)}.')
             except KeyError as e:
                 raise EnvironmentException(f'Undefined constant {e.args[0]!r} in machine file variable {entry!r}.')
             section[entry] = res
