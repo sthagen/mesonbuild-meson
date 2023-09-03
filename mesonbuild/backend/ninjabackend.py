@@ -664,9 +664,9 @@ class NinjaBackend(backends.Backend):
         os.replace(tempfilename, outfilename)
         mlog.cmd_ci_include(outfilename)  # For CI debugging
         # Refresh Ninja's caches. https://github.com/ninja-build/ninja/pull/1685
-        if mesonlib.version_compare(self.ninja_version, '>=1.10.0') and os.path.exists('.ninja_deps'):
-            subprocess.call(self.ninja_command + ['-t', 'restat'])
-            subprocess.call(self.ninja_command + ['-t', 'cleandead'])
+        if mesonlib.version_compare(self.ninja_version, '>=1.10.0') and os.path.exists(os.path.join(self.environment.build_dir, '.ninja_log')):
+            subprocess.call(self.ninja_command + ['-t', 'restat'], cwd=self.environment.build_dir)
+            subprocess.call(self.ninja_command + ['-t', 'cleandead'], cwd=self.environment.build_dir)
         self.generate_compdb()
         self.generate_rust_project_json()
 
@@ -1147,7 +1147,7 @@ class NinjaBackend(backends.Backend):
                 deps.append(os.path.join(self.get_target_dir(i), output))
         return deps
 
-    def generate_custom_target(self, target):
+    def generate_custom_target(self, target: build.CustomTarget):
         self.custom_target_generator_inputs(target)
         (srcs, ofilenames, cmd) = self.eval_custom_target_command(target)
         deps = self.unwrap_dep_list(target)
@@ -1185,7 +1185,7 @@ class NinjaBackend(backends.Backend):
             elem.add_item('pool', 'console')
         full_name = Path(target.subdir, target.name).as_posix()
         elem.add_item('COMMAND', cmd)
-        elem.add_item('description', f'Generating {full_name} with a custom command{cmd_type}')
+        elem.add_item('description', target.description.format(full_name) + cmd_type)
         self.add_build(elem)
         self.processed_targets.add(target.get_id())
 

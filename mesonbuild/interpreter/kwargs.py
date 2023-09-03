@@ -286,7 +286,7 @@ class ConfigureFile(TypedDict):
     output: str
     capture: bool
     format: T.Literal['meson', 'cmake', 'cmake@']
-    output_format: T.Literal['c', 'nasm']
+    output_format: T.Literal['c', 'json', 'nasm']
     depfile: T.Optional[str]
     install: T.Optional[bool]
     install_dir: T.Union[str, T.Literal[False]]
@@ -338,7 +338,14 @@ class StaticLibrary(_BuildTarget):
     pass
 
 
-class SharedLibrary(_BuildTarget):
+class _SharedLibMixin(TypedDict):
+
+    darwin_versions: T.Optional[T.Tuple[str, str]]
+    soversion: T.Optional[str]
+    version: T.Optional[str]
+
+
+class SharedLibrary(_BuildTarget, _SharedLibMixin):
     pass
 
 
@@ -346,7 +353,7 @@ class SharedModule(_BuildTarget):
     pass
 
 
-class Library(_BuildTarget):
+class Library(_BuildTarget, _SharedLibMixin):
 
     """For library, both_library, and as a base for build_target"""
 

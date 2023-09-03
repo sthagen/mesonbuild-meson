@@ -26,6 +26,7 @@ from ..programs import ExternalProgram
 
 if T.TYPE_CHECKING:
     from ..interpreter import Interpreter
+    from ..interpreter.interpreter import ProgramVersionFunc
     from ..interpreter.interpreterobjects import MachineHolder
     from ..interpreterbase import TYPE_var, TYPE_kwargs
     from ..programs import OverrideProgram
@@ -86,7 +87,7 @@ class ModuleState:
 
     def find_program(self, prog: T.Union[mesonlib.FileOrString, T.List[mesonlib.FileOrString]],
                      required: bool = True,
-                     version_func: T.Optional[T.Callable[[T.Union[ExternalProgram, build.Executable, OverrideProgram]], str]] = None,
+                     version_func: T.Optional[ProgramVersionFunc] = None,
                      wanted: T.Optional[str] = None, silent: bool = False,
                      for_machine: MachineChoice = MachineChoice.HOST) -> T.Union[ExternalProgram, build.Executable, OverrideProgram]:
         if not isinstance(prog, list):
@@ -166,6 +167,8 @@ class ModuleState:
             else:
                 yield self._interpreter.build_incdir_object([d])
 
+    def add_language(self, lang: str, for_machine: MachineChoice) -> None:
+        self._interpreter.add_languages([lang], True, for_machine)
 
 class ModuleObject(HoldableObject):
     """Base class for all objects returned by modules

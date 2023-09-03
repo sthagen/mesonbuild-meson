@@ -53,10 +53,12 @@ from mesonbuild.mesonlib import MachineChoice, Popen_safe, TemporaryDirectoryWin
 from mesonbuild.mlog import blue, bold, cyan, green, red, yellow, normal_green
 from mesonbuild.coredata import backendlist, version as meson_version
 from mesonbuild.modules.python import PythonExternalProgram
-from run_tests import get_fake_options, run_configure, get_meson_script
-from run_tests import get_backend_commands, get_backend_args_for_dir, Backend
-from run_tests import ensure_backend_detects_changes
-from run_tests import guess_backend
+from run_tests import (
+    get_fake_options, run_configure, get_meson_script, get_backend_commands,
+    get_backend_args_for_dir, Backend, ensure_backend_detects_changes,
+    guess_backend, handle_meson_skip_test,
+)
+
 
 if T.TYPE_CHECKING:
     from types import FrameType
@@ -148,7 +150,7 @@ class InstalledFile:
             canonical_compiler = 'msvc'
 
         python_suffix = python.info['suffix']
-
+        python_limited_suffix = python.info['limited_api_suffix']
         has_pdb = False
         if self.language in {'c', 'cpp'}:
             has_pdb = canonical_compiler == 'msvc'
@@ -167,7 +169,7 @@ class InstalledFile:
             return None
 
         # Handle the different types
-        if self.typ in {'py_implib', 'python_lib', 'python_file'}:
+        if self.typ in {'py_implib', 'py_limited_implib', 'python_lib', 'python_limited_lib', 'python_file'}:
             val = p.as_posix()
             val = val.replace('@PYTHON_PLATLIB@', python.platlib)
             val = val.replace('@PYTHON_PURELIB@', python.purelib)
@@ -176,8 +178,18 @@ class InstalledFile:
                 return p
             if self.typ == 'python_lib':
                 return p.with_suffix(python_suffix)
+            if self.typ == 'python_limited_lib':
+                return p.with_suffix(python_limited_suffix)
             if self.typ == 'py_implib':
                 p = p.with_suffix(python_suffix)
+                if env.machines.host.is_windows() and canonical_compiler == 'msvc':
+                    return p.with_suffix('.lib')
+                elif env.machines.host.is_windows() or env.machines.host.is_cygwin():
+                    return p.with_suffix('.dll.a')
+                else:
+                    return None
+            if self.typ == 'py_limited_implib':
+                p = p.with_suffix(python_limited_suffix)
                 if env.machines.host.is_windows() and canonical_compiler == 'msvc':
                     return p.with_suffix('.lib')
                 elif env.machines.host.is_windows() or env.machines.host.is_cygwin():
@@ -288,6 +300,7 @@ class TestDef:
             return (s_id, self.path, self.name or '') < (o_id, other.path, other.name or '')
         return NotImplemented
 
+failing_testcases: T.List[str] = []
 failing_logs: T.List[str] = []
 print_debug = 'MESON_PRINT_TEST_OUTPUT' in os.environ
 under_ci = 'CI' in os.environ
@@ -432,9 +445,9 @@ def _run_ci_include(args: T.List[str]) -> str:
         return 'At least one parameter required'
     try:
         data = Path(args[0]).read_text(errors='ignore', encoding='utf-8')
-        return f'{header}\n{data}\n{footer}'
+        return f'{header}\n{data}\n{footer}\n'
     except Exception:
-        return 'Failed to open {}'.format(args[0])
+        return 'Failed to open {}\n'.format(args[0])
 
 ci_commands = {
     'ci_include': _run_ci_include
@@ -448,7 +461,7 @@ def run_ci_commands(raw_log: str) -> T.List[str]:
         cmd = shlex.split(l[11:])
         if not cmd or cmd[0] not in ci_commands:
             continue
-        res += ['CI COMMAND {}:\n{}\n'.format(cmd[0], ci_commands[cmd[0]](cmd[1:]))]
+        res += ['CI COMMAND {}:\n{}'.format(cmd[0], ci_commands[cmd[0]](cmd[1:]))]
     return res
 
 class OutputMatch:
@@ -552,11 +565,11 @@ def run_test_inprocess(testdir: str) -> T.Tuple[int, str, str, str]:
     sys.stderr = mystderr = StringIO()
     old_cwd = os.getcwd()
     os.chdir(testdir)
-    test_log_fname = Path('meson-logs', 'testlog.txt')
+    test_log_fname = os.path.join('meson-logs', 'testlog.txt')
     try:
         returncode_test = mtest.run_with_args(['--no-rebuild'])
-        if test_log_fname.exists():
-            test_log = test_log_fname.open(encoding='utf-8', errors='ignore').read()
+        if os.path.exists(test_log_fname):
+            test_log = _run_ci_include([test_log_fname])
         else:
             test_log = ''
         returncode_benchmark = mtest.run_with_args(['--no-rebuild', '--benchmark', '--logbase', 'benchmarklog'])
@@ -666,11 +679,10 @@ def _run_test(test: TestDef,
     returncode, stdo, stde = res
     cmd = '(inprocess) $ ' if inprocess else '$ '
     cmd += mesonlib.join_args(gen_args)
-    try:
-        logfile = Path(test_build_dir, 'meson-logs', 'meson-log.txt')
-        with logfile.open(errors='ignore', encoding='utf-8') as fid:
-            mesonlog = '\n'.join((cmd, fid.read()))
-    except Exception:
+    logfile = os.path.join(test_build_dir, 'meson-logs', 'meson-log.txt')
+    if os.path.exists(logfile):
+        mesonlog = '\n'.join((cmd, _run_ci_include([logfile])))
+    else:
         mesonlog = no_meson_log_msg
     cicmds = run_ci_commands(mesonlog)
     testresult = TestResult(cicmds)
@@ -698,8 +710,8 @@ def _run_test(test: TestDef,
     # Build with subprocess
     def build_step() -> None:
         build_start = time.time()
-        pc, o, e = Popen_safe(compile_commands + dir_args, cwd=test_build_dir)
-        testresult.add_step(BuildStep.build, o, e, '', time.time() - build_start)
+        pc, o, _ = Popen_safe(compile_commands + dir_args, cwd=test_build_dir, stderr=subprocess.STDOUT)
+        testresult.add_step(BuildStep.build, o, '', '', time.time() - build_start)
         if should_fail == 'build':
             if pc.returncode != 0:
                 raise testresult
@@ -781,7 +793,7 @@ def _skip_keys(test_def: T.Dict) -> T.Tuple[bool, bool]:
 
     # Test is expected to skip if os matches
     if 'skip_on_os' in test_def:
-        mesonenv = environment.Environment(None, None, get_fake_options('/'))
+        mesonenv = environment.Environment('', '', get_fake_options('/'))
         for skip_os in test_def['skip_on_os']:
             if skip_os.startswith('!'):
                 if mesonenv.machines.host.system != skip_os[1:]:
@@ -954,7 +966,7 @@ def have_d_compiler() -> bool:
 
 def have_objc_compiler(use_tmp: bool) -> bool:
     with TemporaryDirectoryWinProof(prefix='b ', dir=None if use_tmp else '.') as build_dir:
-        env = environment.Environment(None, build_dir, get_fake_options('/'))
+        env = environment.Environment('', build_dir, get_fake_options('/'))
         try:
             objc_comp = detect_objc_compiler(env, MachineChoice.HOST)
         except mesonlib.MesonException:
@@ -970,7 +982,7 @@ def have_objc_compiler(use_tmp: bool) -> bool:
 
 def have_objcpp_compiler(use_tmp: bool) -> bool:
     with TemporaryDirectoryWinProof(prefix='b ', dir=None if use_tmp else '.') as build_dir:
-        env = environment.Environment(None, build_dir, get_fake_options('/'))
+        env = environment.Environment('', build_dir, get_fake_options('/'))
         try:
             objcpp_comp = detect_objcpp_compiler(env, MachineChoice.HOST)
         except mesonlib.MesonException:
@@ -1196,12 +1208,6 @@ class LogRunFuture:
 
 RunFutureUnion = T.Union[TestRunFuture, LogRunFuture]
 
-def test_emits_skip_msg(line: str) -> bool:
-    for prefix in {'Problem encountered', 'Assert failed', 'Failed to configure the CMake subproject'}:
-        if f'{prefix}: MESON_SKIP_TEST' in line:
-            return True
-    return False
-
 def _run_tests(all_tests: T.List[T.Tuple[str, T.List[TestDef], bool]],
                log_name_base: str,
                failfast: bool,
@@ -1314,15 +1320,7 @@ def _run_tests(all_tests: T.List[T.Tuple[str, T.List[TestDef], bool]],
             skip_as_expected = True
         else:
             # skipped due to test outputting 'MESON_SKIP_TEST'
-            for l in result.stdo.splitlines():
-                if test_emits_skip_msg(l):
-                    is_skipped = True
-                    offset = l.index('MESON_SKIP_TEST') + 16
-                    skip_reason = l[offset:].strip()
-                    break
-            else:
-                is_skipped = False
-                skip_reason = ''
+            is_skipped, skip_reason = handle_meson_skip_test(result.stdo)
             if not skip_dont_care(t):
                 skip_as_expected = (is_skipped == t.skip_expected)
             else:
@@ -1369,7 +1367,11 @@ def _run_tests(all_tests: T.List[T.Tuple[str, T.List[TestDef], bool]],
             left_w = max(3, left_w)
             right_w = cols - left_w - name_len - 2
             right_w = max(3, right_w)
+            failing_testcases.append(name_str)
             failing_logs.append(f'\n\x1b[31m{"="*left_w}\x1b[0m {name_str} \x1b[31m{"="*right_w}\x1b[0m\n')
+            _during = bold('Failed during:')
+            _reason = bold('Reason:')
+            failing_logs.append(f'{_during} {result.step.name}\n{_reason} {result.msg}\n')
             if result.step == BuildStep.configure and result.mlog != no_meson_log_msg:
                 # For configure failures, instead of printing stdout,
                 # print the meson log if available since it's a superset
@@ -1460,7 +1462,7 @@ def detect_system_compiler(options: 'CompilerArgumentType') -> None:
     if options.native_file:
         fake_opts.native_file = [options.native_file]
 
-    env = environment.Environment(None, None, fake_opts)
+    env = environment.Environment('', '', fake_opts)
 
     print_compilers(env, MachineChoice.HOST)
     if options.cross_file:
@@ -1624,10 +1626,6 @@ if __name__ == '__main__':
         (passing_tests, failing_tests, skipped_tests) = res
     except StopException:
         pass
-    print()
-    print('Total passed tests: ', green(str(passing_tests)))
-    print('Total failed tests: ', red(str(failing_tests)))
-    print('Total skipped tests:', yellow(str(skipped_tests)))
     if failing_tests > 0:
         print('\nMesonlogs of failing tests\n')
         for l in failing_logs:
@@ -1635,6 +1633,14 @@ if __name__ == '__main__':
                 print(l, '\n')
             except UnicodeError:
                 print(l.encode('ascii', errors='replace').decode(), '\n')
+    print()
+    print('Total passed tests: ', green(str(passing_tests)))
+    print('Total failed tests: ', red(str(failing_tests)))
+    print('Total skipped tests:', yellow(str(skipped_tests)))
+    if failing_tests > 0:
+        print('\nAll failures:')
+        for c in failing_testcases:
+            print(f'  -> {c}')
     for name, dirs, _ in all_tests:
         dir_names = list({x.path.name for x in dirs})
         for k, g in itertools.groupby(dir_names, key=lambda x: x.split()[0]):

@@ -463,9 +463,8 @@ class AllPlatformTests(BasePlatformTests):
 
         valid_string = base_string_valid + repr(invalid_string)[1:-1] + base_string_valid
         invalid_string = base_string_invalid + invalid_string + base_string_invalid
-        broken_xml_stream = invalid_string.encode()
-        decoded_broken_stream = mtest.decode(broken_xml_stream)
-        self.assertEqual(decoded_broken_stream, valid_string)
+        fixed_string = mtest.replace_unencodable_xml_chars(invalid_string)
+        self.assertEqual(fixed_string, valid_string)
 
     def test_replace_unencodable_xml_chars_unit(self):
         '''
@@ -477,9 +476,16 @@ class AllPlatformTests(BasePlatformTests):
             raise SkipTest('xmllint not installed')
         testdir = os.path.join(self.unit_test_dir, '110 replace unencodable xml chars')
         self.init(testdir)
-        self.run_tests()
+        tests_command_output = self.run_tests()
         junit_xml_logs = Path(self.logdir, 'testlog.junit.xml')
         subprocess.run(['xmllint', junit_xml_logs], check=True)
+        # Ensure command output and JSON / text logs are not mangled.
+        raw_output_sample = '\x00\x01\x02\x03\x04\x05\x06\x07\x08\x0b'
+        assert raw_output_sample in tests_command_output
+        text_log = Path(self.logdir, 'testlog.txt').read_text()
+        assert raw_output_sample in text_log
+        json_log = json.loads(Path(self.logdir, 'testlog.json').read_bytes())
+        assert raw_output_sample in json_log['stdout']
 
     def test_run_target_files_path(self):
         '''
@@ -3976,17 +3982,23 @@ class AllPlatformTests(BasePlatformTests):
                     [properties]
                     c_args = common_flags + ['-DSOMETHING']
                     cpp_args = c_args + ['-DSOMETHING_ELSE']
+                    rel_to_src = '@GLOBAL_SOURCE_ROOT@' / 'tool'
+                    rel_to_file = '@DIRNAME@' / 'tool'
+                    no_escaping = '@@DIRNAME@@' / 'tool'
 
                     [binaries]
                     c = toolchain / compiler
                     '''))
 
-            values = mesonbuild.coredata.parse_machine_files([crossfile1, crossfile2])
+            values = mesonbuild.coredata.parse_machine_files([crossfile1, crossfile2], self.builddir)
             self.assertEqual(values['binaries']['c'], '/toolchain/gcc')
             self.assertEqual(values['properties']['c_args'],
                              ['--sysroot=/toolchain/sysroot', '-DSOMETHING'])
             self.assertEqual(values['properties']['cpp_args'],
                              ['--sysroot=/toolchain/sysroot', '-DSOMETHING', '-DSOMETHING_ELSE'])
+            self.assertEqual(values['properties']['rel_to_src'], os.path.join(self.builddir, 'tool'))
+            self.assertEqual(values['properties']['rel_to_file'], os.path.join(os.path.dirname(crossfile2), 'tool'))
+            self.assertEqual(values['properties']['no_escaping'], os.path.join(f'@{os.path.dirname(crossfile2)}@', 'tool'))
 
     @skipIf(is_windows(), 'Directory cleanup fails for some reason')
     def test_wrap_git(self):
@@ -4808,3 +4820,36 @@ class AllPlatformTests(BasePlatformTests):
             self.assertNotEqual(olddata, newdata)
             olddata = newdata
             oldmtime = newmtime
+
+    def test_c_cpp_stds(self):
+        testdir = os.path.join(self.unit_test_dir, '114 c cpp stds')
+        self.init(testdir)
+        # Invalid values should fail whatever compiler we have
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.setconf('-Dc_std=invalid')
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.setconf('-Dc_std=c89,invalid')
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.setconf('-Dc_std=c++11')
+        env = get_fake_env()
+        cc = detect_c_compiler(env, MachineChoice.HOST)
+        if cc.get_id() == 'msvc':
+            # default_option should have selected those
+            self.assertEqual(self.getconf('c_std'), 'c89')
+            self.assertEqual(self.getconf('cpp_std'), 'vc++11')
+            # This is deprecated but works for C
+            self.setconf('-Dc_std=gnu99')
+            self.assertEqual(self.getconf('c_std'), 'c99')
+            # C++ however never accepted that fallback
+            with self.assertRaises(subprocess.CalledProcessError):
+                self.setconf('-Dcpp_std=gnu++11')
+            # The first supported std should be selected
+            self.setconf('-Dcpp_std=gnu++11,vc++11,c++11')
+            self.assertEqual(self.getconf('cpp_std'), 'vc++11')
+        elif cc.get_id() == 'gcc':
+            # default_option should have selected those
+            self.assertEqual(self.getconf('c_std'), 'gnu89')
+            self.assertEqual(self.getconf('cpp_std'), 'gnu++98')
+            # The first supported std should be selected
+            self.setconf('-Dcpp_std=c++11,gnu++11,vc++11')
+            self.assertEqual(self.getconf('cpp_std'), 'c++11')

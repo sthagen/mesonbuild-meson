@@ -89,9 +89,10 @@ def get_genvs_default_buildtype_list() -> list[str]:
 
 class MesonVersionMismatchException(MesonException):
     '''Build directory generated with Meson version is incompatible with current version'''
-    def __init__(self, old_version: str, current_version: str) -> None:
+    def __init__(self, old_version: str, current_version: str, extra_msg: str = '') -> None:
         super().__init__(f'Build directory has been generated with Meson version {old_version}, '
-                         f'which is incompatible with the current version {current_version}.')
+                         f'which is incompatible with the current version {current_version}.'
+                         + extra_msg)
         self.old_version = old_version
         self.current_version = current_version
 
@@ -247,23 +248,17 @@ class UserComboOption(UserOption[str]):
 
 class UserArrayOption(UserOption[T.List[str]]):
     def __init__(self, description: str, value: T.Union[str, T.List[str]],
-                 split_args: bool = False, user_input: bool = False,
+                 split_args: bool = False,
                  allow_dups: bool = False, yielding: bool = DEFAULT_YIELDING,
                  choices: T.Optional[T.List[str]] = None,
                  deprecated: T.Union[bool, str, T.Dict[str, str], T.List[str]] = False):
         super().__init__(description, choices if choices is not None else [], yielding, deprecated)
         self.split_args = split_args
         self.allow_dups = allow_dups
-        self.value = self.validate_value(value, user_input=user_input)
+        self.set_value(value)
 
-    def listify(self, value: T.Union[str, T.List[str]], user_input: bool = True) -> T.List[str]:
-        # User input is for options defined on the command line (via -D
-        # options). Users can put their input in as a comma separated
-        # string, but for defining options in meson_options.txt the format
-        # should match that of a combo
-        if not user_input and isinstance(value, str) and not value.startswith('['):
-            raise MesonException('Value does not define an array: ' + value)
-
+    @staticmethod
+    def listify_value(value: T.Union[str, T.List[str]], shlex_split_args: bool = False) -> T.List[str]:
         if isinstance(value, str):
             if value.startswith('['):
                 try:
@@ -273,7 +268,7 @@ class UserArrayOption(UserOption[T.List[str]]):
             elif value == '':
                 newvalue = []
             else:
-                if self.split_args:
+                if shlex_split_args:
                     newvalue = split_args(value)
                 else:
                     newvalue = [v.strip() for v in value.split(',')]
@@ -283,8 +278,11 @@ class UserArrayOption(UserOption[T.List[str]]):
             raise MesonException(f'"{value}" should be a string array, but it is not')
         return newvalue
 
-    def validate_value(self, value: T.Union[str, T.List[str]], user_input: bool = True) -> T.List[str]:
-        newvalue = self.listify(value, user_input)
+    def listify(self, value: T.Any) -> T.List[T.Any]:
+        return self.listify_value(value, self.split_args)
+
+    def validate_value(self, value: T.Union[str, T.List[str]]) -> T.List[str]:
+        newvalue = self.listify(value)
 
         if not self.allow_dups and len(set(newvalue)) != len(newvalue):
             msg = 'Duplicated values in array option is deprecated. ' \
@@ -323,6 +321,59 @@ class UserFeatureOption(UserComboOption):
     def is_auto(self) -> bool:
         return self.value == 'auto'
 
+class UserStdOption(UserComboOption):
+    '''
+    UserOption specific to c_std and cpp_std options. User can set a list of
+    STDs in preference order and it selects the first one supported by current
+    compiler.
+
+    For historical reasons, some compilers (msvc) allowed setting a GNU std and
+    silently fell back to C std. This is now deprecated. Projects that support
+    both GNU and MSVC compilers should set e.g. c_std=gnu11,c11.
+
+    This is not using self.deprecated mechanism we already have for project
+    options because we want to print a warning if ALL values are deprecated, not
+    if SOME values are deprecated.
+    '''
+    def __init__(self, lang: str, all_stds: T.List[str]) -> None:
+        self.lang = lang.lower()
+        self.all_stds = ['none'] + all_stds
+        # Map a deprecated std to its replacement. e.g. gnu11 -> c11.
+        self.deprecated_stds: T.Dict[str, str] = {}
+        super().__init__(f'{lang} language standard to use', ['none'], 'none')
+
+    def set_versions(self, versions: T.List[str], gnu: bool = False, gnu_deprecated: bool = False) -> None:
+        assert all(std in self.all_stds for std in versions)
+        self.choices += versions
+        if gnu:
+            gnu_stds_map = {f'gnu{std[1:]}': std for std in versions}
+            if gnu_deprecated:
+                self.deprecated_stds.update(gnu_stds_map)
+            else:
+                self.choices += gnu_stds_map.keys()
+
+    def validate_value(self, value: T.Union[str, T.List[str]]) -> str:
+        candidates = UserArrayOption.listify_value(value)
+        unknown = [std for std in candidates if std not in self.all_stds]
+        if unknown:
+            raise MesonException(f'Unknown {self.lang.upper()} std {unknown}. Possible values are {self.all_stds}.')
+        # Check first if any of the candidates are not deprecated
+        for std in candidates:
+            if std in self.choices:
+                return std
+        # Fallback to a deprecated std if any
+        for std in candidates:
+            newstd = self.deprecated_stds.get(std)
+            if newstd is not None:
+                mlog.deprecation(
+                    f'None of the values {candidates} are supported by the {self.lang} compiler.\n' +
+                    f'However, the deprecated {std} std currently falls back to {newstd}.\n' +
+                    'This will be an error in the future.\n' +
+                    'If the project supports both GNU and MSVC compilers, a value such as\n' +
+                    '"c_std=gnu11,c11" specifies that GNU is prefered but it can safely fallback to plain c11.')
+                return newstd
+        raise MesonException(f'None of values {candidates} are supported by the {self.lang.upper()} compiler. ' +
+                             f'Possible values are {self.choices}')
 
 class DependencyCacheType(enum.Enum):
 
@@ -963,15 +1014,20 @@ class CmdLineFileParser(configparser.ConfigParser):
         return optionstr
 
 class MachineFileParser():
-    def __init__(self, filenames: T.List[str]) -> None:
+    def __init__(self, filenames: T.List[str], sourcedir: str) -> None:
         self.parser = CmdLineFileParser()
         self.constants: T.Dict[str, T.Union[str, bool, int, T.List[str]]] = {'True': True, 'False': False}
         self.sections: T.Dict[str, T.Dict[str, T.Union[str, bool, int, T.List[str]]]] = {}
 
-        try:
-            self.parser.read(filenames)
-        except configparser.Error as e:
-            raise EnvironmentException(f'Malformed cross or native file: {e}')
+        for fname in filenames:
+            with open(fname, encoding='utf-8') as f:
+                content = f.read()
+                content = content.replace('@GLOBAL_SOURCE_ROOT@', sourcedir)
+                content = content.replace('@DIRNAME@', os.path.dirname(fname))
+                try:
+                    self.parser.read_string(content, fname)
+                except configparser.Error as e:
+                    raise EnvironmentException(f'Malformed machine file: {e}')
 
         # Parse [constants] first so they can be used in other sections
         if self.parser.has_section('constants'):
@@ -1027,8 +1083,8 @@ class MachineFileParser():
                     return os.path.join(l, r)
         raise EnvironmentException('Unsupported node type')
 
-def parse_machine_files(filenames: T.List[str]):
-    parser = MachineFileParser(filenames)
+def parse_machine_files(filenames: T.List[str], sourcedir: str):
+    parser = MachineFileParser(filenames, sourcedir)
     return parser.sections
 
 def get_cmd_line_file(build_dir: str) -> str:
@@ -1093,9 +1149,9 @@ def major_versions_differ(v1: str, v2: str) -> bool:
     # Major version differ, or one is development version but not the other.
     return v1_major != v2_major or ('99' in {v1_minor, v2_minor} and v1_minor != v2_minor)
 
-def load(build_dir: str) -> CoreData:
+def load(build_dir: str, suggest_reconfigure: bool = True) -> CoreData:
     filename = os.path.join(build_dir, 'meson-private', 'coredata.dat')
-    return pickle_load(filename, 'Coredata', CoreData)
+    return pickle_load(filename, 'Coredata', CoreData, suggest_reconfigure)
 
 
 def save(obj: CoreData, build_dir: str) -> str:
@@ -1300,6 +1356,8 @@ BUILTIN_CORE_OPTIONS: 'MutableKeyedOptionDictType' = OrderedDict([
      BuiltinOption(UserStringOption, 'Directory for site-specific, platform-specific files.', '')),
     (OptionKey('purelibdir', module='python'),
      BuiltinOption(UserStringOption, 'Directory for site-specific, non-platform-specific files.', '')),
+    (OptionKey('allow_limited_api', module='python'),
+     BuiltinOption(UserBooleanOption, 'Whether to allow use of the Python Limited API', True)),
 ])
 
 BUILTIN_OPTIONS = OrderedDict(chain(BUILTIN_DIR_OPTIONS.items(), BUILTIN_CORE_OPTIONS.items()))

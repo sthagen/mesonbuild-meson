@@ -296,6 +296,21 @@ is inherited from the main project. This is useful, for example, when the main
 project requires C++11, but a subproject requires C++14. The `cpp_std` value
 from the subproject's `default_options` is now respected.
 
+Since *1.3.0* `c_std` and `cpp_std` options now accept a list of values.
+Projects that prefer GNU C, but can fallback to ISO C, can now set, for
+example, `default_options: 'c_std=gnu11,c11'`, and it will use `gnu11` when
+available, but fallback to c11 otherwise. It is an error only if none of the
+values are supported by the current compiler.
+Likewise, a project that can take benefit of `c++17` but can still build with
+`c++11` can set `default_options: 'cpp_std=c++17,c++11'`.
+This allows us to deprecate `gnuXX` values from the MSVC compiler. That means
+that `default_options: 'c_std=gnu11'` will now print a warning with MSVC
+but fallback to `c11`. No warning is printed if at least one
+of the values is valid, i.e. `default_options: 'c_std=gnu11,c11'`.
+In the future that deprecation warning will become an hard error because
+`c_std=gnu11` should mean GNU is required, for projects that cannot be
+built with MSVC for example.
+
 ## Specifying options per machine
 
 Since *0.51.0*, some options are specified per machine rather than
@@ -370,12 +385,13 @@ install prefix. For example: if the install prefix is `/usr` and the
 
 ### Python module
 
-| Option           | Default value | Possible values             | Description |
-| ------           | ------------- | -----------------           | ----------- |
-| bytecompile      | 0             | integer from -1 to 2        | What bytecode optimization level to use (Since 1.2.0) |
-| install_env      | prefix        | {auto,prefix,system,venv}   | Which python environment to install to (Since 0.62.0) |
-| platlibdir       |               | Directory path              | Directory for site-specific, platform-specific files (Since 0.60.0) |
-| purelibdir       |               | Directory path              | Directory for site-specific, non-platform-specific files  (Since 0.60.0) |
+| Option            | Default value | Possible values             | Description |
+| ------            | ------------- | -----------------           | ----------- |
+| bytecompile       | 0             | integer from -1 to 2        | What bytecode optimization level to use (Since 1.2.0) |
+| install_env       | prefix        | {auto,prefix,system,venv}   | Which python environment to install to (Since 0.62.0) |
+| platlibdir        |               | Directory path              | Directory for site-specific, platform-specific files (Since 0.60.0) |
+| purelibdir        |               | Directory path              | Directory for site-specific, non-platform-specific files  (Since 0.60.0) |
+| allow_limited_api | true          | true, false                 | Disables project-wide use of the Python Limited API (Since 1.3.0) |
 
 *Since 0.60.0* The `python.platlibdir` and `python.purelibdir` options are used
 by the python module methods `python.install_sources()` and
@@ -405,3 +421,7 @@ python bytecode. Bytecode has 3 optimization levels:
 
 To this, Meson adds level `-1`, which is to not attempt to compile bytecode at
 all.
+
+*Since 1.3.0* The `python.allow_limited_api` option affects whether the
+`limited_api` keyword argument of the `extension_module` method is respected.
+If set to `false`, the effect of the `limited_api` argument is disabled.
