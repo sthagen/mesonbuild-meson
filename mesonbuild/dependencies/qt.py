@@ -53,7 +53,7 @@ def _qt_get_private_includes(mod_inc_dir: str, module: str, mod_version: str) ->
 
     private_dir = os.path.join(mod_inc_dir, mod_version)
     # fallback, let's try to find a directory with the latest version
-    if not os.path.exists(private_dir):
+    if os.path.isdir(mod_inc_dir) and not os.path.exists(private_dir):
         dirs = [filename for filename in os.listdir(mod_inc_dir)
                 if os.path.isdir(os.path.join(mod_inc_dir, filename))]
 
@@ -349,6 +349,9 @@ class QmakeQtDependency(_QtBase, ConfigToolDependency, metaclass=abc.ABCMeta):
         if m:
             return m.group(0).rstrip('.')
         return version
+
+    def get_variable_args(self, variable_name: str) -> T.List[str]:
+        return ['-query', f'{variable_name}']
 
     @abc.abstractmethod
     def get_private_includes(self, mod_inc_dir: str, module: str) -> T.List[str]:

@@ -25,7 +25,7 @@ from ..wrap import wrap, WrapMode
 from .. import mesonlib
 from ..mesonlib import (EnvironmentVariables, ExecutableSerialisation, MesonBugException, MesonException, HoldableObject,
                         FileMode, MachineChoice, OptionKey, listify,
-                        extract_as_list, has_path_sep, PerMachine)
+                        extract_as_list, has_path_sep, path_is_in_root, PerMachine)
 from ..programs import ExternalProgram, NonExistingExternalProgram
 from ..dependencies import Dependency
 from ..depfile import DepFile
@@ -372,12 +372,10 @@ class Interpreter(InterpreterBase, HoldableObject):
                            'error': self.func_error,
                            'executable': self.func_executable,
                            'files': self.func_files,
-                           'find_library': self.func_find_library,
                            'find_program': self.func_find_program,
                            'generator': self.func_generator,
                            'get_option': self.func_get_option,
                            'get_variable': self.func_get_variable,
-                           'gettext': self.func_gettext,
                            'import': self.func_import,
                            'include_directories': self.func_include_directories,
                            'install_data': self.func_install_data,
@@ -553,7 +551,7 @@ class Interpreter(InterpreterBase, HoldableObject):
             if f.is_built:
                 return
             f = os.path.normpath(f.relative_name())
-        elif os.path.isfile(f) and not f.startswith('/dev'):
+        elif os.path.isfile(f) and not f.startswith('/dev/'):
             srcdir = Path(self.environment.get_source_dir())
             builddir = Path(self.environment.get_build_dir())
             try:
@@ -847,9 +845,6 @@ class Interpreter(InterpreterBase, HoldableObject):
         return RunProcess(cmd, expanded_args, env, srcdir, builddir, self.subdir,
                           self.environment.get_build_command() + ['introspect'],
                           in_builddir=in_builddir, check=check, capture=capture)
-
-    def func_gettext(self, nodes, args, kwargs):
-        raise InterpreterException('Gettext() function has been moved to module i18n. Import it and use i18n.gettext() instead')
 
     def func_option(self, nodes, args, kwargs):
         raise InterpreterException('Tried to call option() in build description file. All options must be in the option file.')
@@ -1754,12 +1749,6 @@ class Interpreter(InterpreterBase, HoldableObject):
                                       silent=False, wanted=kwargs['version'],
                                       search_dirs=search_dirs)
 
-    def func_find_library(self, node, args, kwargs):
-        raise InvalidCode('find_library() is removed, use meson.get_compiler(\'name\').find_library() instead.\n'
-                          'Look here for documentation: http://mesonbuild.com/Reference-manual.html#compiler-object\n'
-                          'Look here for example: http://mesonbuild.com/howtox.html#add-math-library-lm-portably\n'
-                          )
-
     # When adding kwargs, please check if they make sense in dependencies.get_dep_identifier()
     @FeatureNewKwargs('dependency', '0.57.0', ['cmake_package_version'])
     @FeatureNewKwargs('dependency', '0.56.0', ['allow_fallback'])
@@ -2596,6 +2585,7 @@ class Interpreter(InterpreterBase, HoldableObject):
         OUTPUT_KW,
         KwargInfo('output_format', str, default='c', since='0.47.0', since_values={'json': '1.3.0'},
                   validator=in_set_validator({'c', 'json', 'nasm'})),
+        KwargInfo('macro_name', (str, NoneType), default=None, since='1.3.0'),
     )
     def func_configure_file(self, node: mparser.BaseNode, args: T.List[TYPE_var],
                             kwargs: kwtypes.ConfigureFile):
@@ -2687,7 +2677,8 @@ class Interpreter(InterpreterBase, HoldableObject):
                                      'copy a file to the build dir, use the \'copy:\' keyword '
                                      'argument added in 0.47.0', location=node)
             else:
-                mesonlib.dump_conf_header(ofile_abs, conf, output_format)
+                macro_name = kwargs['macro_name']
+                mesonlib.dump_conf_header(ofile_abs, conf, output_format, macro_name)
             conf.used = True
         elif kwargs['command'] is not None:
             if len(inputs) > 1:
@@ -2784,7 +2775,7 @@ class Interpreter(InterpreterBase, HoldableObject):
         absbase_build = os.path.join(build_root, self.subdir)
 
         for a in incdir_strings:
-            if a.startswith(src_root):
+            if path_is_in_root(Path(a), Path(src_root)):
                 raise InvalidArguments(textwrap.dedent('''\
                     Tried to form an absolute path to a dir in the source tree.
                     You should not do that but use relative paths instead, for

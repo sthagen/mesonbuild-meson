@@ -502,7 +502,7 @@ class CLikeCompiler(Compiler):
                      extra_args: T.Union[None, T.List[str], T.Callable[[CompileCheckMode], T.List[str]]],
                      dependencies: T.Optional[T.List['Dependency']]) -> bool:
         t = f'''{prefix}
-        #include <stdio.h>
+        #include <stddef.h>
         int main(void) {{ static int a[1-2*!({expression})]; a[0]=0; return 0; }}'''
         return self.compiles(t, env, extra_args=extra_args,
                              dependencies=dependencies)[0]
@@ -563,6 +563,7 @@ class CLikeCompiler(Compiler):
         if self.is_cross:
             return self.cross_compute_int(expression, low, high, guess, prefix, env, extra_args, dependencies)
         t = f'''{prefix}
+        #include<stddef.h>
         #include<stdio.h>
         int main(void) {{
             printf("%ld\\n", (long)({expression}));
@@ -582,7 +583,7 @@ class CLikeCompiler(Compiler):
         if extra_args is None:
             extra_args = []
         t = f'''{prefix}
-        #include <stdio.h>
+        #include <stddef.h>
         int main(void) {{
             {typename} something;
             return 0;
@@ -602,6 +603,7 @@ class CLikeCompiler(Compiler):
                                   dependencies=dependencies)
             return r, False
         t = f'''{prefix}
+        #include<stddef.h>
         #include<stdio.h>
         int main(void) {{
             printf("%ld\\n", (long)(sizeof({typename})));
@@ -621,7 +623,7 @@ class CLikeCompiler(Compiler):
         if extra_args is None:
             extra_args = []
         t = f'''{prefix}
-        #include <stdio.h>
+        #include <stddef.h>
         int main(void) {{
             {typename} something;
             return 0;
@@ -672,13 +674,15 @@ class CLikeCompiler(Compiler):
                    extra_args: T.Union[T.List[str], T.Callable[[CompileCheckMode], T.List[str]]],
                    dependencies: T.Optional[T.List['Dependency']],
                    disable_cache: bool = False) -> T.Tuple[str, bool]:
-        delim = '"MESON_GET_DEFINE_DELIMITER"'
+        delim_start = '"MESON_GET_DEFINE_DELIMITER_START"\n'
+        delim_end = '\n"MESON_GET_DEFINE_DELIMITER_END"'
+        sentinel_undef = '"MESON_GET_DEFINE_UNDEFINED_SENTINEL"'
         code = f'''
         {prefix}
         #ifndef {dname}
-        # define {dname}
+        # define {dname} {sentinel_undef}
         #endif
-        {delim}\n{dname}'''
+        {delim_start}{dname}{delim_end}'''
         args = self.build_wrapper_args(env, extra_args, dependencies,
                                        mode=CompileCheckMode.PREPROCESS).to_native()
         func = functools.partial(self.cached_compile, code, env.coredata, extra_args=args, mode=CompileCheckMode.PREPROCESS)
@@ -688,10 +692,21 @@ class CLikeCompiler(Compiler):
             cached = p.cached
             if p.returncode != 0:
                 raise mesonlib.EnvironmentException(f'Could not get define {dname!r}')
-        # Get the preprocessed value after the delimiter,
-        # minus the extra newline at the end and
-        # merge string literals.
-        return self._concatenate_string_literals(p.stdout.split(delim + '\n')[-1][:-1]).strip(), cached
+
+        # Get the preprocessed value between the delimiters
+        star_idx = p.stdout.find(delim_start)
+        end_idx = p.stdout.rfind(delim_end)
+        if (star_idx == -1) or (end_idx == -1) or (star_idx == end_idx):
+            raise AssertionError('BUG: Delimiters not found in preprocessor output!')
+        define_value = p.stdout[star_idx + len(delim_start):end_idx]
+
+        if define_value == sentinel_undef:
+            define_value = None
+        else:
+            # Merge string literals
+            define_value = self._concatenate_string_literals(define_value).strip()
+
+        return define_value, cached
 
     def get_return_value(self, fname: str, rtype: str, prefix: str,
                          env: 'Environment', extra_args: T.Optional[T.List[str]],

@@ -34,7 +34,7 @@ from .mesonlib import (
     File, MesonException, MachineChoice, PerMachine, OrderedSet, listify,
     extract_as_list, typeslistify, stringlistify, classify_unity_sources,
     get_filenames_templates_dict, substitute_values, has_path_sep,
-    OptionKey, PerMachineDefaultable, OptionOverrideProxy,
+    OptionKey, PerMachineDefaultable,
     MesonBugException, EnvironmentVariables, pickle_load,
 )
 from .compilers import (
@@ -535,7 +535,7 @@ class Target(HoldableObject, metaclass=abc.ABCMeta):
                    for k, v in overrides.items()}
         else:
             ovr = {}
-        self.options = OptionOverrideProxy(ovr, self.environment.coredata.options, self.subproject)
+        self.options = coredata.OptionsView(self.environment.coredata.options, self.subproject, ovr)
         # XXX: this should happen in the interpreter
         if has_path_sep(self.name):
             # Fix failing test 53 when this becomes an error.
@@ -655,7 +655,7 @@ class Target(HoldableObject, metaclass=abc.ABCMeta):
             else:
                 self.options.overrides[k] = v
 
-    def get_options(self) -> OptionOverrideProxy:
+    def get_options(self) -> coredata.OptionsView:
         return self.options
 
     def get_option(self, key: 'OptionKey') -> T.Union[str, int, bool, 'WrapMode']:
@@ -789,6 +789,12 @@ class BuildTarget(Target):
             # relocation-model=pic is rustc's default and Meson does not
             # currently have a way to disable PIC.
             self.pic = True
+        if 'vala' in self.compilers and self.is_linkable_target():
+            self.outputs += [self.vala_header, self.vala_vapi]
+            self.install_tag += ['devel', 'devel']
+            if self.vala_gir:
+                self.outputs.append(self.vala_gir)
+                self.install_tag.append('devel')
 
     def __repr__(self):
         repr_str = "<{0} {1}: {2}>"
@@ -1945,7 +1951,7 @@ class Executable(BuildTarget):
         self.filename = self.name
         if self.suffix:
             self.filename += '.' + self.suffix
-        self.outputs = [self.filename]
+        self.outputs[0] = self.filename
 
         # The import library this target will generate
         self.import_filename = None
@@ -2086,7 +2092,7 @@ class StaticLibrary(BuildTarget):
             else:
                 self.suffix = 'a'
         self.filename = self.prefix + self.name + '.' + self.suffix
-        self.outputs = [self.filename]
+        self.outputs[0] = self.filename
 
     def get_link_deps_mapping(self, prefix: str) -> T.Mapping[str, str]:
         return {}

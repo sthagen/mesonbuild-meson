@@ -1694,8 +1694,6 @@ class NinjaBackend(backends.Backend):
             # Without this, it will write it inside c_out_dir
             args += ['--vapi', os.path.join('..', target.vala_vapi)]
             valac_outputs.append(vapiname)
-            target.outputs += [target.vala_header, target.vala_vapi]
-            target.install_tag += ['devel', 'devel']
             # Install header and vapi to default locations if user requests this
             if len(target.install_dir) > 1 and target.install_dir[1] is True:
                 target.install_dir[1] = self.environment.get_includedir()
@@ -1706,8 +1704,6 @@ class NinjaBackend(backends.Backend):
                 girname = os.path.join(self.get_target_dir(target), target.vala_gir)
                 args += ['--gir', os.path.join('..', target.vala_gir)]
                 valac_outputs.append(girname)
-                target.outputs.append(target.vala_gir)
-                target.install_tag.append('devel')
                 # Install GIR to default location if requested by user
                 if len(target.install_dir) > 3 and target.install_dir[3] is True:
                     target.install_dir[3] = os.path.join(self.environment.get_datadir(), 'gir-1.0')
@@ -2350,7 +2346,7 @@ class NinjaBackend(backends.Backend):
             if static_linker is None:
                 continue
             rule = 'STATIC_LINKER{}'.format(self.get_rule_suffix(for_machine))
-            cmdlist = []
+            cmdlist: T.List[T.Union[str, NinjaCommandArg]] = []
             args = ['$in']
             # FIXME: Must normalize file names with pathlib.Path before writing
             #        them out to fix this properly on Windows. See:
@@ -2364,6 +2360,17 @@ class NinjaBackend(backends.Backend):
             cmdlist += static_linker.get_exelist()
             cmdlist += ['$LINK_ARGS']
             cmdlist += NinjaCommandArg.list(static_linker.get_output_args('$out'), Quoting.none)
+            # The default ar on MacOS (at least through version 12), does not
+            # add extern'd variables to the symbol table by default, and
+            # requires that apple's ranlib be called with a special flag
+            # instead after linking
+            if static_linker.id == 'applear':
+                # This is a bit of a hack, but we assume that that we won't need
+                # an rspfile on MacOS, otherwise the arguments are passed to
+                # ranlib, not to ar
+                cmdlist.extend(args)
+                args = []
+                cmdlist.extend(['&&', 'ranlib', '-c', '$out'])
             description = 'Linking static target $out'
             if num_pools > 0:
                 pool = 'pool = link_pool'
