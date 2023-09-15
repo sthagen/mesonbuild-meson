@@ -29,6 +29,7 @@ from ..interpreterbase import (
     InvalidArguments,
     BreakRequest,
     ContinueRequest,
+    Disabler,
     default_resolve_key,
 )
 
@@ -53,6 +54,7 @@ from ..mparser import (
     NotNode,
     PlusAssignmentNode,
     TernaryNode,
+    TestCaseClauseNode,
 )
 
 if T.TYPE_CHECKING:
@@ -239,7 +241,7 @@ class AstInterpreter(InterpreterBase):
 
     def evaluate_dictstatement(self, node: mparser.DictNode) -> TYPE_nkwargs:
         def resolve_key(node: mparser.BaseNode) -> str:
-            if isinstance(node, mparser.StringNode):
+            if isinstance(node, mparser.BaseStringNode):
                 return node.value
             return '__AST_UNKNOWN__'
         arguments, kwargs = self.reduce_arguments(node.args, key_resolver=resolve_key)
@@ -254,10 +256,10 @@ class AstInterpreter(InterpreterBase):
     def evaluate_plusassign(self, node: PlusAssignmentNode) -> None:
         assert isinstance(node, PlusAssignmentNode)
         # Cheat by doing a reassignment
-        self.assignments[node.var_name] = node.value  # Save a reference to the value node
+        self.assignments[node.var_name.value] = node.value  # Save a reference to the value node
         if node.value.ast_id:
             self.reverse_assignment[node.value.ast_id] = node
-        self.assign_vals[node.var_name] = self.evaluate_statement(node.value)
+        self.assign_vals[node.var_name.value] = self.evaluate_statement(node.value)
 
     def evaluate_indexing(self, node: IndexNode) -> int:
         return 0
@@ -312,17 +314,17 @@ class AstInterpreter(InterpreterBase):
         for i in node.ifs:
             self.evaluate_codeblock(i.block)
         if not isinstance(node.elseblock, EmptyNode):
-            self.evaluate_codeblock(node.elseblock)
+            self.evaluate_codeblock(node.elseblock.block)
 
     def get_variable(self, varname: str) -> int:
         return 0
 
     def assignment(self, node: AssignmentNode) -> None:
         assert isinstance(node, AssignmentNode)
-        self.assignments[node.var_name] = node.value # Save a reference to the value node
+        self.assignments[node.var_name.value] = node.value # Save a reference to the value node
         if node.value.ast_id:
             self.reverse_assignment[node.value.ast_id] = node
-        self.assign_vals[node.var_name] = self.evaluate_statement(node.value) # Evaluate the value just in case
+        self.assign_vals[node.var_name.value] = self.evaluate_statement(node.value) # Evaluate the value just in case
 
     def resolve_node(self, node: BaseNode, include_unknown_args: bool = False, id_loop_detect: T.Optional[T.List[str]] = None) -> T.Optional[T.Any]:
         def quick_resolve(n: BaseNode, loop_detect: T.Optional[T.List[str]] = None) -> T.Any:
@@ -371,8 +373,8 @@ class AstInterpreter(InterpreterBase):
         elif isinstance(node, ArithmeticNode):
             if node.operation != 'add':
                 return None # Only handle string and array concats
-            l = quick_resolve(node.left)
-            r = quick_resolve(node.right)
+            l = self.resolve_node(node.left, include_unknown_args, id_loop_detect)
+            r = self.resolve_node(node.right, include_unknown_args, id_loop_detect)
             if isinstance(l, str) and isinstance(r, str):
                 result = l + r # String concatenation detected
             else:
@@ -382,17 +384,18 @@ class AstInterpreter(InterpreterBase):
             src = quick_resolve(node.source_object)
             margs = self.flatten_args(node.args.arguments, include_unknown_args, id_loop_detect)
             mkwargs: T.Dict[str, TYPE_nvar] = {}
+            method_name = node.name.value
             try:
                 if isinstance(src, str):
-                    result = StringHolder(src, T.cast('Interpreter', self)).method_call(node.name, margs, mkwargs)
+                    result = StringHolder(src, T.cast('Interpreter', self)).method_call(method_name, margs, mkwargs)
                 elif isinstance(src, bool):
-                    result = BooleanHolder(src, T.cast('Interpreter', self)).method_call(node.name, margs, mkwargs)
+                    result = BooleanHolder(src, T.cast('Interpreter', self)).method_call(method_name, margs, mkwargs)
                 elif isinstance(src, int):
-                    result = IntegerHolder(src, T.cast('Interpreter', self)).method_call(node.name, margs, mkwargs)
+                    result = IntegerHolder(src, T.cast('Interpreter', self)).method_call(method_name, margs, mkwargs)
                 elif isinstance(src, list):
-                    result = ArrayHolder(src, T.cast('Interpreter', self)).method_call(node.name, margs, mkwargs)
+                    result = ArrayHolder(src, T.cast('Interpreter', self)).method_call(method_name, margs, mkwargs)
                 elif isinstance(src, dict):
-                    result = DictHolder(src, T.cast('Interpreter', self)).method_call(node.name, margs, mkwargs)
+                    result = DictHolder(src, T.cast('Interpreter', self)).method_call(method_name, margs, mkwargs)
             except mesonlib.MesonException:
                 return None
 
@@ -443,3 +446,6 @@ class AstInterpreter(InterpreterBase):
             elif isinstance(val, (str, bool, int, float)) or include_unknown_args:
                 flattened_kwargs[key] = val
         return flattened_kwargs
+
+    def evaluate_testcase(self, node: TestCaseClauseNode) -> Disabler | None:
+        return Disabler(subproject=self.subproject)
