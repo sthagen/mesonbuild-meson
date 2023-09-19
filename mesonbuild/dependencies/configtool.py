@@ -24,6 +24,7 @@ from mesonbuild import mesonlib
 
 if T.TYPE_CHECKING:
     from ..environment import Environment
+    from ..interpreter.type_checking import PkgConfigDefineType
 
 class ConfigToolDependency(ExternalDependency):
 
@@ -153,17 +154,6 @@ class ConfigToolDependency(ExternalDependency):
     def get_variable_args(self, variable_name: str) -> T.List[str]:
         return [f'--{variable_name}']
 
-    def get_configtool_variable(self, variable_name: str) -> str:
-        p, out, _ = Popen_safe(self.config + self.get_variable_args(variable_name))
-        if p.returncode != 0:
-            if self.required:
-                raise DependencyException(
-                    'Could not get variable "{}" for dependency {}'.format(
-                        variable_name, self.name))
-        variable = out.strip()
-        mlog.debug(f'Got config-tool variable {variable_name} : {variable}')
-        return variable
-
     @staticmethod
     def log_tried() -> str:
         return 'config-tool'
@@ -171,20 +161,13 @@ class ConfigToolDependency(ExternalDependency):
     def get_variable(self, *, cmake: T.Optional[str] = None, pkgconfig: T.Optional[str] = None,
                      configtool: T.Optional[str] = None, internal: T.Optional[str] = None,
                      default_value: T.Optional[str] = None,
-                     pkgconfig_define: T.Optional[T.List[str]] = None) -> str:
+                     pkgconfig_define: PkgConfigDefineType = None) -> str:
         if configtool:
-            # In the not required case '' (empty string) will be returned if the
-            # variable is not found. Since '' is a valid value to return we
-            # set required to True here to force and error, and use the
-            # finally clause to ensure it's restored.
-            restore = self.required
-            self.required = True
-            try:
-                return self.get_configtool_variable(configtool)
-            except DependencyException:
-                pass
-            finally:
-                self.required = restore
+            p, out, _ = Popen_safe(self.config + self.get_variable_args(configtool))
+            if p.returncode == 0:
+                variable = out.strip()
+                mlog.debug(f'Got config-tool variable {configtool} : {variable}')
+                return variable
         if default_value is not None:
             return default_value
         raise DependencyException(f'Could not get config-tool variable and no default provided for {self!r}')

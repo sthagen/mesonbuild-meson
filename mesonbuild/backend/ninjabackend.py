@@ -1937,16 +1937,7 @@ class NinjaBackend(backends.Backend):
         if main_rust_file is None:
             raise RuntimeError('A Rust target has no Rust sources. This is weird. Also a bug. Please report')
         target_name = os.path.join(target.subdir, target.get_filename())
-        if isinstance(target, build.Executable):
-            cratetype = 'bin'
-        elif hasattr(target, 'rust_crate_type'):
-            cratetype = target.rust_crate_type
-        elif isinstance(target, build.SharedLibrary):
-            cratetype = 'dylib'
-        elif isinstance(target, build.StaticLibrary):
-            cratetype = 'rlib'
-        else:
-            raise InvalidArguments('Unknown target type for rustc.')
+        cratetype = target.rust_crate_type
         args.extend(['--crate-type', cratetype])
 
         # If we're dynamically linking, add those arguments
@@ -1960,10 +1951,9 @@ class NinjaBackend(backends.Backend):
         # Rustc replaces - with _. spaces or dots are not allowed, so we replace them with underscores
         args += ['--crate-name', target.name.replace('-', '_').replace(' ', '_').replace('.', '_')]
         depfile = os.path.join(target.subdir, target.name + '.d')
-        args += ['--emit', f'dep-info={depfile}', '--emit', 'link']
+        args += ['--emit', f'dep-info={depfile}', '--emit', f'link={target_name}']
+        args += ['--out-dir', self.get_target_private_dir(target)]
         args += target.get_extra_args('rust')
-        output = rustc.get_output_args(os.path.join(target.subdir, target.get_filename()))
-        args += output
         linkdirs = mesonlib.OrderedSet()
         external_deps = target.external_deps.copy()
 

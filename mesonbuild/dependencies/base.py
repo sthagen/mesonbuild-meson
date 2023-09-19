@@ -30,7 +30,6 @@ from ..mesonlib import version_compare_many
 #from ..interpreterbase import FeatureDeprecated, FeatureNew
 
 if T.TYPE_CHECKING:
-    from .._typing import ImmutableListProtocol
     from ..compilers.compilers import Compiler
     from ..environment import Environment
     from ..interpreterbase import FeatureCheckBase
@@ -38,6 +37,7 @@ if T.TYPE_CHECKING:
         CustomTarget, IncludeDirs, CustomTargetIndex, LibTypes,
         StaticLibrary, StructuredSources, ExtractedObjects, GeneratedTypes
     )
+    from ..interpreter.type_checking import PkgConfigDefineType
 
 
 class DependencyException(MesonException):
@@ -193,14 +193,6 @@ class Dependency(HoldableObject):
     def get_exe_args(self, compiler: 'Compiler') -> T.List[str]:
         return []
 
-    def get_pkgconfig_variable(self, variable_name: str,
-                               define_variable: 'ImmutableListProtocol[str]',
-                               default: T.Optional[str]) -> str:
-        raise DependencyException(f'{self.name!r} is not a pkgconfig dependency')
-
-    def get_configtool_variable(self, variable_name: str) -> str:
-        raise DependencyException(f'{self.name!r} is not a config-tool dependency')
-
     def get_partial_dependency(self, *, compile_args: bool = False,
                                link_args: bool = False, links: bool = False,
                                includes: bool = False, sources: bool = False) -> 'Dependency':
@@ -238,7 +230,7 @@ class Dependency(HoldableObject):
     def get_variable(self, *, cmake: T.Optional[str] = None, pkgconfig: T.Optional[str] = None,
                      configtool: T.Optional[str] = None, internal: T.Optional[str] = None,
                      default_value: T.Optional[str] = None,
-                     pkgconfig_define: T.Optional[T.List[str]] = None) -> str:
+                     pkgconfig_define: PkgConfigDefineType = None) -> str:
         if default_value is not None:
             return default_value
         raise DependencyException(f'No default provided for dependency {self!r}, which is not pkg-config, cmake, or config-tool based.')
@@ -297,16 +289,6 @@ class InternalDependency(Dependency):
             return True
         return any(d.is_built() for d in self.ext_deps)
 
-    def get_pkgconfig_variable(self, variable_name: str,
-                               define_variable: 'ImmutableListProtocol[str]',
-                               default: T.Optional[str]) -> str:
-        raise DependencyException('Method "get_pkgconfig_variable()" is '
-                                  'invalid for an internal dependency')
-
-    def get_configtool_variable(self, variable_name: str) -> str:
-        raise DependencyException('Method "get_configtool_variable()" is '
-                                  'invalid for an internal dependency')
-
     def get_partial_dependency(self, *, compile_args: bool = False,
                                link_args: bool = False, links: bool = False,
                                includes: bool = False, sources: bool = False,
@@ -332,7 +314,7 @@ class InternalDependency(Dependency):
     def get_variable(self, *, cmake: T.Optional[str] = None, pkgconfig: T.Optional[str] = None,
                      configtool: T.Optional[str] = None, internal: T.Optional[str] = None,
                      default_value: T.Optional[str] = None,
-                     pkgconfig_define: T.Optional[T.List[str]] = None) -> str:
+                     pkgconfig_define: PkgConfigDefineType = None) -> str:
         val = self.variables.get(internal, default_value)
         if val is not None:
             return val

@@ -45,7 +45,7 @@ from mesonbuild.compilers.c import AppleClangCCompiler
 from mesonbuild.compilers.cpp import AppleClangCPPCompiler
 from mesonbuild.compilers.objc import AppleClangObjCCompiler
 from mesonbuild.compilers.objcpp import AppleClangObjCPPCompiler
-from mesonbuild.dependencies.pkgconfig import PkgConfigDependency, PkgConfigCLI
+from mesonbuild.dependencies.pkgconfig import PkgConfigDependency, PkgConfigCLI, PkgConfigInterface
 import mesonbuild.modules.pkgconfig
 
 PKG_CONFIG = os.environ.get('PKG_CONFIG', 'pkg-config')
@@ -164,19 +164,19 @@ class LinuxlikeTests(BasePlatformTests):
         self.assertTrue(foo_dep.found())
         self.assertEqual(foo_dep.get_version(), '1.0')
         self.assertIn('-lfoo', foo_dep.get_link_args())
-        self.assertEqual(foo_dep.get_pkgconfig_variable('foo', [], None), 'bar')
-        self.assertPathEqual(foo_dep.get_pkgconfig_variable('datadir', [], None), '/usr/data')
+        self.assertEqual(foo_dep.get_variable(pkgconfig='foo'), 'bar')
+        self.assertPathEqual(foo_dep.get_variable(pkgconfig='datadir'), '/usr/data')
 
         libhello_nolib = PkgConfigDependency('libhello_nolib', env, kwargs)
         self.assertTrue(libhello_nolib.found())
         self.assertEqual(libhello_nolib.get_link_args(), [])
         self.assertEqual(libhello_nolib.get_compile_args(), [])
-        self.assertEqual(libhello_nolib.get_pkgconfig_variable('foo', [], None), 'bar')
-        self.assertEqual(libhello_nolib.get_pkgconfig_variable('prefix', [], None), self.prefix)
+        self.assertEqual(libhello_nolib.get_variable(pkgconfig='foo'), 'bar')
+        self.assertEqual(libhello_nolib.get_variable(pkgconfig='prefix'), self.prefix)
         impl = libhello_nolib.pkgconfig
-        if not isinstance(impl, PkgConfigCLI) or version_compare(PkgConfigCLI.check_pkgconfig(env, impl.pkgbin),">=0.29.1"):
-            self.assertEqual(libhello_nolib.get_pkgconfig_variable('escaped_var', [], None), r'hello\ world')
-        self.assertEqual(libhello_nolib.get_pkgconfig_variable('unescaped_var', [], None), 'hello world')
+        if not isinstance(impl, PkgConfigCLI) or version_compare(impl.pkgbin_version, ">=0.29.1"):
+            self.assertEqual(libhello_nolib.get_variable(pkgconfig='escaped_var'), r'hello\ world')
+        self.assertEqual(libhello_nolib.get_variable(pkgconfig='unescaped_var'), 'hello world')
 
         cc = detect_c_compiler(env, MachineChoice.HOST)
         if cc.get_id() in {'gcc', 'clang'}:
@@ -1169,7 +1169,7 @@ class LinuxlikeTests(BasePlatformTests):
 
         # Regression test: This used to modify the value of `pkg_config_path`
         # option, adding the meson-uninstalled directory to it.
-        PkgConfigCLI.setup_env({}, env, MachineChoice.HOST, uninstalled=True)
+        PkgConfigInterface.setup_env({}, env, MachineChoice.HOST, uninstalled=True)
 
         pkg_config_path = env.coredata.options[OptionKey('pkg_config_path')].value
         self.assertEqual(pkg_config_path, [pkg_dir])
