@@ -116,8 +116,6 @@ import copy
 if T.TYPE_CHECKING:
     import argparse
 
-    from typing_extensions import Literal
-
     from . import kwargs as kwtypes
     from ..backend.backends import Backend
     from ..interpreterbase.baseobjects import InterpreterObject, TYPE_var, TYPE_kwargs
@@ -868,7 +866,7 @@ class Interpreter(InterpreterBase, HoldableObject):
             'options': None,
             'cmake_options': [],
         }
-        return self.do_subproject(args[0], 'meson', kw)
+        return self.do_subproject(args[0], kw)
 
     def disabled_subproject(self, subp_name: str, disabled_feature: T.Optional[str] = None,
                             exception: T.Optional[Exception] = None) -> SubprojectHolder:
@@ -877,7 +875,7 @@ class Interpreter(InterpreterBase, HoldableObject):
         self.subprojects[subp_name] = sub
         return sub
 
-    def do_subproject(self, subp_name: str, method: Literal['meson', 'cmake'], kwargs: kwtypes.DoSubproject) -> SubprojectHolder:
+    def do_subproject(self, subp_name: str, kwargs: kwtypes.DoSubproject, force_method: T.Optional[wrap.Method] = None) -> SubprojectHolder:
         disabled, required, feature = extract_required_kwarg(kwargs, self.subproject)
         if disabled:
             mlog.log('Subproject', mlog.bold(subp_name), ':', 'skipped: feature', mlog.bold(feature), 'disabled')
@@ -913,7 +911,7 @@ class Interpreter(InterpreterBase, HoldableObject):
 
         r = self.environment.wrap_resolver
         try:
-            subdir = r.resolve(subp_name, method)
+            subdir, method = r.resolve(subp_name, force_method)
         except wrap.WrapException as e:
             if not required:
                 mlog.log(e)
@@ -921,7 +919,6 @@ class Interpreter(InterpreterBase, HoldableObject):
                 return self.disabled_subproject(subp_name, exception=e)
             raise e
 
-        subdir_abs = os.path.join(self.environment.get_source_dir(), subdir)
         os.makedirs(os.path.join(self.build.environment.get_build_dir(), subdir), exist_ok=True)
         self.global_args_frozen = True
 
@@ -935,7 +932,7 @@ class Interpreter(InterpreterBase, HoldableObject):
             if method == 'meson':
                 return self._do_subproject_meson(subp_name, subdir, default_options, kwargs)
             elif method == 'cmake':
-                return self._do_subproject_cmake(subp_name, subdir, subdir_abs, default_options, kwargs)
+                return self._do_subproject_cmake(subp_name, subdir, default_options, kwargs)
             else:
                 raise mesonlib.MesonBugException(f'The method {method} is invalid for the subproject {subp_name}')
         # Invalid code is always an error
@@ -956,12 +953,24 @@ class Interpreter(InterpreterBase, HoldableObject):
                              kwargs: kwtypes.DoSubproject,
                              ast: T.Optional[mparser.CodeBlockNode] = None,
                              build_def_files: T.Optional[T.List[str]] = None,
-                             is_translated: bool = False,
                              relaxations: T.Optional[T.Set[InterpreterRuleRelaxation]] = None) -> SubprojectHolder:
         with mlog.nested(subp_name):
+            if ast:
+                # Debug print the generated meson file
+                from ..ast import AstIndentationGenerator, AstPrinter
+                printer = AstPrinter(update_ast_line_nos=True)
+                ast.accept(AstIndentationGenerator())
+                ast.accept(printer)
+                printer.post_process()
+                meson_filename = os.path.join(self.build.environment.get_build_dir(), subdir, 'meson.build')
+                with open(meson_filename, "w", encoding='utf-8') as f:
+                    f.write(printer.result)
+                mlog.log('Generated Meson AST:', meson_filename)
+                mlog.cmd_ci_include(meson_filename)
+
             new_build = self.build.copy()
             subi = Interpreter(new_build, self.backend, subp_name, subdir, self.subproject_dir,
-                               default_options, ast=ast, is_translated=is_translated,
+                               default_options, ast=ast, is_translated=(ast is not None),
                                relaxations=relaxations,
                                user_defined_options=self.user_defined_options)
             # Those lists are shared by all interpreters. That means that
@@ -1000,54 +1009,31 @@ class Interpreter(InterpreterBase, HoldableObject):
         self.build.subprojects[subp_name] = subi.project_version
         return self.subprojects[subp_name]
 
-    def _do_subproject_cmake(self, subp_name: str, subdir: str, subdir_abs: str,
+    def _do_subproject_cmake(self, subp_name: str, subdir: str,
                              default_options: T.Dict[OptionKey, str],
                              kwargs: kwtypes.DoSubproject) -> SubprojectHolder:
         from ..cmake import CMakeInterpreter
         with mlog.nested(subp_name):
-            new_build = self.build.copy()
             prefix = self.coredata.options[OptionKey('prefix')].value
 
             from ..modules.cmake import CMakeSubprojectOptions
-            options = kwargs['options'] or CMakeSubprojectOptions()
-            cmake_options = kwargs['cmake_options'] + options.cmake_options
-            cm_int = CMakeInterpreter(new_build, Path(subdir), Path(subdir_abs), Path(prefix), new_build.environment, self.backend)
+            options = kwargs.get('options') or CMakeSubprojectOptions()
+            cmake_options = kwargs.get('cmake_options', []) + options.cmake_options
+            cm_int = CMakeInterpreter(Path(subdir), Path(prefix), self.build.environment, self.backend)
             cm_int.initialise(cmake_options)
             cm_int.analyse()
 
             # Generate a meson ast and execute it with the normal do_subproject_meson
             ast = cm_int.pretend_to_be_meson(options.target_options)
-
-            mlog.log()
-            with mlog.nested('cmake-ast'):
-                mlog.log('Processing generated meson AST')
-
-                # Debug print the generated meson file
-                from ..ast import AstIndentationGenerator, AstPrinter
-                printer = AstPrinter(update_ast_line_nos=True)
-                ast.accept(AstIndentationGenerator())
-                ast.accept(printer)
-                printer.post_process()
-                meson_filename = os.path.join(self.build.environment.get_build_dir(), subdir, 'meson.build')
-                with open(meson_filename, "w", encoding='utf-8') as f:
-                    f.write(printer.result)
-
-                mlog.log('Build file:', meson_filename)
-                mlog.cmd_ci_include(meson_filename)
-                mlog.log()
-
             result = self._do_subproject_meson(
                     subp_name, subdir, default_options,
                     kwargs, ast,
                     [str(f) for f in cm_int.bs_files],
-                    is_translated=True,
                     relaxations={
                         InterpreterRuleRelaxation.ALLOW_BUILD_DIR_FILE_REFERENCES,
                     }
             )
             result.cm_interpreter = cm_int
-
-        mlog.log()
         return result
 
     def get_option_internal(self, optname: str) -> coredata.UserOption:
@@ -1734,7 +1720,7 @@ class Interpreter(InterpreterBase, HoldableObject):
             'cmake_options': [],
             'options': None,
         }
-        self.do_subproject(fallback, 'meson', sp_kwargs)
+        self.do_subproject(fallback, sp_kwargs)
         return self.program_from_overrides(args, extra_info)
 
     @typed_pos_args('find_program', varargs=(str, mesonlib.File), min_varargs=1)
