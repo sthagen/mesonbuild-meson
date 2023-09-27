@@ -20,7 +20,7 @@ import xml.dom.minidom
 import xml.etree.ElementTree as ET
 import uuid
 import typing as T
-from pathlib import Path, PurePath
+from pathlib import Path, PurePath, PureWindowsPath
 import re
 from collections import Counter
 
@@ -618,11 +618,6 @@ class Vs2010Backend(backends.Backend):
             tid = self.environment.coredata.target_guids[dep.get_id()]
             self.add_project_reference(root, vcxproj, tid)
 
-    def create_basic_project_filters(self) -> ET.Element:
-        root = ET.Element('Project', {'ToolsVersion': '4.0',
-                                      'xmlns': 'http://schemas.microsoft.com/developer/msbuild/2003'})
-        return root
-
     def create_basic_project(self, target_name, *,
                              temp_dir,
                              guid,
@@ -932,39 +927,6 @@ class Vs2010Backend(backends.Backend):
         if option.endswith('\\'):
             option += '\\'
         return f'"{option}"'
-
-    @staticmethod
-    def add_filter_info(list_filters_path, filter_group, sub_element, file_path, forced_filter_name=None, down=''):
-        filter_inc_cl = ET.SubElement(filter_group, sub_element, Include=file_path)
-
-        # Force the subdir
-        if forced_filter_name:
-            filter_path = forced_filter_name
-        else:
-            # Create a subdir following the placement if on the same drive
-            filter_path = Path(file_path).resolve().parent
-            if Path(file_path).drive == Path(down).drive:
-                filter_path = Path(os.path.relpath(str(filter_path), down)).as_posix().replace('../', '').replace('..', '')
-            else:
-                return  # No filter needed
-
-        # Needed to have non posix path
-        filter_path = filter_path.replace('/', '\\')
-
-        if filter_path and filter_path != '.':
-            # Remove ending backslash
-            filter_path = filter_path.rstrip('\\')
-            # Create a hierarchical level of directories
-            list_path = filter_path.split('\\')
-            new_filter_path = ''
-            for path in list_path:
-                if new_filter_path:
-                    new_filter_path = new_filter_path + '\\' + path
-                else:
-                    new_filter_path = path
-                list_filters_path.add(new_filter_path)
-            # Create a new filter node for the current file added
-            ET.SubElement(filter_inc_cl, 'Filter').text = filter_path
 
     @staticmethod
     def split_link_args(args):
@@ -1674,9 +1636,6 @@ class Vs2010Backend(backends.Backend):
                                                         target_ext=tfilename[1],
                                                         target_platform=platform)
 
-        # vcxproj.filters file
-        root_filter = self.create_basic_project_filters()
-
         generated_files, custom_target_output_files, generated_files_include_dirs = self.generate_custom_generator_commands(
             target, root)
         (gen_src, gen_hdrs, gen_objs, _gen_langs) = self.split_sources(generated_files)
@@ -1738,8 +1697,6 @@ class Vs2010Backend(backends.Backend):
                     # used with a vs backend
                     pch_sources[lang] = [pch[0], None, lang, None]
 
-        list_filters_path = set()
-
         previous_includes = []
         if len(headers) + len(gen_hdrs) + len(target.extra_files) + len(pch_sources) > 0:
             if self.gen_lite and gen_hdrs:
@@ -1747,28 +1704,21 @@ class Vs2010Backend(backends.Backend):
                 # in our concrete build directories (e.g. '..._debug'), where generated files will exist after building.
                 self.relocate_generated_file_paths_to_concrete_build_dir(gen_hdrs, target)
 
-            # Filter information
-            filter_group_include = ET.SubElement(root_filter, 'ItemGroup')
-
             inc_hdrs = ET.SubElement(root, 'ItemGroup')
             for h in headers:
                 relpath = os.path.join(proj_to_build_root, h.rel_to_builddir(self.build_to_src))
                 if path_normalize_add(relpath, previous_includes):
-                    self.add_filter_info(list_filters_path, filter_group_include, 'ClInclude', relpath, h.subdir)
                     ET.SubElement(inc_hdrs, 'CLInclude', Include=relpath)
             for h in gen_hdrs:
                 if path_normalize_add(h, previous_includes):
-                    self.add_filter_info(list_filters_path, filter_group_include, 'ClInclude', h)
                     ET.SubElement(inc_hdrs, 'CLInclude', Include=h)
             for h in target.extra_files:
                 relpath = os.path.join(proj_to_build_root, h.rel_to_builddir(self.build_to_src))
                 if path_normalize_add(relpath, previous_includes):
-                    self.add_filter_info(list_filters_path, filter_group_include, 'ClInclude', relpath, h.subdir)
                     ET.SubElement(inc_hdrs, 'CLInclude', Include=relpath)
             for headers in pch_sources.values():
                 path = os.path.join(proj_to_src_dir, headers[0])
                 if path_normalize_add(path, previous_includes):
-                    self.add_filter_info(list_filters_path, filter_group_include, 'ClInclude', path, 'pch')
                     ET.SubElement(inc_hdrs, 'CLInclude', Include=path)
 
         previous_sources = []
@@ -1784,14 +1734,10 @@ class Vs2010Backend(backends.Backend):
                     # in our concrete build directories (e.g. '..._debug'), where generated files will exist after building.
                     self.relocate_generated_file_paths_to_concrete_build_dir(gen_src, target)
 
-            # Filter information
-            filter_group_compile = ET.SubElement(root_filter, 'ItemGroup')
-
             inc_src = ET.SubElement(root, 'ItemGroup')
             for s in sources:
                 relpath = os.path.join(proj_to_build_root, s.rel_to_builddir(self.build_to_src))
                 if path_normalize_add(relpath, previous_sources):
-                    self.add_filter_info(list_filters_path, filter_group_compile, 'CLCompile', relpath, s.subdir)
                     inc_cl = ET.SubElement(inc_src, 'CLCompile', Include=relpath)
                     if self.gen_lite:
                         self.add_project_nmake_defs_incs_and_opts(inc_cl, relpath, defs_paths_opts_per_lang_and_buildtype, platform)
@@ -1805,7 +1751,6 @@ class Vs2010Backend(backends.Backend):
                             self.object_filename_from_source(target, s)
             for s in gen_src:
                 if path_normalize_add(s, previous_sources):
-                    self.add_filter_info(list_filters_path, filter_group_compile, 'CLCompile', s)
                     inc_cl = ET.SubElement(inc_src, 'CLCompile', Include=s)
                     if self.gen_lite:
                         self.add_project_nmake_defs_incs_and_opts(inc_cl, s, defs_paths_opts_per_lang_and_buildtype, platform)
@@ -1821,7 +1766,6 @@ class Vs2010Backend(backends.Backend):
             for lang, headers in pch_sources.items():
                 impl = headers[1]
                 if impl and path_normalize_add(impl, previous_sources):
-                    self.add_filter_info(list_filters_path, filter_group_compile, 'CLCompile', impl, 'pch')
                     inc_cl = ET.SubElement(inc_src, 'CLCompile', Include=impl)
                     self.create_pch(pch_sources, lang, inc_cl)
                     if self.gen_lite:
@@ -1837,12 +1781,6 @@ class Vs2010Backend(backends.Backend):
                             inc_dirs = file_inc_dirs
                         self.add_include_dirs(lang, inc_cl, inc_dirs)
                         # XXX: Do we need to set the object file name here too?
-
-        # Filter information
-        filter_group = ET.SubElement(root_filter, 'ItemGroup')
-        for filter_dir in list_filters_path:
-            filter = ET.SubElement(filter_group, 'Filter', Include=filter_dir)
-            ET.SubElement(filter, 'UniqueIdentifier').text = '{' + str(uuid.uuid4()) + '}'
 
         additional_objects = []
         for o in self.flatten_object_list(target, proj_to_build_root)[0]:
@@ -1871,8 +1809,75 @@ class Vs2010Backend(backends.Backend):
             # build system as possible.
             self.add_target_deps(root, target)
         self._prettyprint_vcxproj_xml(ET.ElementTree(root), ofname)
-        self._prettyprint_vcxproj_xml(ET.ElementTree(root_filter), ofname + '.filters')
+        if self.environment.coredata.get_option(OptionKey('layout')) == 'mirror':
+            self.gen_vcxproj_filters(target, ofname)
         return True
+
+    def gen_vcxproj_filters(self, target, ofname):
+        # Generate pitchfork of filters based on directory structure.
+        root = ET.Element('Project', {'ToolsVersion': '4.0',
+                                      'xmlns': 'http://schemas.microsoft.com/developer/msbuild/2003'})
+        filter_folders = ET.SubElement(root, 'ItemGroup')
+        filter_items = ET.SubElement(root, 'ItemGroup')
+        mlog.debug(f'Generating vcxproj filters {target.name}.')
+
+        def relative_to_defined_in(file):
+            # Get the relative path to file's directory from the location of the meson.build that defines this target.
+            return os.path.dirname(self.relpath(PureWindowsPath(file.subdir, file.fname), self.get_target_dir(target)))
+
+        found_folders_to_filter = {}
+        all_files = target.sources + target.extra_files
+
+        # Build a dictionary of all used relative paths (i.e. from the meson.build defining this target)
+        # for all sources.
+        for i in all_files:
+            if not os.path.isabs(i.fname):
+                dirname = relative_to_defined_in(i)
+                if dirname:
+                    found_folders_to_filter[dirname] = ''
+
+        # Now walk up each of those relative paths checking for empty intermediate dirs to generate the filter.
+        for folder in found_folders_to_filter:
+            dirname = folder
+            filter = ''
+
+            while dirname:
+                basename = os.path.basename(dirname)
+
+                if filter == '':
+                    filter = basename
+                else:
+                    # Use '/' to squash empty dirs. To actually get a '\', use '%255c'.
+                    filter = basename + ('\\' if dirname in found_folders_to_filter else '/') + filter
+
+                dirname = os.path.dirname(dirname)
+
+            # Don't add an empty filter, breaks all other (?) filters.
+            if filter != '':
+                found_folders_to_filter[folder] = filter
+                filter_element = ET.SubElement(filter_folders, 'Filter', {'Include': filter})
+                uuid_element = ET.SubElement(filter_element, 'UniqueIdentifier')
+                uuid_element.text = '{' + str(uuid.uuid4()).upper() + '}'
+
+        sources, headers, objects, _ = self.split_sources(all_files)
+        down = self.target_to_build_root(target)
+
+        def add_element(type_name, elements):
+            for i in elements:
+                if not os.path.isabs(i.fname):
+                    dirname = relative_to_defined_in(i)
+
+                    if dirname and dirname in found_folders_to_filter:
+                        relpath = os.path.join(down, i.rel_to_builddir(self.build_to_src))
+                        target_element = ET.SubElement(filter_items, type_name, {'Include': relpath})
+                        filter_element = ET.SubElement(target_element, 'Filter')
+                        filter_element.text = found_folders_to_filter[dirname]
+
+        add_element('ClCompile', sources)
+        add_element('ClInclude', headers)
+        add_element('Object', objects)
+
+        self._prettyprint_vcxproj_xml(ET.ElementTree(root), ofname + '.filters')
 
     def gen_regenproj(self):
         # To fully adapt the REGEN work for a 'genvslite' solution, to check timestamps, settings, and regenerate the
