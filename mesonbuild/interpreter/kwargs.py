@@ -331,6 +331,12 @@ class _BuildTarget(_BaseBuildTarget):
 
     """Arguments shared by non-JAR functions"""
 
+    rust_dependency_map: T.Dict[str, str]
+
+
+class _LibraryMixin(TypedDict):
+
+    rust_abi: T.Optional[Literal['c', 'rust']]
 
 class Executable(_BuildTarget):
 
@@ -338,7 +344,7 @@ class Executable(_BuildTarget):
     win_subsystem: T.Optional[str]
 
 
-class StaticLibrary(_BuildTarget):
+class StaticLibrary(_BuildTarget, _LibraryMixin):
     pass
 
 
@@ -349,15 +355,15 @@ class _SharedLibMixin(TypedDict):
     version: T.Optional[str]
 
 
-class SharedLibrary(_BuildTarget, _SharedLibMixin):
+class SharedLibrary(_BuildTarget, _SharedLibMixin, _LibraryMixin):
     pass
 
 
-class SharedModule(_BuildTarget):
+class SharedModule(_BuildTarget, _LibraryMixin):
     pass
 
 
-class Library(_BuildTarget, _SharedLibMixin):
+class Library(_BuildTarget, _SharedLibMixin, _LibraryMixin):
 
     """For library, both_library, and as a base for build_target"""
 
