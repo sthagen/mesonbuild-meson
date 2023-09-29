@@ -513,6 +513,12 @@ RUST_ABI_KW: KwargInfo[T.Union[str, None]] = KwargInfo(
     since='1.3.0',
     validator=in_set_validator({'rust', 'c'}))
 
+_VS_MODULE_DEFS_KW: KwargInfo[T.Optional[T.Union[str, File, CustomTarget, CustomTargetIndex]]] = KwargInfo(
+    'vs_module_defs',
+    (str, File, CustomTarget, CustomTargetIndex, NoneType),
+    since_values={CustomTargetIndex: '1.3.0'}
+)
+
 # Applies to all build_target like classes
 _ALL_TARGET_KWS: T.List[KwargInfo] = [
     OVERRIDE_OPTIONS_KW,
@@ -595,6 +601,7 @@ _EXCLUSIVE_EXECUTABLE_KWS: T.List[KwargInfo] = [
 EXECUTABLE_KWS = [
     *_BUILD_TARGET_KWS,
     *_EXCLUSIVE_EXECUTABLE_KWS,
+    _VS_MODULE_DEFS_KW.evolve(since='1.3.0', since_values=None),
 ]
 
 # Arguments exclusive to library types
@@ -604,7 +611,10 @@ _EXCLUSIVE_LIB_KWS: T.List[KwargInfo] = [
 
 # Arguments exclusive to StaticLibrary. These are separated to make integrating
 # them into build_target easier
-_EXCLUSIVE_STATIC_LIB_KWS: T.List[KwargInfo] = []
+_EXCLUSIVE_STATIC_LIB_KWS: T.List[KwargInfo] = [
+    KwargInfo('prelink', bool, default=False, since='0.57.0'),
+    KwargInfo('pic', (bool, NoneType), since='0.36.0'),
+]
 
 # The total list of arguments used by StaticLibrary
 STATIC_LIB_KWS = [
@@ -626,6 +636,7 @@ SHARED_LIB_KWS = [
     *_BUILD_TARGET_KWS,
     *_EXCLUSIVE_SHARED_LIB_KWS,
     *_EXCLUSIVE_LIB_KWS,
+    _VS_MODULE_DEFS_KW,
 ]
 
 # Arguments exclusive to SharedModule. These are separated to make integrating
@@ -637,6 +648,7 @@ SHARED_MOD_KWS = [
     *_BUILD_TARGET_KWS,
     *_EXCLUSIVE_SHARED_MOD_KWS,
     *_EXCLUSIVE_LIB_KWS,
+    _VS_MODULE_DEFS_KW,
 ]
 
 # Arguments exclusive to JAR. These are separated to make integrating
@@ -659,6 +671,7 @@ LIBRARY_KWS = [
     *_EXCLUSIVE_SHARED_LIB_KWS,
     *_EXCLUSIVE_SHARED_MOD_KWS,
     *_EXCLUSIVE_STATIC_LIB_KWS,
+    _VS_MODULE_DEFS_KW,
 ]
 
 # Arguments used by build_Target

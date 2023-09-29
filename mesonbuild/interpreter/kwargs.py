@@ -341,10 +341,17 @@ class _LibraryMixin(TypedDict):
 class Executable(_BuildTarget):
 
     gui_app: T.Optional[bool]
+    vs_module_defs: T.Optional[T.Union[str, File, build.CustomTarget, build.CustomTargetIndex]]
     win_subsystem: T.Optional[str]
 
 
-class StaticLibrary(_BuildTarget, _LibraryMixin):
+class _StaticLibMixin(TypedDict):
+
+    prelink: bool
+    pic: T.Optional[bool]
+
+
+class StaticLibrary(_BuildTarget, _StaticLibMixin, _LibraryMixin):
     pass
 
 
@@ -353,6 +360,7 @@ class _SharedLibMixin(TypedDict):
     darwin_versions: T.Optional[T.Tuple[str, str]]
     soversion: T.Optional[str]
     version: T.Optional[str]
+    vs_module_defs: T.Optional[T.Union[str, File, build.CustomTarget, build.CustomTargetIndex]]
 
 
 class SharedLibrary(_BuildTarget, _SharedLibMixin, _LibraryMixin):
@@ -360,10 +368,11 @@ class SharedLibrary(_BuildTarget, _SharedLibMixin, _LibraryMixin):
 
 
 class SharedModule(_BuildTarget, _LibraryMixin):
-    pass
+
+    vs_module_defs: T.Optional[T.Union[str, File, build.CustomTarget, build.CustomTargetIndex]]
 
 
-class Library(_BuildTarget, _SharedLibMixin, _LibraryMixin):
+class Library(_BuildTarget, _SharedLibMixin, _StaticLibMixin, _LibraryMixin):
 
     """For library, both_library, and as a base for build_target"""
 
