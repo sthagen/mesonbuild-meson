@@ -1806,7 +1806,6 @@ class Interpreter(InterpreterBase, HoldableObject):
     def func_disabler(self, node, args, kwargs):
         return Disabler()
 
-    @FeatureNewKwargs('executable', '0.42.0', ['implib'])
     @permittedKwargs(build.known_exe_kwargs)
     @typed_pos_args('executable', str, varargs=SOURCES_VARARGS)
     @typed_kwargs('executable', *EXECUTABLE_KWS, allow_unknown=True)
@@ -1859,10 +1858,10 @@ class Interpreter(InterpreterBase, HoldableObject):
         return self.build_library(node, args, kwargs)
 
     @permittedKwargs(build.known_jar_kwargs)
-    @typed_pos_args('jar', str, varargs=SOURCES_VARARGS)
+    @typed_pos_args('jar', str, varargs=(str, mesonlib.File, build.CustomTarget, build.CustomTargetIndex, build.GeneratedList, build.ExtractedObjects, build.BuildTarget))
     @typed_kwargs('jar', *JAR_KWS, allow_unknown=True)
     def func_jar(self, node: mparser.BaseNode,
-                 args: T.Tuple[str, SourcesVarargsType],
+                 args: T.Tuple[str, T.List[T.Union[str, mesonlib.File, build.GeneratedTypes]]],
                  kwargs: kwtypes.Jar) -> build.Jar:
         return self.build_target(node, args, kwargs, build.Jar)
 
@@ -3328,6 +3327,7 @@ class Interpreter(InterpreterBase, HoldableObject):
         kwargs['include_directories'] = self.extract_incdirs(kwargs)
 
         if targetclass is build.Executable:
+            kwargs = T.cast('kwtypes.Executable', kwargs)
             if kwargs['gui_app'] is not None:
                 if kwargs['win_subsystem'] is not None:
                     raise InvalidArguments.from_node(
@@ -3337,6 +3337,21 @@ class Interpreter(InterpreterBase, HoldableObject):
                     kwargs['win_subsystem'] = 'windows'
             if kwargs['win_subsystem'] is None:
                 kwargs['win_subsystem'] = 'console'
+
+            if kwargs['implib']:
+                if kwargs['export_dynamic'] is False:
+                    FeatureDeprecated.single_use('implib overrides explict export_dynamic off', '1.3.0', self.subprojct,
+                                                 'Do not set ths if want export_dynamic disabled if implib is enabled',
+                                                 location=node)
+                kwargs['export_dynamic'] = True
+            elif kwargs['export_dynamic']:
+                if kwargs['implib'] is False:
+                    raise InvalidArguments('"implib" keyword" must not be false if "export_dynamic" is set and not false.')
+                kwargs['implib'] = True
+            if kwargs['export_dynamic'] is None:
+                kwargs['export_dynamic'] = False
+            if kwargs['implib'] is None:
+                kwargs['implib'] = False
 
         target = targetclass(name, self.subdir, self.subproject, for_machine, srcs, struct, objs,
                              self.environment, self.compilers[for_machine], kwargs)

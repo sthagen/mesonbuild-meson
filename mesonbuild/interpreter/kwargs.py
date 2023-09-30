@@ -340,7 +340,10 @@ class _LibraryMixin(TypedDict):
 
 class Executable(_BuildTarget):
 
+    export_dynamic: T.Optional[bool]
     gui_app: T.Optional[bool]
+    implib: T.Optional[T.Union[str, bool]]
+    pie: T.Optional[bool]
     vs_module_defs: T.Optional[T.Union[str, File, build.CustomTarget, build.CustomTargetIndex]]
     win_subsystem: T.Optional[str]
 
