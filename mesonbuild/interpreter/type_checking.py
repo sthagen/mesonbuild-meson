@@ -458,7 +458,7 @@ LINK_WHOLE_KW: KwargInfo[T.List[T.Union[BothLibraries, StaticLibrary, CustomTarg
     validator=link_whole_validator,
 )
 
-SOURCES_KW: KwargInfo[T.List[T.Union[str, File, CustomTarget, CustomTargetIndex, GeneratedList]]] = KwargInfo(
+DEPENDENCY_SOURCES_KW: KwargInfo[T.List[T.Union[str, File, CustomTarget, CustomTargetIndex, GeneratedList]]] = KwargInfo(
     'sources',
     ContainerTypeInfo(list, (str, File, CustomTarget, CustomTargetIndex, GeneratedList)),
     listify=True,
@@ -466,6 +466,13 @@ SOURCES_KW: KwargInfo[T.List[T.Union[str, File, CustomTarget, CustomTargetIndex,
 )
 
 SOURCES_VARARGS = (str, File, CustomTarget, CustomTargetIndex, GeneratedList, StructuredSources, ExtractedObjects, BuildTarget)
+
+BT_SOURCES_KW: KwargInfo[SourcesVarargsType] = KwargInfo(
+    'sources',
+    ContainerTypeInfo(list, SOURCES_VARARGS),
+    listify=True,
+    default=[],
+)
 
 VARIABLES_KW: KwargInfo[T.Dict[str, str]] = KwargInfo(
     'variables',
@@ -527,6 +534,7 @@ _ALL_TARGET_KWS: T.List[KwargInfo] = [
 # Applies to all build_target classes except jar
 _BUILD_TARGET_KWS: T.List[KwargInfo] = [
     *_ALL_TARGET_KWS,
+    BT_SOURCES_KW,
     RUST_CRATE_TYPE_KW,
     KwargInfo(
         'rust_dependency_map',
@@ -665,6 +673,12 @@ _EXCLUSIVE_JAR_KWS: T.List[KwargInfo] = [
 JAR_KWS = [
     *_ALL_TARGET_KWS,
     *_EXCLUSIVE_JAR_KWS,
+    KwargInfo(
+        'sources',
+        ContainerTypeInfo(list, (str, File, CustomTarget, CustomTargetIndex, GeneratedList, ExtractedObjects, BuildTarget)),
+        listify=True,
+        default=[],
+    )
 ]
 
 # Arguments used by both_library and library

@@ -89,7 +89,7 @@ from .type_checking import (
     REQUIRED_KW,
     SHARED_LIB_KWS,
     SHARED_MOD_KWS,
-    SOURCES_KW,
+    DEPENDENCY_SOURCES_KW,
     SOURCES_VARARGS,
     STATIC_LIB_KWS,
     VARIABLES_KW,
@@ -687,7 +687,7 @@ class Interpreter(InterpreterBase, HoldableObject):
         INCLUDE_DIRECTORIES,
         LINK_WITH_KW,
         LINK_WHOLE_KW.evolve(since='0.46.0'),
-        SOURCES_KW,
+        DEPENDENCY_SOURCES_KW,
         KwargInfo('extra_files', ContainerTypeInfo(list, (mesonlib.File, str)), listify=True, default=[], since='1.2.0'),
         VARIABLES_KW.evolve(since='0.54.0', since_values={list: '0.56.0'}),
         KwargInfo('version', (str, NoneType)),
@@ -3103,6 +3103,9 @@ class Interpreter(InterpreterBase, HoldableObject):
     @T.overload
     def source_strings_to_files(self, sources: T.List['SourceInputs'], strict: bool = True) -> T.List['SourceOutputs']: ... # noqa: F811
 
+    @T.overload
+    def source_strings_to_files(self, sources: T.List[SourcesVarargsType], strict: bool = True) -> T.List['SourceOutputs']: ... # noqa: F811
+
     def source_strings_to_files(self, sources: T.List['SourceInputs'], strict: bool = True) -> T.List['SourceOutputs']: # noqa: F811
         """Lower inputs to a list of Targets and Files, replacing any strings.
 
@@ -3262,8 +3265,8 @@ class Interpreter(InterpreterBase, HoldableObject):
             # Silently force to native because that's the only sensible value
             # and rust_crate_type is deprecated any way.
             for_machine = MachineChoice.BUILD
-        if 'sources' in kwargs:
-            sources += listify(kwargs['sources'])
+        # Avoid mutating, since there could be other references to sources
+        sources = sources + kwargs['sources']
         if any(isinstance(s, build.BuildTarget) for s in sources):
             FeatureBroken.single_use('passing references to built targets as a source file', '1.1.0', self.subproject,
                                      'Consider using `link_with` or `link_whole` if you meant to link, or dropping them as otherwise they are ignored.',
