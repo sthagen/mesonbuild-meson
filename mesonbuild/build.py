@@ -634,8 +634,11 @@ class Target(HoldableObject, metaclass=abc.ABCMeta):
         return my_id
 
     def get_id(self) -> str:
+        name = self.name
+        if getattr(self, 'name_suffix_set', False):
+            name += '.' + self.suffix
         return self.construct_id_from_path(
-            self.subdir, self.name, self.type_suffix())
+            self.subdir, name, self.type_suffix())
 
     def process_kwargs_base(self, kwargs: T.Dict[str, T.Any]) -> None:
         if 'build_by_default' in kwargs:
@@ -737,6 +740,8 @@ class BuildTarget(Target):
         self.name_prefix_set = False
         self.name_suffix_set = False
         self.filename = 'no_name'
+        # The debugging information file this target will generate
+        self.debug_filename = None
         # The list of all files outputted by this target. Useful in cases such
         # as Vala which generates .vapi and .h besides the compiled output.
         self.outputs = [self.filename]
@@ -1261,6 +1266,14 @@ class BuildTarget(Target):
 
     def get_filename(self) -> str:
         return self.filename
+
+    def get_debug_filename(self) -> T.Optional[str]:
+        """
+        The name of debuginfo file that will be created by the compiler
+
+        Returns None if the build won't create any debuginfo file
+        """
+        return self.debug_filename
 
     def get_outputs(self) -> T.List[str]:
         return self.outputs
@@ -1809,8 +1822,14 @@ class Generator(HoldableObject):
     def process_files(self, files: T.Iterable[T.Union[str, File, 'CustomTarget', 'CustomTargetIndex', 'GeneratedList']],
                       state: T.Union['Interpreter', 'ModuleState'],
                       preserve_path_from: T.Optional[str] = None,
-                      extra_args: T.Optional[T.List[str]] = None) -> 'GeneratedList':
-        output = GeneratedList(self, state.subdir, preserve_path_from, extra_args=extra_args if extra_args is not None else [])
+                      extra_args: T.Optional[T.List[str]] = None,
+                      env: T.Optional[EnvironmentVariables] = None) -> 'GeneratedList':
+        output = GeneratedList(
+            self,
+            state.subdir,
+            preserve_path_from,
+            extra_args=extra_args if extra_args is not None else [],
+            env=env if env is not None else EnvironmentVariables())
 
         for e in files:
             if isinstance(e, CustomTarget):
@@ -1849,6 +1868,7 @@ class GeneratedList(HoldableObject):
     subdir: str
     preserve_path_from: T.Optional[str]
     extra_args: T.List[str]
+    env: T.Optional[EnvironmentVariables]
 
     def __post_init__(self) -> None:
         self.name = self.generator.exe
@@ -1861,6 +1881,9 @@ class GeneratedList(HoldableObject):
 
         if self.extra_args is None:
             self.extra_args: T.List[str] = []
+
+        if self.env is None:
+            self.env: EnvironmentVariables = EnvironmentVariables()
 
         if isinstance(self.generator.exe, programs.ExternalProgram):
             if not self.generator.exe.found():
@@ -2003,7 +2026,14 @@ class Executable(BuildTarget):
             and self.environment.coredata.get_option(OptionKey("debug"))
         )
         if create_debug_file:
-            self.debug_filename = self.name + '.pdb'
+            # If the target is has a standard exe extension (i.e. 'foo.exe'),
+            # then the pdb name simply becomes 'foo.pdb'. If the extension is
+            # something exotic, then include that in the name for uniqueness
+            # reasons (e.g. 'foo_com.pdb').
+            name = self.name
+            if getattr(self, 'suffix', 'exe') != 'exe':
+                name += '_' + self.suffix
+            self.debug_filename = name + '.pdb'
 
     def process_kwargs(self, kwargs):
         super().process_kwargs(kwargs)
