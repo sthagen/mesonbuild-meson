@@ -47,7 +47,7 @@ if T.TYPE_CHECKING:
     import http.client
     from typing_extensions import Literal
 
-    Method = Literal['meson', 'cmake']
+    Method = Literal['meson', 'cmake', 'cargo']
 
 try:
     # Importing is just done to check if SSL exists, so all warnings
@@ -450,6 +450,7 @@ class Resolver:
         methods_map: T.Dict[Method, str] = {
             'meson': 'meson.build',
             'cmake': 'CMakeLists.txt',
+            'cargo': 'Cargo.toml',
         }
 
         # Check if this wrap forces a specific method, use meson otherwise.
@@ -569,7 +570,10 @@ class Resolver:
         if 'lead_directory_missing' in self.wrap.values:
             os.mkdir(self.dirname)
             extract_dir = self.dirname
-        shutil.unpack_archive(path, extract_dir)
+        try:
+            shutil.unpack_archive(path, extract_dir)
+        except OSError as e:
+            raise WrapException(f'failed to unpack archive with error: {str(e)}') from e
 
     def get_git(self) -> None:
         if not GIT:

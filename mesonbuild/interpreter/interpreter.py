@@ -216,7 +216,9 @@ class Summary:
 
 known_library_kwargs = (
     build.known_shlib_kwargs |
-    build.known_stlib_kwargs
+    build.known_stlib_kwargs |
+    {f'{l}_shared_args' for l in compilers.all_languages - {'java'}} |
+    {f'{l}_static_args' for l in compilers.all_languages - {'java'}}
 )
 
 known_build_target_kwargs = (
@@ -928,13 +930,14 @@ class Interpreter(InterpreterBase, HoldableObject):
             m += ['method', mlog.bold(method)]
         mlog.log(*m, '\n', nested=False)
 
+        methods_map: T.Dict[wrap.Method, T.Callable[[str, str, T.Dict[OptionKey, str, kwtypes.DoSubproject]], SubprojectHolder]] = {
+            'meson': self._do_subproject_meson,
+            'cmake': self._do_subproject_cmake,
+            'cargo': self._do_subproject_cargo,
+        }
+
         try:
-            if method == 'meson':
-                return self._do_subproject_meson(subp_name, subdir, default_options, kwargs)
-            elif method == 'cmake':
-                return self._do_subproject_cmake(subp_name, subdir, default_options, kwargs)
-            else:
-                raise mesonlib.MesonBugException(f'The method {method} is invalid for the subproject {subp_name}')
+            return methods_map[method](subp_name, subdir, default_options, kwargs)
         # Invalid code is always an error
         except InvalidCode:
             raise
@@ -1035,6 +1038,18 @@ class Interpreter(InterpreterBase, HoldableObject):
             )
             result.cm_interpreter = cm_int
         return result
+
+    def _do_subproject_cargo(self, subp_name: str, subdir: str,
+                             default_options: T.Dict[OptionKey, str],
+                             kwargs: kwtypes.DoSubproject) -> SubprojectHolder:
+        from .. import cargo
+        FeatureNew.single_use('Cargo subproject', '1.3.0', self.subproject, location=self.current_node)
+        with mlog.nested(subp_name):
+            ast = cargo.interpret(subp_name, subdir, self.environment)
+            return self._do_subproject_meson(
+                subp_name, subdir, default_options, kwargs, ast,
+                # FIXME: Are there other files used by cargo interpreter?
+                [os.path.join(subdir, 'Cargo.toml')])
 
     def get_option_internal(self, optname: str) -> coredata.UserOption:
         key = OptionKey.from_string(optname).evolve(subproject=self.subproject)
@@ -3186,7 +3201,7 @@ class Interpreter(InterpreterBase, HoldableObject):
             self.coredata.target_guids[idname] = str(uuid.uuid4()).upper()
 
     @FeatureNew('both_libraries', '0.46.0')
-    def build_both_libraries(self, node, args, kwargs):
+    def build_both_libraries(self, node: mparser.BaseNode, args: T.Tuple[str, SourcesVarargsType], kwargs: kwtypes.Library) -> build.BothLibraries:
         shared_lib = self.build_target(node, args, kwargs, build.SharedLibrary)
         static_lib = self.build_target(node, args, kwargs, build.StaticLibrary)
 
@@ -3201,6 +3216,9 @@ class Interpreter(InterpreterBase, HoldableObject):
         elif shared_lib.uses_rust():
             # FIXME: rustc supports generating both libraries in a single invocation,
             # but for now compile twice.
+            reuse_object_files = False
+        elif any(k.endswith(('static_args', 'shared_args')) and v for k, v in kwargs.items()):
+            # Ensure not just the keyword arguments exist, but that they are non-empty.
             reuse_object_files = False
         else:
             reuse_object_files = static_lib.pic
@@ -3219,16 +3237,57 @@ class Interpreter(InterpreterBase, HoldableObject):
 
         return build.BothLibraries(shared_lib, static_lib)
 
-    def build_library(self, node, args, kwargs):
+    def build_library(self, node: mparser.BaseNode, args: T.Tuple[str, SourcesVarargsType], kwargs: kwtypes.Library):
         default_library = self.coredata.get_option(OptionKey('default_library', subproject=self.subproject))
+        assert isinstance(default_library, str), 'for mypy'
         if default_library == 'shared':
-            return self.build_target(node, args, kwargs, build.SharedLibrary)
+            return self.build_target(node, args, T.cast('kwtypes.StaticLibrary', kwargs), build.SharedLibrary)
         elif default_library == 'static':
-            return self.build_target(node, args, kwargs, build.StaticLibrary)
+            return self.build_target(node, args, T.cast('kwtypes.SharedLibrary', kwargs), build.StaticLibrary)
         elif default_library == 'both':
             return self.build_both_libraries(node, args, kwargs)
         else:
             raise InterpreterException(f'Unknown default_library value: {default_library}.')
+
+    def __convert_file_args(self, raw: T.List[mesonlib.FileOrString]) -> T.Tuple[T.List[mesonlib.File], T.List[str]]:
+        """Convert raw target arguments from File | str to File.
+
+        This removes files from the command line and replaces them with string
+        values, but adds the files to depends list
+
+        :param raw: the raw arguments
+        :return: A tuple of file dependencies and raw arguments
+        """
+        depend_files: T.List[mesonlib.File] = []
+        args: T.List[str] = []
+        build_to_source = mesonlib.relpath(self.environment.get_source_dir(),
+                                           self.environment.get_build_dir())
+
+        for a in raw:
+            if isinstance(a, mesonlib.File):
+                depend_files.append(a)
+                args.append(a.rel_to_builddir(build_to_source))
+            else:
+                args.append(a)
+
+        return depend_files, args
+
+    def __process_language_args(self, kwargs: T.Dict[str, T.List[mesonlib.FileOrString]]) -> None:
+        """Convert split language args into a combined dictionary.
+
+        The Meson DSL takes arguments in the form `<lang>_args : args`, but in the
+        build layer we store these in a single dictionary as `{<lang>: args}`.
+        This function extracts the arguments from the DSL format and prepares
+        them for the IR.
+        """
+        d = kwargs.setdefault('depend_files', [])
+        new_args: T.DefaultDict[str, T.List[str]] = collections.defaultdict(list)
+
+        for l in compilers.all_languages:
+            deps, args = self.__convert_file_args(kwargs[f'{l}_args'])
+            new_args[l] = args
+            d.extend(deps)
+        kwargs['language_args'] = new_args
 
     @T.overload
     def build_target(self, node: mparser.BaseNode, args: T.Tuple[str, SourcesVarargsType],
@@ -3255,7 +3314,6 @@ class Interpreter(InterpreterBase, HoldableObject):
                      targetclass: T.Type[T.Union[build.Executable, build.StaticLibrary, build.SharedModule, build.SharedLibrary, build.Jar]]
                      ) -> T.Union[build.Executable, build.StaticLibrary, build.SharedModule, build.SharedLibrary, build.Jar]:
         @FeatureNewKwargs('build target', '0.42.0', ['build_rpath', 'implicit_include_directories'])
-        @FeatureNewKwargs('build target', '0.41.0', ['rust_args'])
         @FeatureNewKwargs('build target', '0.38.0', ['build_by_default'])
         @FeatureNewKwargs('build target', '0.48.0', ['gnu_symbol_visibility'])
         def build_target_decorator_caller(self, node, args, kwargs):
@@ -3295,10 +3353,21 @@ class Interpreter(InterpreterBase, HoldableObject):
             mlog.debug('Unknown target type:', str(targetclass))
             raise RuntimeError('Unreachable code')
         self.kwarg_strings_to_includedirs(kwargs)
+        self.__process_language_args(kwargs)
+        if targetclass is build.StaticLibrary:
+            for lang in compilers.all_languages - {'java'}:
+                deps, args = self.__convert_file_args(kwargs.get(f'{lang}_static_args', []))
+                kwargs['language_args'][lang].extend(args)
+                kwargs['depend_files'].extend(deps)
+        elif targetclass is build.SharedLibrary:
+            for lang in compilers.all_languages - {'java'}:
+                deps, args = self.__convert_file_args(kwargs.get(f'{lang}_shared_args', []))
+                kwargs['language_args'][lang].extend(args)
+                kwargs['depend_files'].extend(deps)
 
         # Filter out kwargs from other target types. For example 'soversion'
         # passed to library() when default_library == 'static'.
-        kwargs = {k: v for k, v in kwargs.items() if k in targetclass.known_kwargs}
+        kwargs = {k: v for k, v in kwargs.items() if k in targetclass.known_kwargs | {'language_args'}}
 
         srcs: T.List['SourceInputs'] = []
         struct: T.Optional[build.StructuredSources] = build.StructuredSources()

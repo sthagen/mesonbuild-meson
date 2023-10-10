@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import typing as T
 
-from typing_extensions import TypedDict, Literal, Protocol
+from typing_extensions import TypedDict, Literal, Protocol, NotRequired
 
 from .. import build
 from .. import coredata
@@ -326,6 +326,7 @@ class _BaseBuildTarget(TypedDict):
     """
 
     override_options: T.Dict[OptionKey, T.Union[str, int, bool, T.List[str]]]
+    depend_files: NotRequired[T.List[File]]
 
 
 class _BuildTarget(_BaseBuildTarget):
@@ -334,11 +335,26 @@ class _BuildTarget(_BaseBuildTarget):
 
     rust_dependency_map: T.Dict[str, str]
     sources: SourcesVarargsType
+    c_args: T.List[str]
+    cpp_args: T.List[str]
+    cuda_args: T.List[str]
+    fortran_args: T.List[str]
+    d_args: T.List[str]
+    objc_args: T.List[str]
+    objcpp_args: T.List[str]
+    rust_args: T.List[str]
+    vala_args: T.List[T.Union[str, File]]  # Yes, Vala is really special
+    cs_args: T.List[str]
+    swift_args: T.List[str]
+    cython_args: T.List[str]
+    nasm_args: T.List[str]
+    masm_args: T.List[str]
 
 
 class _LibraryMixin(TypedDict):
 
     rust_abi: T.Optional[Literal['c', 'rust']]
+
 
 class Executable(_BuildTarget):
 
@@ -381,6 +397,35 @@ class Library(_BuildTarget, _SharedLibMixin, _StaticLibMixin, _LibraryMixin):
 
     """For library, both_library, and as a base for build_target"""
 
+    c_static_args: NotRequired[T.List[str]]
+    c_shared_args: NotRequired[T.List[str]]
+    cpp_static_args: NotRequired[T.List[str]]
+    cpp_shared_args: NotRequired[T.List[str]]
+    cuda_static_args: NotRequired[T.List[str]]
+    cuda_shared_args: NotRequired[T.List[str]]
+    fortran_static_args: NotRequired[T.List[str]]
+    fortran_shared_args: NotRequired[T.List[str]]
+    d_static_args: NotRequired[T.List[str]]
+    d_shared_args: NotRequired[T.List[str]]
+    objc_static_args: NotRequired[T.List[str]]
+    objc_shared_args: NotRequired[T.List[str]]
+    objcpp_static_args: NotRequired[T.List[str]]
+    objcpp_shared_args: NotRequired[T.List[str]]
+    rust_static_args: NotRequired[T.List[str]]
+    rust_shared_args: NotRequired[T.List[str]]
+    vala_static_args: NotRequired[T.List[T.Union[str, File]]]  # Yes, Vala is really special
+    vala_shared_args: NotRequired[T.List[T.Union[str, File]]]  # Yes, Vala is really special
+    cs_static_args: NotRequired[T.List[str]]
+    cs_shared_args: NotRequired[T.List[str]]
+    swift_static_args: NotRequired[T.List[str]]
+    swift_shared_args: NotRequired[T.List[str]]
+    cython_static_args: NotRequired[T.List[str]]
+    cython_shared_args: NotRequired[T.List[str]]
+    nasm_static_args: NotRequired[T.List[str]]
+    nasm_shared_args: NotRequired[T.List[str]]
+    masm_static_args: NotRequired[T.List[str]]
+    masm_shared_args: NotRequired[T.List[str]]
+
 
 class BuildTarget(Library):
 
@@ -393,6 +438,7 @@ class Jar(_BaseBuildTarget):
     main_class: str
     java_resources: T.Optional[build.StructuredSources]
     sources: T.Union[str, File, build.CustomTarget, build.CustomTargetIndex, build.GeneratedList, build.ExtractedObjects, build.BuildTarget]
+    java_args: T.List[str]
 
 
 class FuncDeclareDependency(TypedDict):
