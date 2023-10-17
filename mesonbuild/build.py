@@ -44,7 +44,7 @@ from .compilers import (
 from .interpreterbase import FeatureNew, FeatureDeprecated
 
 if T.TYPE_CHECKING:
-    from typing_extensions import Literal
+    from typing_extensions import Literal, TypedDict
 
     from . import environment
     from ._typing import ImmutableListProtocol
@@ -63,6 +63,13 @@ if T.TYPE_CHECKING:
     LibTypes = T.Union['SharedLibrary', 'StaticLibrary', 'CustomTarget', 'CustomTargetIndex']
     BuildTargetTypes = T.Union['BuildTarget', 'CustomTarget', 'CustomTargetIndex']
     ObjectTypes = T.Union[str, 'File', 'ExtractedObjects', 'GeneratedTypes']
+
+    class DFeatures(TypedDict):
+
+        unittest: bool
+        debug: T.List[T.Union[str, int]]
+        import_dirs: T.List[IncludeDirs]
+        versions: T.List[T.Union[str, int]]
 
 pch_kwargs = {'c_pch', 'cpp_pch'}
 
@@ -645,7 +652,8 @@ class Target(HoldableObject, metaclass=abc.ABCMeta):
             self.build_by_default = kwargs['build_by_default']
             if not isinstance(self.build_by_default, bool):
                 raise InvalidArguments('build_by_default must be a boolean value.')
-        elif kwargs.get('install', False):
+
+        if not self.build_by_default and kwargs.get('install', False):
             # For backward compatibility, if build_by_default is not explicitly
             # set, use the value of 'install' if it's enabled.
             self.build_by_default = True
@@ -751,7 +759,12 @@ class BuildTarget(Target):
         self.sources: T.List[File] = []
         self.generated: T.List['GeneratedTypes'] = []
         self.extra_files: T.List[File] = []
-        self.d_features = defaultdict(list)
+        self.d_features: DFeatures = {
+            'debug': kwargs.get('d_debug', []),
+            'import_dirs': kwargs.get('d_import_dirs', []),
+            'versions': kwargs.get('d_module_versions', []),
+            'unittest': kwargs.get('d_unittest', False),
+        }
         self.pic = False
         self.pie = False
         # Track build_rpath entries so we can remove them at install time
@@ -1114,25 +1127,6 @@ class BuildTarget(Target):
             self.vala_vapi = kwargs.get('vala_vapi', self.name + '.vapi')
             self.vala_gir = kwargs.get('vala_gir', None)
 
-        dfeatures = defaultdict(list)
-        dfeature_unittest = kwargs.get('d_unittest', False)
-        if dfeature_unittest:
-            dfeatures['unittest'] = dfeature_unittest
-        dfeature_versions = kwargs.get('d_module_versions', [])
-        if dfeature_versions:
-            dfeatures['versions'] = dfeature_versions
-        dfeature_debug = kwargs.get('d_debug', [])
-        if dfeature_debug:
-            dfeatures['debug'] = dfeature_debug
-        if 'd_import_dirs' in kwargs:
-            dfeature_import_dirs = extract_as_list(kwargs, 'd_import_dirs')
-            for d in dfeature_import_dirs:
-                if not isinstance(d, IncludeDirs):
-                    raise InvalidArguments('Arguments to d_import_dirs must be include_directories.')
-            dfeatures['import_dirs'] = dfeature_import_dirs
-        if dfeatures:
-            self.d_features = dfeatures
-
         self.link_args = extract_as_list(kwargs, 'link_args')
         for i in self.link_args:
             if not isinstance(i, str):
@@ -1187,7 +1181,7 @@ class BuildTarget(Target):
             if not os.path.isfile(trial):
                 raise InvalidArguments(f'Tried to add non-existing resource {r}.')
         self.resources = resources
-        if 'name_prefix' in kwargs:
+        if kwargs.get('name_prefix') is not None:
             name_prefix = kwargs['name_prefix']
             if isinstance(name_prefix, list):
                 if name_prefix:
@@ -1197,7 +1191,7 @@ class BuildTarget(Target):
                     raise InvalidArguments('name_prefix must be a string.')
                 self.prefix = name_prefix
                 self.name_prefix_set = True
-        if 'name_suffix' in kwargs:
+        if kwargs.get('name_suffix') is not None:
             name_suffix = kwargs['name_suffix']
             if isinstance(name_suffix, list):
                 if name_suffix:

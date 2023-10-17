@@ -325,14 +325,33 @@ class _BaseBuildTarget(TypedDict):
     BuildTarget functions.
     """
 
+    build_by_default: bool
+    build_rpath: str
+    extra_files: T.List[FileOrString]
+    gnu_symbol_visibility: str
+    install: bool
+    install_mode: FileMode
+    install_rpath: str
+    implicit_include_directories: bool
+    link_depends: T.List[T.Union[str, File, build.CustomTarget, build.CustomTargetIndex, build.BuildTarget]]
+    link_language: T.Optional[str]
+    name_prefix: T.Optional[str]
+    name_suffix: T.Optional[str]
+    native: MachineChoice
+    objects: T.List[build.ObjectTypes]
     override_options: T.Dict[OptionKey, T.Union[str, int, bool, T.List[str]]]
     depend_files: NotRequired[T.List[File]]
+    resources: T.List[str]
 
 
 class _BuildTarget(_BaseBuildTarget):
 
     """Arguments shared by non-JAR functions"""
 
+    d_debug: T.List[T.Union[str, int]]
+    d_import_dirs: T.List[T.Union[str, build.IncludeDirs]]
+    d_module_versions: T.List[T.Union[str, int]]
+    d_unittest: bool
     rust_dependency_map: T.Dict[str, str]
     sources: SourcesVarargsType
     c_args: T.List[str]

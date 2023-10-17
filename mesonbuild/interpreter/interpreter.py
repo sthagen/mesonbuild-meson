@@ -2425,27 +2425,6 @@ class Interpreter(InterpreterBase, HoldableObject):
             pass
         self.subdir = prev_subdir
 
-    def _get_kwarg_install_mode(self, kwargs: T.Dict[str, T.Any]) -> T.Optional[FileMode]:
-        if kwargs.get('install_mode', None) is None:
-            return None
-        if isinstance(kwargs['install_mode'], FileMode):
-            return kwargs['install_mode']
-        install_mode: T.List[str] = []
-        mode = mesonlib.typeslistify(kwargs.get('install_mode', []), (str, int))
-        for m in mode:
-            # We skip any arguments that are set to `false`
-            if m is False:
-                m = None
-            install_mode.append(m)
-        if len(install_mode) > 3:
-            raise InvalidArguments('Keyword argument install_mode takes at '
-                                   'most 3 arguments.')
-        if len(install_mode) > 0 and install_mode[0] is not None and \
-           not isinstance(install_mode[0], str):
-            raise InvalidArguments('Keyword argument install_mode requires the '
-                                   'permissions arg to be a string or false')
-        return FileMode(*install_mode)
-
     # This is either ignored on basically any OS nowadays, or silently gets
     # ignored (Solaris) or triggers an "illegal operation" error (FreeBSD).
     # It was likely added "because it exists", but should never be used. In
@@ -3313,16 +3292,8 @@ class Interpreter(InterpreterBase, HoldableObject):
                      kwargs: T.Union[kwtypes.Executable, kwtypes.StaticLibrary, kwtypes.SharedLibrary, kwtypes.SharedModule, kwtypes.Jar],
                      targetclass: T.Type[T.Union[build.Executable, build.StaticLibrary, build.SharedModule, build.SharedLibrary, build.Jar]]
                      ) -> T.Union[build.Executable, build.StaticLibrary, build.SharedModule, build.SharedLibrary, build.Jar]:
-        @FeatureNewKwargs('build target', '0.42.0', ['build_rpath', 'implicit_include_directories'])
-        @FeatureNewKwargs('build target', '0.38.0', ['build_by_default'])
-        @FeatureNewKwargs('build target', '0.48.0', ['gnu_symbol_visibility'])
-        def build_target_decorator_caller(self, node, args, kwargs):
-            return True
-
-        build_target_decorator_caller(self, node, args, kwargs)
-
         name, sources = args
-        for_machine = self.machine_from_native_kwarg(kwargs)
+        for_machine = kwargs['native']
         if kwargs.get('rust_crate_type') == 'proc-macro':
             # Silently force to native because that's the only sensible value
             # and rust_crate_type is deprecated any way.
@@ -3342,17 +3313,13 @@ class Interpreter(InterpreterBase, HoldableObject):
         sources = [s for s in sources
                    if not isinstance(s, (build.BuildTarget, build.ExtractedObjects))]
         sources = self.source_strings_to_files(sources)
-        objs = extract_as_list(kwargs, 'objects')
+        objs = kwargs['objects']
         kwargs['dependencies'] = extract_as_list(kwargs, 'dependencies')
-        kwargs['install_mode'] = self._get_kwarg_install_mode(kwargs)
-        if 'extra_files' in kwargs:
-            ef = extract_as_list(kwargs, 'extra_files')
-            kwargs['extra_files'] = self.source_strings_to_files(ef)
+        kwargs['extra_files'] = self.source_strings_to_files(kwargs['extra_files'])
         self.check_sources_exist(os.path.join(self.source_root, self.subdir), sources)
         if targetclass not in {build.Executable, build.SharedLibrary, build.SharedModule, build.StaticLibrary, build.Jar}:
             mlog.debug('Unknown target type:', str(targetclass))
             raise RuntimeError('Unreachable code')
-        self.kwarg_strings_to_includedirs(kwargs)
         self.__process_language_args(kwargs)
         if targetclass is build.StaticLibrary:
             for lang in compilers.all_languages - {'java'}:
@@ -3364,6 +3331,8 @@ class Interpreter(InterpreterBase, HoldableObject):
                 deps, args = self.__convert_file_args(kwargs.get(f'{lang}_shared_args', []))
                 kwargs['language_args'][lang].extend(args)
                 kwargs['depend_files'].extend(deps)
+        if targetclass is not build.Jar:
+            self.kwarg_strings_to_includedirs(kwargs)
 
         # Filter out kwargs from other target types. For example 'soversion'
         # passed to library() when default_library == 'static'.
@@ -3436,10 +3405,10 @@ class Interpreter(InterpreterBase, HoldableObject):
         self.project_args_frozen = True
         return target
 
-    def kwarg_strings_to_includedirs(self, kwargs):
-        if 'd_import_dirs' in kwargs:
-            items = mesonlib.extract_as_list(kwargs, 'd_import_dirs')
-            cleaned_items = []
+    def kwarg_strings_to_includedirs(self, kwargs: kwtypes._BuildTarget) -> None:
+        if kwargs['d_import_dirs']:
+            items = kwargs['d_import_dirs']
+            cleaned_items: T.List[build.IncludeDirs] = []
             for i in items:
                 if isinstance(i, str):
                     # BW compatibility. This was permitted so we must support it

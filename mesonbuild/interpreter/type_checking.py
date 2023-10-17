@@ -25,6 +25,7 @@ NoneType: T.Type[None] = type(None)
 if T.TYPE_CHECKING:
     from typing_extensions import Literal
 
+    from ..build import ObjectTypes
     from ..interpreterbase import TYPE_var
     from ..mesonlib import EnvInitValueType
 
@@ -549,22 +550,106 @@ _JAVA_LANG_KW: KwargInfo[T.List[str]] = _BASE_LANG_KW.evolve(
     deprecated_message='This does not, and never has, done anything. It should be removed'
 )
 
+def _objects_validator(vals: T.List[ObjectTypes]) -> T.Optional[str]:
+    non_objects: T.List[str] = []
+
+    for val in vals:
+        if isinstance(val, ExtractedObjects):
+            continue
+        elif isinstance(val, (str, File)):
+            if not compilers.is_object(val):
+                non_objects.append(str(val))
+        else:
+            non_objects.extend(o for o in val.get_outputs() if not compilers.is_object(o))
+
+    if non_objects:
+        return f'File{"s" if len(non_objects) > 1 else ""}: "{", ".join(non_objects)}" are not objects'
+
+    return None
+
+
 # Applies to all build_target like classes
 _ALL_TARGET_KWS: T.List[KwargInfo] = [
     OVERRIDE_OPTIONS_KW,
+    KwargInfo('build_by_default', bool, default=True, since='0.38.0'),
+    KwargInfo('extra_files', ContainerTypeInfo(list, (str, File)), default=[], listify=True),
+    INSTALL_KW,
+    INSTALL_MODE_KW,
+    KwargInfo('implicit_include_directories', bool, default=True, since='0.42.0'),
+    NATIVE_KW,
+    KwargInfo('resources', ContainerTypeInfo(list, str), default=[], listify=True),
+    KwargInfo(
+        'objects',
+        ContainerTypeInfo(list, (str, File, CustomTarget, CustomTargetIndex, GeneratedList, ExtractedObjects)),
+        listify=True,
+        default=[],
+        validator=_objects_validator,
+        since_values={
+            ContainerTypeInfo(list, (GeneratedList, CustomTarget, CustomTargetIndex)):
+                ('1.1.0', 'generated sources as positional "objects" arguments')
+        },
+    ),
 ]
+
+
+def _name_validator(arg: T.Optional[T.Union[str, T.List]]) -> T.Optional[str]:
+    if isinstance(arg, list) and arg:
+        return 'must be empty when passed as an array to signify the default value.'
+    return None
+
+
+def _name_suffix_validator(arg: T.Optional[T.Union[str, T.List]]) -> T.Optional[str]:
+    if arg == '':
+        return 'must nt be a empty string. An empty array may be passed if you want Meson to use the default behavior.'
+    return _name_validator(arg)
+
+
+_NAME_PREFIX_KW: KwargInfo[T.Optional[T.Union[str, T.List]]] = KwargInfo(
+    'name_prefix',
+    (str, NoneType, list),
+    validator=_name_validator,
+    convertor=lambda x: None if isinstance(x, list) else x,
+)
+
 
 # Applies to all build_target classes except jar
 _BUILD_TARGET_KWS: T.List[KwargInfo] = [
     *_ALL_TARGET_KWS,
     *_LANGUAGE_KWS,
     BT_SOURCES_KW,
+    INCLUDE_DIRECTORIES.evolve(name='d_import_dirs'),
+    _NAME_PREFIX_KW,
+    _NAME_PREFIX_KW.evolve(name='name_suffix', validator=_name_suffix_validator),
     RUST_CRATE_TYPE_KW,
+    KwargInfo('d_debug', ContainerTypeInfo(list, (str, int)), default=[], listify=True),
+    D_MODULE_VERSIONS_KW,
+    KwargInfo('d_unittest', bool, default=False),
     KwargInfo(
         'rust_dependency_map',
         ContainerTypeInfo(dict, str),
         default={},
         since='1.2.0',
+    ),
+    KwargInfo('build_rpath', str, default='', since='0.42.0'),
+    KwargInfo(
+        'gnu_symbol_visibility',
+        str,
+        default='',
+        validator=in_set_validator({'', 'default', 'internal', 'hidden', 'protected', 'inlineshidden'}),
+        since='0.48.0',
+    ),
+    KwargInfo('install_rpath', str, default=''),
+    KwargInfo(
+        'link_depends',
+        ContainerTypeInfo(list, (str, File, CustomTarget, CustomTargetIndex, BuildTarget)),
+        default=[],
+        listify=True,
+    ),
+    KwargInfo(
+        'link_language',
+        (str, NoneType),
+        validator=in_set_validator(set(compilers.all_languages)),
+        since='0.51.0',
     ),
 ]
 

@@ -12,8 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from __future__ import annotations
+import itertools
 import os
 import typing as T
+
 from mesonbuild.interpreterbase.decorators import FeatureNew
 
 from . import ExtensionModule, ModuleReturnValue, ModuleInfo
@@ -162,6 +164,7 @@ class RustModule(ExtensionModule):
         new_target_kwargs['install'] = False
         new_target_kwargs['dependencies'] = new_target_kwargs.get('dependencies', []) + kwargs['dependencies']
         new_target_kwargs['link_with'] = new_target_kwargs.get('link_with', []) + kwargs['link_with']
+        del new_target_kwargs['rust_crate_type']
 
         lang_args = base_target.extra_args.copy()
         lang_args['rust'] = base_target.extra_args['rust'] + kwargs['rust_args'] + ['--test']
@@ -237,11 +240,13 @@ class RustModule(ExtensionModule):
                 elif isinstance(s, CustomTarget):
                     depends.append(s)
 
-        clang_args.extend(state.global_args.get('c', []))
-        clang_args.extend(state.project_args.get('c', []))
+        # We only want include directories and defines, other things may not be valid
         cargs = state.get_option('args', state.subproject, lang='c')
         assert isinstance(cargs, list), 'for mypy'
         clang_args.extend(cargs)
+        for a in itertools.chain(state.global_args.get('c', []), state.project_args.get('c', []), cargs):
+            if a.startswith(('-I', '/I', '-D', '/D', '-U', '/U')):
+                clang_args.append(a)
 
         if self._bindgen_bin is None:
             self._bindgen_bin = state.find_program('bindgen')
