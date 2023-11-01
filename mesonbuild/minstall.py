@@ -72,6 +72,8 @@ false to copy the link.'''
 
 selinux_updates: T.List[str] = []
 
+# Note: when adding arguments, please also add them to the completion
+# scripts in $MESONSRC/data/shell-completions/
 def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument('-C', dest='wd', action=RealPathAction,
                         help='directory to cd into before running')
@@ -720,8 +722,9 @@ class Installer:
             # In AIX, we archive our shared libraries.  When we install any package in AIX we need to
             # install the archive in which the shared library exists. The below code does the same.
             # We change the .so files having lt_version or so_version to archive file install.
+            # If .so does not exist then it means it is in the archive. Otherwise it is a .so that exists.
             if is_aix():
-                if '.so' in t.fname:
+                if not os.path.exists(t.fname) and '.so' in t.fname:
                     t.fname = re.sub('[.][a]([.]?([0-9]+))*([.]?([a-z]+))*', '.a', t.fname.replace('.so', '.a'))
             if not self.should_install(t):
                 continue
