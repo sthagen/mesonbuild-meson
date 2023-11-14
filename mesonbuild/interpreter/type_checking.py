@@ -554,16 +554,13 @@ def _objects_validator(vals: T.List[ObjectTypes]) -> T.Optional[str]:
     non_objects: T.List[str] = []
 
     for val in vals:
-        if isinstance(val, ExtractedObjects):
+        if isinstance(val, (str, File, ExtractedObjects)):
             continue
-        elif isinstance(val, (str, File)):
-            if not compilers.is_object(val):
-                non_objects.append(str(val))
         else:
             non_objects.extend(o for o in val.get_outputs() if not compilers.is_object(o))
 
     if non_objects:
-        return f'File{"s" if len(non_objects) > 1 else ""}: "{", ".join(non_objects)}" are not objects'
+        return f'{", ".join(non_objects)!r} are not objects'
 
     return None
 
@@ -601,7 +598,7 @@ def _name_validator(arg: T.Optional[T.Union[str, T.List]]) -> T.Optional[str]:
 
 def _name_suffix_validator(arg: T.Optional[T.Union[str, T.List]]) -> T.Optional[str]:
     if arg == '':
-        return 'must nt be a empty string. An empty array may be passed if you want Meson to use the default behavior.'
+        return 'must not be a empty string. An empty array may be passed if you want Meson to use the default behavior.'
     return _name_validator(arg)
 
 
