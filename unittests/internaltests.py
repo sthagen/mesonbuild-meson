@@ -1,16 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
 # Copyright 2016-2021 The Meson development team
-
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-
-#     http://www.apache.org/licenses/LICENSE-2.0
-
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 from configparser import ConfigParser
 from pathlib import Path
@@ -618,7 +607,8 @@ class InternalTests(unittest.TestCase):
             out = name.with_suffix('.o')
             with src.open('w', encoding='utf-8') as f:
                 f.write('int meson_foobar (void) { return 0; }')
-            subprocess.check_call(['clang', '-c', str(src), '-o', str(out)])
+            # use of x86_64 is hardcoded in run_tests.py:get_fake_env()
+            subprocess.check_call(['clang', '-c', str(src), '-o', str(out), '-arch', 'x86_64'])
             subprocess.check_call(['ar', 'csr', str(name), str(out)])
 
         with tempfile.TemporaryDirectory() as tmpdir:

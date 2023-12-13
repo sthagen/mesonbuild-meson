@@ -1,16 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
 # Copyright 2019 The Meson development team
-
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-
-#     http://www.apache.org/licenses/LICENSE-2.0
-
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 # This class contains the basic functionality needed to run any interpreter
 # or an interpreter-based tool.
@@ -784,6 +773,7 @@ class CMakeInterpreter:
 
         # Analysed data
         self.project_name = ''
+        self.project_version = ''
         self.languages: T.List[str] = []
         self.targets: T.List[ConverterTarget] = []
         self.custom_targets: T.List[ConverterCustomTarget] = []
@@ -875,6 +865,8 @@ class CMakeInterpreter:
         # Load the codemodel configurations
         self.codemodel_configs = self.fileapi.get_cmake_configurations()
 
+        self.project_version = self.fileapi.get_project_version()
+
     def analyse(self) -> None:
         if self.codemodel_configs is None:
             raise CMakeException('CMakeInterpreter was not initialized')
@@ -949,7 +941,7 @@ class CMakeInterpreter:
         for tgt in self.targets:
             tgt.cleanup_dependencies()
 
-        mlog.log('CMake project', mlog.bold(self.project_name), 'has', mlog.bold(str(len(self.targets) + len(self.custom_targets))), 'build targets.')
+        mlog.log('CMake project', mlog.bold(self.project_name), mlog.bold(self.project_version), 'has', mlog.bold(str(len(self.targets) + len(self.custom_targets))), 'build targets.')
 
     def pretend_to_be_meson(self, options: TargetOptions) -> CodeBlockNode:
         if not self.project_name:
@@ -1023,7 +1015,7 @@ class CMakeInterpreter:
 
         # Generate the root code block and the project function call
         root_cb = CodeBlockNode(token())
-        root_cb.lines += [function('project', [self.project_name] + self.languages)]
+        root_cb.lines += [function('project', [self.project_name] + self.languages, {'version': self.project_version} if self.project_version else None)]
 
         # Add the run script for custom commands
 
