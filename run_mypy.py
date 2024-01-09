@@ -24,6 +24,10 @@ modules = [
     'mesonbuild/wrap/',
 
     # specific files
+    'mesonbuild/ast/introspection.py',
+    'mesonbuild/ast/printer.py',
+    'mesonbuild/ast/postprocess.py',
+    'mesonbuild/ast/visitor.py',
     'mesonbuild/arglist.py',
     'mesonbuild/backend/backends.py',
     'mesonbuild/backend/nonebackend.py',
