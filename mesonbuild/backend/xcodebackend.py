@@ -195,6 +195,9 @@ class XCodeBackend(backends.Backend):
         self.regen_dependency_id = self.gen_id()
         self.top_level_dict = PbxDict()
         self.generator_outputs = {}
+        self.arch = self.build.environment.machines.host.cpu
+        if self.arch == 'aarch64':
+            self.arch = 'arm64'
         # In Xcode files are not accessed via their file names, but rather every one of them
         # gets an unique id. More precisely they get one unique id per target they are used
         # in. If you generate only one id per file and use them, compilation will work but the
@@ -227,17 +230,17 @@ class XCodeBackend(backends.Backend):
         os.makedirs(os.path.join(self.environment.get_build_dir(), dirname), exist_ok=True)
         return dirname
 
-    def object_filename_from_source(self, target: build.BuildTarget, source: mesonlib.FileOrString) -> str:
+    def object_filename_from_source(self, target: build.BuildTarget, source: mesonlib.FileOrString, targetdir: T.Optional[str] = None) -> str:
         # Xcode has the following naming scheme:
         # projectname.build/debug/prog@exe.build/Objects-normal/x86_64/func.o
         project = self.build.project_name
         buildtype = self.buildtype
         tname = target.get_id()
-        arch = 'x86_64'
         if isinstance(source, mesonlib.File):
             source = source.fname
         stem = os.path.splitext(os.path.basename(source))[0]
-        obj_path = f'{project}.build/{buildtype}/{tname}.build/Objects-normal/{arch}/{stem}.o'
+        # Append "build" before the actual object path to match OBJROOT
+        obj_path = f'build/{project}.build/{buildtype}/{tname}.build/Objects-normal/{self.arch}/{stem}.o'
         return obj_path
 
     def determine_swift_dep_dirs(self, target: build.BuildTarget) -> T.List[str]:
@@ -583,12 +586,15 @@ class XCodeBackend(backends.Backend):
                 elif isinstance(d, build.BuildTarget):
                     dependencies.append(self.pbx_dep_map[d.get_id()])
             for s in t.sources:
-                if not isinstance(s, build.GeneratedList):
-                    continue
-                build_phases.append(self.shell_targets[(tname, generator_id)])
-                for d in s.depends:
-                    dependencies.append(self.pbx_custom_dep_map[d.get_id()])
-                generator_id += 1
+                if isinstance(s, build.GeneratedList):
+                    build_phases.append(self.shell_targets[(tname, generator_id)])
+                    for d in s.depends:
+                        dependencies.append(self.pbx_custom_dep_map[d.get_id()])
+                    generator_id += 1
+                elif isinstance(s, build.ExtractedObjects):
+                    source_target_id = self.pbx_dep_map[s.target.get_id()]
+                    if source_target_id not in dependencies:
+                        dependencies.append(source_target_id)
             build_phases.append(self.shell_targets[tname])
             aggregated_targets.append((ct_id, tname, self.buildconflistmap[tname], build_phases, dependencies))
 
@@ -1391,11 +1397,13 @@ class XCodeBackend(backends.Backend):
             bt_dict.add_item('isa', 'XCBuildConfiguration')
             settings_dict = PbxDict()
             bt_dict.add_item('buildSettings', settings_dict)
-            settings_dict.add_item('ARCHS', '"$(NATIVE_ARCH_ACTUAL)"')
+            settings_dict.add_item('ARCHS', f'"{self.arch}"')
+            settings_dict.add_item('BUILD_DIR', f'"{self.environment.get_build_dir()}"')
+            settings_dict.add_item('BUILD_ROOT', '"$(BUILD_DIR)"')
             settings_dict.add_item('ONLY_ACTIVE_ARCH', 'YES')
             settings_dict.add_item('SWIFT_VERSION', '5.0')
             settings_dict.add_item('SDKROOT', '"macosx"')
-            settings_dict.add_item('SYMROOT', '"%s/build"' % self.environment.get_build_dir())
+            settings_dict.add_item('OBJROOT', '"$(BUILD_DIR)/build"')
             bt_dict.add_item('name', f'"{buildtype}"')
 
         # Then the all target.
@@ -1405,7 +1413,6 @@ class XCodeBackend(backends.Backend):
             bt_dict.add_item('isa', 'XCBuildConfiguration')
             settings_dict = PbxDict()
             bt_dict.add_item('buildSettings', settings_dict)
-            settings_dict.add_item('SYMROOT', '"%s"' % self.environment.get_build_dir())
             warn_array = PbxArray()
             warn_array.add_item('"$(inherited)"')
             settings_dict.add_item('WARNING_CFLAGS', warn_array)
@@ -1419,7 +1426,6 @@ class XCodeBackend(backends.Backend):
             bt_dict.add_item('isa', 'XCBuildConfiguration')
             settings_dict = PbxDict()
             bt_dict.add_item('buildSettings', settings_dict)
-            settings_dict.add_item('SYMROOT', '"%s"' % self.environment.get_build_dir())
             warn_array = PbxArray()
             settings_dict.add_item('WARNING_CFLAGS', warn_array)
             warn_array.add_item('"$(inherited)"')
@@ -1435,10 +1441,9 @@ class XCodeBackend(backends.Backend):
             bt_dict.add_item('isa', 'XCBuildConfiguration')
             settings_dict = PbxDict()
             bt_dict.add_item('buildSettings', settings_dict)
-            settings_dict.add_item('ARCHS', '"$(NATIVE_ARCH_ACTUAL)"')
+            settings_dict.add_item('ARCHS', f'"{self.arch}"')
             settings_dict.add_item('ONLY_ACTIVE_ARCH', 'YES')
             settings_dict.add_item('SDKROOT', '"macosx"')
-            settings_dict.add_item('SYMROOT', '"%s/build"' % self.environment.get_build_dir())
             bt_dict.add_item('name', f'"{buildtype}"')
 
     def determine_internal_dep_link_args(self, target, buildtype):
@@ -1666,7 +1671,8 @@ class XCodeBackend(backends.Backend):
             settings_dict.add_item('SECTORDER_FLAGS', '""')
             if is_swift and bridging_header:
                 settings_dict.add_item('SWIFT_OBJC_BRIDGING_HEADER', f'"{bridging_header}"')
-            settings_dict.add_item('SYMROOT', f'"{symroot}"')
+            settings_dict.add_item('BUILD_DIR', f'"{symroot}"')
+            settings_dict.add_item('OBJROOT', f'"{symroot}/build"')
             sysheader_arr = PbxArray()
             # XCode will change every -I flag that points inside these directories
             # to an -isystem. Thus set nothing in it since we control our own
