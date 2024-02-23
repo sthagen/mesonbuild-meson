@@ -1,7 +1,11 @@
 # SPDX-license-identifer: Apache-2.0
-# Copyright © 2021-2022 Intel Corporation
+# Copyright © 2021-2024 Intel Corporation
 
-project('rustmod bindgen', ['c', 'rust'], meson_version : '>= 0.63')
+project(
+  'rustmod bindgen',
+  ['c', 'cpp', 'rust'],
+  meson_version : '>= 0.63',
+  default_options : ['cpp_std=c++17'])
 
 prog_bindgen = find_program('bindgen', required : false)
 if not prog_bindgen.found()
@@ -28,12 +32,17 @@ if result.returncode() != 0
   error('MESON_SKIP_TEST bindgen does not seem to work')
 endif
 
+rust = import('unstable-rust')
+
+# Check version, this case is obviously impossible
+testcase expect_error('Program \'bindgen\' not found or not executable')
+  rust.bindgen(input : 'include/other.h', output : 'other.rs', bindgen_version : ['< 0.1', '> 10000'])
+endtestcase
+
 # This is to test the include_directories argument to bindgen
 inc = include_directories('include')
 
 c_lib = static_library('clib', 'src/source.c', include_directories : inc)
-
-rust = import('unstable-rust')
 
 gen = rust.bindgen(
   input : 'src/header.h',
@@ -107,3 +116,17 @@ gp_exe = executable(
 )
 
 test('global and project arguments', gp_exe)
+
+cpp_lib = static_library('cpplib', 'src/impl.cpp')
+
+cpp_bind = rust.bindgen(
+  input : 'src/header.hpp',
+  output : 'generated-cpp.rs',
+)
+
+cpp_exe = executable(
+  'cpp_exe',
+  structured_sources(['src/cpp.rs', cpp_bind]),
+  link_with : cpp_lib,
+)
+test('cpp', cpp_exe)

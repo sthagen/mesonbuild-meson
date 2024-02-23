@@ -12,8 +12,11 @@ from . import ExtensionModule, ModuleReturnValue, ModuleInfo
 from .. import mlog
 from ..build import (BothLibraries, BuildTarget, CustomTargetIndex, Executable, ExtractedObjects, GeneratedList,
                      CustomTarget, InvalidArguments, Jar, StructuredSources, SharedLibrary)
-from ..compilers.compilers import are_asserts_disabled
-from ..interpreter.type_checking import DEPENDENCIES_KW, LINK_WITH_KW, SHARED_LIB_KWS, TEST_KWS, OUTPUT_KW, INCLUDE_DIRECTORIES, SOURCES_VARARGS
+from ..compilers.compilers import are_asserts_disabled, lang_suffixes
+from ..interpreter.type_checking import (
+    DEPENDENCIES_KW, LINK_WITH_KW, SHARED_LIB_KWS, TEST_KWS, OUTPUT_KW,
+    INCLUDE_DIRECTORIES, SOURCES_VARARGS, NoneType, in_set_validator
+)
 from ..interpreterbase import ContainerTypeInfo, InterpreterException, KwargInfo, typed_kwargs, typed_pos_args, noPosargs, permittedKwargs
 from ..mesonlib import File
 
@@ -27,7 +30,7 @@ if T.TYPE_CHECKING:
     from ..programs import ExternalProgram, OverrideProgram
     from ..interpreter.type_checking import SourcesVarargsType
 
-    from typing_extensions import TypedDict
+    from typing_extensions import TypedDict, Literal
 
     class FuncTest(_kwargs.BaseTest):
 
@@ -44,6 +47,8 @@ if T.TYPE_CHECKING:
         input: T.List[SourceInputs]
         output: str
         dependencies: T.List[T.Union[Dependency, ExternalLibrary]]
+        language: T.Optional[Literal['c', 'cpp']]
+        bindgen_version: T.List[str]
 
 
 class RustModule(ExtensionModule):
@@ -187,6 +192,8 @@ class RustModule(ExtensionModule):
             listify=True,
             required=True,
         ),
+        KwargInfo('language', (str, NoneType), since='1.4.0', validator=in_set_validator({'c', 'cpp'})),
+        KwargInfo('bindgen_version', ContainerTypeInfo(list, str), default=[], listify=True, since='1.4.0'),
         INCLUDE_DIRECTORIES.evolve(since_values={ContainerTypeInfo(list, str): '1.0.0'}),
         OUTPUT_KW,
         DEPENDENCIES_KW.evolve(since='1.0.0'),
@@ -230,15 +237,8 @@ class RustModule(ExtensionModule):
                 elif isinstance(s, CustomTarget):
                     depends.append(s)
 
-        # We only want include directories and defines, other things may not be valid
-        cargs = state.get_option('args', state.subproject, lang='c')
-        assert isinstance(cargs, list), 'for mypy'
-        for a in itertools.chain(state.global_args.get('c', []), state.project_args.get('c', []), cargs):
-            if a.startswith(('-I', '/I', '-D', '/D', '-U', '/U')):
-                clang_args.append(a)
-
         if self._bindgen_bin is None:
-            self._bindgen_bin = state.find_program('bindgen')
+            self._bindgen_bin = state.find_program('bindgen', wanted=kwargs['bindgen_version'])
 
         name: str
         if isinstance(header, File):
@@ -247,6 +247,45 @@ class RustModule(ExtensionModule):
             raise InterpreterException('bindgen source file must be a C header, not an object or build target')
         else:
             name = header.get_outputs()[0]
+
+        # bindgen assumes that C++ headers will be called .hpp. We want to
+        # ensure that anything Meson considers a C++ header is treated as one.
+        language = kwargs['language']
+        if language is None:
+            ext = os.path.splitext(name)[1][1:]
+            if ext in lang_suffixes['cpp']:
+                language = 'cpp'
+            elif ext == 'h':
+                language = 'c'
+            else:
+                raise InterpreterException(f'Unknown file type extension for: {name}')
+
+        # We only want include directories and defines, other things may not be valid
+        cargs = state.get_option('args', state.subproject, lang=language)
+        assert isinstance(cargs, list), 'for mypy'
+        for a in itertools.chain(state.global_args.get(language, []), state.project_args.get(language, []), cargs):
+            if a.startswith(('-I', '/I', '-D', '/D', '-U', '/U')):
+                clang_args.append(a)
+
+        if language == 'cpp':
+            clang_args.extend(['-x', 'c++'])
+
+        # Add the C++ standard to the clang arguments. Attempt to translate VS
+        # extension versions into the nearest standard version
+        std = state.get_option('std', lang=language)
+        assert isinstance(std, str), 'for mypy'
+        if std.startswith('vc++'):
+            if std.endswith('latest'):
+                mlog.warning('Attempting to translate vc++latest into a clang compatible version.',
+                             'Currently this is hardcoded for c++20', once=True, fatal=False)
+                std = 'c++20'
+            else:
+                mlog.debug('The current C++ standard is a Visual Studio extension version.',
+                           'bindgen will use a the nearest C++ standard instead')
+                std = std[1:]
+
+        if std != 'none':
+            clang_args.append(f'-std={std}')
 
         cmd = self._bindgen_bin.get_command() + \
             [
