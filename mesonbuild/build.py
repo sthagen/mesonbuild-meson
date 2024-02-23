@@ -564,16 +564,17 @@ class Target(HoldableObject, metaclass=abc.ABCMeta):
             return NotImplemented
         return self.get_id() >= other.get_id()
 
-    def get_default_install_dir(self) -> T.Tuple[str, str]:
+    def get_default_install_dir(self) -> T.Union[T.Tuple[str, str], T.Tuple[None, None]]:
         raise NotImplementedError
 
     def get_custom_install_dir(self) -> T.List[T.Union[str, Literal[False]]]:
         raise NotImplementedError
 
-    def get_install_dir(self) -> T.Tuple[T.List[T.Union[str, Literal[False]]], str, Literal[False]]:
+    def get_install_dir(self) -> T.Tuple[T.List[T.Union[str, Literal[False]]], T.List[T.Optional[str]], bool]:
         # Find the installation directory.
         default_install_dir, default_install_dir_name = self.get_default_install_dir()
-        outdirs = self.get_custom_install_dir()
+        outdirs: T.List[T.Union[str, Literal[False]]] = self.get_custom_install_dir()
+        install_dir_names: T.List[T.Optional[str]]
         if outdirs and outdirs[0] != default_install_dir and outdirs[0] is not True:
             # Either the value is set to a non-default value, or is set to
             # False (which means we want this specific output out of many
@@ -1102,7 +1103,7 @@ class BuildTarget(Target):
             result.update(i.get_link_dep_subdirs())
         return result
 
-    def get_default_install_dir(self) -> T.Tuple[str, str]:
+    def get_default_install_dir(self) -> T.Union[T.Tuple[str, str], T.Tuple[None, None]]:
         return self.environment.get_libdir(), '{libdir}'
 
     def get_custom_install_dir(self) -> T.List[T.Union[str, Literal[False]]]:
@@ -2029,7 +2030,7 @@ class Executable(BuildTarget):
         if self.rust_crate_type != 'bin':
             raise InvalidArguments('Invalid rust_crate_type: must be "bin" for executables.')
 
-    def get_default_install_dir(self) -> T.Tuple[str, str]:
+    def get_default_install_dir(self) -> T.Union[T.Tuple[str, str], T.Tuple[None, None]]:
         return self.environment.get_bindir(), '{bindir}'
 
     def description(self):
@@ -2140,7 +2141,7 @@ class StaticLibrary(BuildTarget):
     def get_link_deps_mapping(self, prefix: str) -> T.Mapping[str, str]:
         return {}
 
-    def get_default_install_dir(self) -> T.Tuple[str, str]:
+    def get_default_install_dir(self) -> T.Union[T.Tuple[str, str], T.Tuple[None, None]]:
         return self.environment.get_static_lib_dir(), '{libdir_static}'
 
     def type_suffix(self):
@@ -2231,7 +2232,7 @@ class SharedLibrary(BuildTarget):
         mappings.update(result)
         return mappings
 
-    def get_default_install_dir(self) -> T.Tuple[str, str]:
+    def get_default_install_dir(self) -> T.Union[T.Tuple[str, str], T.Tuple[None, None]]:
         return self.environment.get_shared_lib_dir(), '{libdir_shared}'
 
     def determine_filenames(self):
@@ -2467,7 +2468,7 @@ class SharedModule(SharedLibrary):
         # to build targets, see: https://github.com/mesonbuild/meson/issues/9492
         self.force_soname = False
 
-    def get_default_install_dir(self) -> T.Tuple[str, str]:
+    def get_default_install_dir(self) -> T.Union[T.Tuple[str, str], T.Tuple[None, None]]:
         return self.environment.get_shared_module_dir(), '{moduledir_shared}'
 
 class BothLibraries(SecondLevelHolder):
@@ -2606,7 +2607,7 @@ class CustomTarget(Target, CustomTargetBase, CommandBase):
         # Whether to use absolute paths for all files on the commandline
         self.absolute_paths = absolute_paths
 
-    def get_default_install_dir(self) -> T.Tuple[str, str]:
+    def get_default_install_dir(self) -> T.Union[T.Tuple[str, str], T.Tuple[None, None]]:
         return None, None
 
     def __repr__(self):
@@ -2924,7 +2925,7 @@ class Jar(BuildTarget):
             return ['-cp', os.pathsep.join(cp_paths)]
         return []
 
-    def get_default_install_dir(self) -> T.Tuple[str, str]:
+    def get_default_install_dir(self) -> T.Union[T.Tuple[str, str], T.Tuple[None, None]]:
         return self.environment.get_jar_dir(), '{jardir}'
 
 @dataclass(eq=False)
