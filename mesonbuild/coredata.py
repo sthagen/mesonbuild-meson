@@ -974,6 +974,8 @@ class CoreData:
         return dirty
 
     def set_default_options(self, default_options: T.MutableMapping[OptionKey, str], subproject: str, env: 'Environment') -> None:
+        from .compilers import base_options
+
         # Main project can set default options on subprojects, but subprojects
         # can only set default options on themselves.
         # Preserve order: if env.options has 'buildtype' it must come after
@@ -1003,11 +1005,12 @@ class CoreData:
             # not differ between them even when they are valid for both.
             if subproject and k.is_builtin() and self.options[k.evolve(subproject='', machine=MachineChoice.HOST)].yielding:
                 continue
-            # Skip compiler and backend options, they are handled when
+            # Skip base, compiler, and backend options, they are handled when
             # adding languages and setting backend.
             if k.type in {OptionType.COMPILER, OptionType.BACKEND}:
                 continue
-            if k.type == OptionType.BASE and env.first_invocation:
+            if k.type == OptionType.BASE and k in base_options:
+                # set_options will report unknown base options
                 continue
             options[k] = v
 
@@ -1019,6 +1022,7 @@ class CoreData:
             value = env.options.get(k)
             if value is not None:
                 o.set_value(value)
+                self.options[k] = o  # override compiler option on reconfigure
             self.options.setdefault(k, o)
 
     def add_lang_args(self, lang: str, comp: T.Type['Compiler'],
@@ -1030,20 +1034,20 @@ class CoreData:
         # `self.options.update()`` is perfectly safe.
         self.options.update(compilers.get_global_options(lang, comp, for_machine, env))
 
-    def process_new_compiler(self, lang: str, comp: 'Compiler', env: 'Environment') -> None:
+    def process_compiler_options(self, lang: str, comp: 'Compiler', env: 'Environment') -> None:
         from . import compilers
 
         self.add_compiler_options(comp.get_options(), lang, comp.for_machine, env)
 
         enabled_opts: T.List[OptionKey] = []
         for key in comp.base_options:
-            if key in self.options:
-                continue
-            oobj = copy.deepcopy(compilers.base_options[key])
-            if key in env.options:
-                oobj.set_value(env.options[key])
-                enabled_opts.append(key)
-            self.options[key] = oobj
+            if key not in self.options:
+                self.options[key] = copy.deepcopy(compilers.base_options[key])
+                if key in env.options:
+                    self.options[key].set_value(env.options[key])
+                    enabled_opts.append(key)
+            elif key in env.options:
+                self.options[key].set_value(env.options[key])
         self.emit_base_options_warnings(enabled_opts)
 
     def emit_base_options_warnings(self, enabled_opts: T.List[OptionKey]) -> None:
