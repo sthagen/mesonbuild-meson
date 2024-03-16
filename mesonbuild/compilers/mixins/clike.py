@@ -36,7 +36,6 @@ if T.TYPE_CHECKING:
     from ..._typing import ImmutableListProtocol
     from ...environment import Environment
     from ...compilers.compilers import Compiler
-    from ...programs import ExternalProgram
 else:
     # This is a bit clever, for mypy we pretend that these mixins descend from
     # Compiler, so we get all of the methods and attributes defined for us, but
@@ -133,15 +132,9 @@ class CLikeCompiler(Compiler):
     find_framework_cache: T.Dict[T.Tuple[T.Tuple[str, ...], str, T.Tuple[str, ...], bool], T.Optional[T.List[str]]] = {}
     internal_libs = arglist.UNIXY_COMPILER_INTERNAL_LIBS
 
-    def __init__(self, exe_wrapper: T.Optional['ExternalProgram'] = None):
+    def __init__(self) -> None:
         # If a child ObjC or CPP class has already set it, don't set it ourselves
         self.can_compile_suffixes.add('h')
-        # If the exe wrapper was not found, pretend it wasn't set so that the
-        # sanity check is skipped and compiler checks use fallbacks.
-        if not exe_wrapper or not exe_wrapper.found() or not exe_wrapper.get_command():
-            self.exe_wrapper = None
-        else:
-            self.exe_wrapper = exe_wrapper
         # Lazy initialized in get_preprocessor()
         self.preprocessor: T.Optional[Compiler] = None
 
@@ -285,7 +278,7 @@ class CLikeCompiler(Compiler):
         mode = CompileCheckMode.LINK
         if self.is_cross:
             binname += '_cross'
-            if self.exe_wrapper is None:
+            if environment.need_exe_wrapper(self.for_machine) and not environment.has_exe_wrapper():
                 # Linking cross built C/C++ apps is painful. You can't really
                 # tell if you should use -nostdlib or not and for example
                 # on OSX the compiler binary is the same but you need
@@ -315,11 +308,11 @@ class CLikeCompiler(Compiler):
         if pc.returncode != 0:
             raise mesonlib.EnvironmentException(f'Compiler {self.name_string()} cannot compile programs.')
         # Run sanity check
-        if self.is_cross:
-            if self.exe_wrapper is None:
+        if environment.need_exe_wrapper(self.for_machine):
+            if not environment.has_exe_wrapper():
                 # Can't check if the binaries run so we have to assume they do
                 return
-            cmdlist = self.exe_wrapper.get_command() + [binary_name]
+            cmdlist = environment.exe_wrapper.get_command() + [binary_name]
         else:
             cmdlist = [binary_name]
         mlog.debug('Running test binary command: ', mesonlib.join_args(cmdlist))
@@ -458,32 +451,6 @@ class CLikeCompiler(Compiler):
 
         args = cargs + extra_args + largs
         return args
-
-    def run(self, code: 'mesonlib.FileOrString', env: 'Environment', *,
-            extra_args: T.Union[T.List[str], T.Callable[[CompileCheckMode], T.List[str]], None] = None,
-            dependencies: T.Optional[T.List['Dependency']] = None) -> compilers.RunResult:
-        need_exe_wrapper = env.need_exe_wrapper(self.for_machine)
-        if need_exe_wrapper and self.exe_wrapper is None:
-            raise compilers.CrossNoRunException('Can not run test applications in this cross environment.')
-        with self._build_wrapper(code, env, extra_args, dependencies, mode=CompileCheckMode.LINK, want_output=True) as p:
-            if p.returncode != 0:
-                mlog.debug(f'Could not compile test file {p.input_name}: {p.returncode}\n')
-                return compilers.RunResult(False)
-            if need_exe_wrapper:
-                cmdlist = self.exe_wrapper.get_command() + [p.output_name]
-            else:
-                cmdlist = [p.output_name]
-            try:
-                pe, so, se = mesonlib.Popen_safe(cmdlist)
-            except Exception as e:
-                mlog.debug(f'Could not run: {cmdlist} (error: {e})\n')
-                return compilers.RunResult(False)
-
-        mlog.debug('Program stdout:\n')
-        mlog.debug(so)
-        mlog.debug('Program stderr:\n')
-        mlog.debug(se)
-        return compilers.RunResult(True, pe.returncode, so, se)
 
     def _compile_int(self, expression: str, prefix: str, env: 'Environment',
                      extra_args: T.Union[None, T.List[str], T.Callable[[CompileCheckMode], T.List[str]]],
