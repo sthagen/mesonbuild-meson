@@ -183,6 +183,13 @@ class _StdCPPLibMixin(CompilerMixinBase):
 
     """Detect whether to use libc++ or libstdc++."""
 
+    def language_stdlib_provider(self, env: Environment) -> str:
+        # https://stackoverflow.com/a/31658120
+        header = 'version' if self.has_header('<version>', '', env) else 'ciso646'
+        is_libcxx = self.has_header_symbol(header, '_LIBCPP_VERSION', '', env)[0]
+        lib = 'c++' if is_libcxx else 'stdc++'
+        return lib
+
     @functools.lru_cache(None)
     def language_stdlib_only_link_flags(self, env: Environment) -> T.List[str]:
         """Detect the C++ stdlib and default search dirs
@@ -202,11 +209,7 @@ class _StdCPPLibMixin(CompilerMixinBase):
         machine = env.machines[self.for_machine]
         assert machine is not None, 'for mypy'
 
-        # https://stackoverflow.com/a/31658120
-        header = 'version' if self.has_header('<version>', '', env) else 'ciso646'
-        is_libcxx = self.has_header_symbol(header, '_LIBCPP_VERSION', '', env)[0]
-        lib = 'c++' if is_libcxx else 'stdc++'
-
+        lib = self.language_stdlib_provider(env)
         if self.find_library(lib, env, []) is not None:
             return search_dirs + [f'-l{lib}']
 
@@ -307,19 +310,24 @@ class ClangCPPCompiler(_StdCPPLibMixin, ClangCompiler, CPPCompiler):
             return libs
         return []
 
-    def get_assert_args(self, disable: bool) -> T.List[str]:
-        args: T.List[str] = []
+    def get_assert_args(self, disable: bool, env: 'Environment') -> T.List[str]:
         if disable:
             return ['-DNDEBUG']
 
-        # Clang supports both libstdc++ and libc++
-        args.append('-D_GLIBCXX_ASSERTIONS=1')
-        if version_compare(self.version, '>=18'):
-            args.append('-D_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_EXTENSIVE')
-        elif version_compare(self.version, '>=15'):
-            args.append('-D_LIBCPP_ENABLE_ASSERTIONS=1')
+        # Don't inject the macro if the compiler already has it pre-defined.
+        for macro in ['_GLIBCXX_ASSERTIONS', '_LIBCPP_HARDENING_MODE', '_LIBCPP_ENABLE_ASSERTIONS']:
+            if self.defines.get(macro) is not None:
+                return []
 
-        return args
+        if self.language_stdlib_provider(env) == 'stdc++':
+            return ['-D_GLIBCXX_ASSERTIONS=1']
+        else:
+            if version_compare(self.version, '>=18'):
+                return ['-D_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_FAST']
+            elif version_compare(self.version, '>=15'):
+                return ['-D_LIBCPP_ENABLE_ASSERTIONS=1']
+
+        return []
 
 
 class ArmLtdClangCPPCompiler(ClangCPPCompiler):
@@ -496,13 +504,24 @@ class GnuCPPCompiler(_StdCPPLibMixin, GnuCompiler, CPPCompiler):
             return libs
         return []
 
-    def get_assert_args(self, disable: bool) -> T.List[str]:
+    def get_assert_args(self, disable: bool, env: 'Environment') -> T.List[str]:
         if disable:
             return ['-DNDEBUG']
 
-        # XXX: This needs updating if/when GCC starts to support libc++.
-        # It currently only does so via an experimental configure arg.
-        return ['-D_GLIBCXX_ASSERTIONS=1']
+        # Don't inject the macro if the compiler already has it pre-defined.
+        for macro in ['_GLIBCXX_ASSERTIONS', '_LIBCPP_HARDENING_MODE', '_LIBCPP_ENABLE_ASSERTIONS']:
+            if self.defines.get(macro) is not None:
+                return []
+
+        if self.language_stdlib_provider(env) == 'stdc++':
+            return ['-D_GLIBCXX_ASSERTIONS=1']
+        else:
+            if version_compare(self.version, '>=18'):
+                return ['-D_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_FAST']
+            elif version_compare(self.version, '>=15'):
+                return ['-D_LIBCPP_ENABLE_ASSERTIONS=1']
+
+        return []
 
     def get_pch_use_args(self, pch_dir: str, header: str) -> T.List[str]:
         return ['-fpch-preprocess', '-include', os.path.basename(header)]
