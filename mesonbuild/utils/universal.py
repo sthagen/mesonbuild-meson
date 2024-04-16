@@ -168,8 +168,11 @@ project_meson_versions: T.DefaultDict[str, str] = collections.defaultdict(str)
 
 from glob import glob
 
-if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
-    # using a PyInstaller bundle, e.g. the MSI installed executable
+if getattr(sys, 'frozen', False):
+    # Using e.g. a PyInstaller bundle, such as the MSI installed executable.
+    # It is conventional for freeze programs to set this attribute to indicate
+    # that the program is self hosted, and for example there is no associated
+    # "python" executable.
     python_command = [sys.executable, 'runpython']
 else:
     python_command = [sys.executable]
@@ -1587,7 +1590,7 @@ def Popen_safe_logged(args: T.List[str], msg: str = 'Called', **kwargs: T.Any) -
         mlog.debug(f'{msg}: `{join_args(args)}` -> {excp}')
         raise
 
-    rc, out, err = p.returncode, o.strip(), e.strip()
+    rc, out, err = p.returncode, o.strip() if o else None, e.strip() if e else None
     mlog.debug('-----------')
     mlog.debug(f'{msg}: `{join_args(args)}` -> {rc}')
     if out:
