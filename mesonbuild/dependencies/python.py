@@ -29,6 +29,7 @@ if T.TYPE_CHECKING:
         install_paths: T.Dict[str, str]
         is_pypy: bool
         is_venv: bool
+        is_freethreaded: bool
         link_libpython: bool
         sysconfig_paths: T.Dict[str, str]
         paths: T.Dict[str, str]
@@ -82,6 +83,7 @@ class BasicPythonExternalProgram(ExternalProgram):
             self.command = ext_prog.command
             self.path = ext_prog.path
             self.cached_version = None
+            self.version_arg = '--version'
 
         # We want strong key values, so we always populate this with bogus data.
         # Otherwise to make the type checkers happy we'd have to do .get() for
@@ -91,6 +93,7 @@ class BasicPythonExternalProgram(ExternalProgram):
             'install_paths': {},
             'is_pypy': False,
             'is_venv': False,
+            'is_freethreaded': False,
             'link_libpython': False,
             'sysconfig_paths': {},
             'paths': {},
@@ -146,6 +149,7 @@ class _PythonDependencyBase(_Base):
         self.variables = python_holder.info['variables']
         self.paths = python_holder.info['paths']
         self.is_pypy = python_holder.info['is_pypy']
+        self.is_freethreaded = python_holder.info['is_freethreaded']
         # The "-embed" version of python.pc / python-config was introduced in 3.8,
         # and distutils extension linking was changed to be considered a non embed
         # usage. Before then, this dependency always uses the embed=True handling
@@ -160,6 +164,12 @@ class _PythonDependencyBase(_Base):
             self.major_version = 3
         else:
             self.major_version = 2
+
+        # pyconfig.h is shared between regular and free-threaded builds in the
+        # Windows installer from python.org, and hence does not define
+        # Py_GIL_DISABLED correctly. So do it here:
+        if mesonlib.is_windows() and self.is_freethreaded:
+            self.compile_args += ['-DPy_GIL_DISABLED']
 
     def find_libpy(self, environment: 'Environment') -> None:
         if self.is_pypy:
@@ -220,7 +230,10 @@ class _PythonDependencyBase(_Base):
                 else:
                     if limited_api:
                         vernum = vernum[0]
-                    libpath = Path('libs') / f'python{vernum}.lib'
+                    if self.is_freethreaded:
+                        libpath = Path('libs') / f'python{vernum}t.lib'
+                    else:
+                        libpath = Path('libs') / f'python{vernum}.lib'
                     # For a debug build, pyconfig.h may force linking with
                     # pythonX_d.lib (see meson#10776). This cannot be avoided
                     # and won't work unless we also have a debug build of
