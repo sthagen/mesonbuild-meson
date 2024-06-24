@@ -36,6 +36,13 @@ clang_optimization_args: T.Dict[str, T.List[str]] = {
     's': ['-Oz'],
 }
 
+clang_lang_map = {
+    'c': 'c',
+    'cpp': 'c++',
+    'objc': 'objective-c',
+    'objcpp': 'objective-c++',
+}
+
 class ClangCompiler(GnuLikeCompiler):
 
     id = 'clang'
