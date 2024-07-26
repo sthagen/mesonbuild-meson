@@ -99,10 +99,11 @@ def get_rsp_threshold() -> int:
         # and that has a limit of 8k.
         limit = 8192
     else:
-        # On Linux, ninja always passes the commandline as a single
-        # big string to /bin/sh, and the kernel limits the size of a
-        # single argument; see MAX_ARG_STRLEN
-        limit = 131072
+        # Unix-like OSes usualy have very large command line limits, (On Linux,
+        # for example, this is limited by the kernel's MAX_ARG_STRLEN). However,
+        # some programs place much lower limits, notably Wine which enforces a
+        # 32k limit like Windows. Therefore, we limit the command line to 32k.
+        limit = 32768
     # Be conservative
     limit = limit // 2
     return int(os.environ.get('MESON_RSP_THRESHOLD', limit))
@@ -292,7 +293,7 @@ class NinjaRule:
         estimate = len(command)
         for m in re.finditer(r'(\${\w+}|\$\w+)?[^$]*', command):
             if m.start(1) != -1:
-                estimate -= m.end(1) - m.start(1) + 1
+                estimate -= m.end(1) - m.start(1)
                 chunk = m.group(1)
                 if chunk[1] == '{':
                     chunk = chunk[2:-1]
@@ -305,6 +306,9 @@ class NinjaRule:
         return estimate
 
 class NinjaBuildElement:
+
+    rule: NinjaRule
+
     def __init__(self, all_outputs: T.Set[str], outfilenames, rulename, infilenames, implicit_outs=None):
         self.implicit_outfilenames = implicit_outs or []
         if isinstance(outfilenames, str):
@@ -335,7 +339,7 @@ class NinjaBuildElement:
         else:
             self.orderdeps.add(dep)
 
-    def add_item(self, name: str, elems: T.Union[str, T.List[str, CompilerArgs]]) -> None:
+    def add_item(self, name: str, elems: T.Union[str, T.List[str], CompilerArgs]) -> None:
         # Always convert from GCC-style argument naming to the naming used by the
         # current compiler. Also filter system include paths, deduplicate, etc.
         if isinstance(elems, CompilerArgs):
@@ -1241,7 +1245,7 @@ class NinjaBackend(backends.Backend):
         self.add_build(elem)
         self.processed_targets.add(target.get_id())
 
-    def generate_coverage_command(self, elem, outputs: T.List[str], gcovr_exe: T.Optional[str], llvm_cov_exe: T.Optional[str]):
+    def generate_coverage_command(self, elem: NinjaBuildElement, outputs: T.List[str], gcovr_exe: T.Optional[str], llvm_cov_exe: T.Optional[str]):
         targets = self.build.get_targets().values()
         use_llvm_cov = False
         exe_args = []
