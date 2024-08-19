@@ -46,7 +46,7 @@ install_python_packages hotdoc
 
 # dub stuff
 dub_fetch urld
-dub build urld --compiler=gdc
+dub build --deep urld --arch=x86_64 --compiler=gdc --build=debug
 dub_fetch dubtestproject
 dub build dubtestproject:test1 --compiler=ldc2
 dub build dubtestproject:test2 --compiler=ldc2
@@ -81,6 +81,13 @@ cp LICENSE /usr/share/doc/zig
 # Remove what's left of the directory
 cd ..
 rm -rf "$ZIG_BASE"
+
+# Hack for https://github.com/linux-test-project/lcov/issues/245
+# https://github.com/linux-test-project/lcov/commit/bf135caf5f626e02191c42bd2773e08a0bb9b7e5
+# XXX: Drop this once Ubuntu has lcov-2.1*
+git clone https://github.com/linux-test-project/lcov
+cd lcov
+make install
 
 # cleanup
 apt-get -y clean
