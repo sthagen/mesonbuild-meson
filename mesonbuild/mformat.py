@@ -276,6 +276,7 @@ class TrimWhitespaces(FullAstVisitor):
 
     def move_whitespaces(self, from_node: mparser.BaseNode, to_node: mparser.BaseNode) -> None:
         to_node.whitespaces.value = from_node.whitespaces.value + to_node.whitespaces.value
+        to_node.whitespaces.is_continuation = from_node.whitespaces.is_continuation
         from_node.whitespaces = None
         to_node.whitespaces.accept(self)
 
@@ -317,7 +318,10 @@ class TrimWhitespaces(FullAstVisitor):
         for i, line in enumerate(lines):
             has_nl = line.endswith('\n')
             line = line.strip()
-            if line.startswith('#'):
+            if line.startswith('\\'):
+                node.value += ' '  # add space before \
+                node.is_continuation = True
+            elif line.startswith('#'):
                 if not in_block_comments:
                     node.value += self.config.indent_before_comments
                 else:
@@ -328,6 +332,8 @@ class TrimWhitespaces(FullAstVisitor):
             in_block_comments = True
         if node.value.endswith('\n'):
             node.value += self.indent_comments
+            if node.is_continuation:
+                node.value += self.config.indent_by
 
     def visit_SymbolNode(self, node: mparser.SymbolNode) -> None:
         super().visit_SymbolNode(node)
@@ -595,12 +601,17 @@ class ArgumentFormatter(FullAstVisitor):
     def visit_MethodNode(self, node: mparser.MethodNode) -> None:
         self.enter_node(node)
         node.source_object.accept(self)
+        is_cont = node.source_object.whitespaces and node.source_object.whitespaces.is_continuation
+        if is_cont:
+            self.level += 1
         if node.args.is_multiline:
             self.level += 1
             self.add_nl_after(node.lpar, indent=self.level)
         self.is_function_arguments = True
         node.args.accept(self)
         if node.args.is_multiline:
+            self.level -= 1
+        if is_cont:
             self.level -= 1
         self.exit_node(node)
 
@@ -839,7 +850,10 @@ class Formatter:
 
                 getter = f.metadata['getter']
                 for section in sections:
-                    value = getter(cp, section, f.name, fallback=None)
+                    try:
+                        value = getter(cp, section, f.name, fallback=None)
+                    except ValueError as e:
+                        raise MesonException(f'Invalid type for key "{f.name}" in "{editorconfig_file}" file:\n{e}') from e
                     if value is not None:
                         setattr(config, f.name, value)
 
@@ -857,6 +871,10 @@ class Formatter:
                 cp.read_default(configuration_file)
             except ParsingError as e:
                 raise MesonException(f'Unable to parse configuration file "{configuration_file}":\n{e}') from e
+
+            extra_keys = sorted(set(cp.defaults()).difference(f.name for f in fields(config)))
+            if extra_keys:
+                raise MesonException(f'Unknown config keys: "{", ".join(extra_keys)}" in configuration file "{configuration_file}"')
 
             for f in fields(config):
                 getter = f.metadata['getter']
@@ -992,9 +1010,8 @@ def run(options: argparse.Namespace) -> int:
 
 # TODO: remove empty newlines when more than N (2...)
 # TODO: magic comment to prevent formatting
-# TODO: handle meson.options ?
 # TODO: split long lines on binary operators
-# TODO: align series of assignements
+# TODO: align series of assignments
 # TODO: align comments
 # TODO: move comments on long lines
 
