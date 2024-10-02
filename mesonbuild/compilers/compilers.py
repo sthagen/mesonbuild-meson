@@ -51,9 +51,9 @@ lib_suffixes = {'a', 'lib', 'dll', 'dll.a', 'dylib', 'so', 'js'}
 # Mapping of language to suffixes of files that should always be in that language
 # This means we can't include .h headers here since they could be C, C++, ObjC, etc.
 # First suffix is the language's default.
-lang_suffixes = {
+lang_suffixes: T.Mapping[str, T.Tuple[str, ...]] = {
     'c': ('c',),
-    'cpp': ('cpp', 'cppm', 'cc', 'cxx', 'c++', 'hh', 'hpp', 'ipp', 'hxx', 'ino', 'ixx', 'C', 'H'),
+    'cpp': ('cpp', 'cppm', 'cc', 'cp', 'cxx', 'c++', 'hh', 'hp', 'hpp', 'ipp', 'hxx', 'h++', 'ino', 'ixx', 'CPP', 'C', 'HPP', 'H'),
     'cuda': ('cu',),
     # f90, f95, f03, f08 are for free-form fortran ('f90' recommended)
     # f, for, ftn, fpp are for fixed-form fortran ('f' or 'for' recommended)
@@ -451,11 +451,8 @@ class Compiler(HoldableObject, metaclass=abc.ABCMeta):
                  full_version: T.Optional[str] = None, is_cross: bool = False):
         self.exelist = ccache + exelist
         self.exelist_no_ccache = exelist
-        # In case it's been overridden by a child class already
-        if not hasattr(self, 'file_suffixes'):
-            self.file_suffixes = lang_suffixes[self.language]
-        if not hasattr(self, 'can_compile_suffixes'):
-            self.can_compile_suffixes: T.Set[str] = set(self.file_suffixes)
+        self.file_suffixes = lang_suffixes[self.language]
+        self.can_compile_suffixes = set(self.file_suffixes)
         self.default_suffix = self.file_suffixes[0]
         self.version = version
         self.full_version = full_version
