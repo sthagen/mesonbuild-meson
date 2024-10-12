@@ -213,7 +213,7 @@ class EmscriptenCCompiler(EmscriptenMixin, ClangCCompiler):
     _C17_VERSION = '>=1.38.35'
     _C18_VERSION = '>=1.38.35'
     _C2X_VERSION = '>=1.38.35'  # 1.38.35 used Clang 9.0.0
-    _C23_VERSION = '>=3.0.0'    # 3.0.0 used Clang 18.0.0
+    _C23_VERSION = '>=3.1.45'    # 3.1.45 used Clang 18.0.0
 
     def __init__(self, ccache: T.List[str], exelist: T.List[str], version: str, for_machine: MachineChoice, is_cross: bool,
                  info: 'MachineInfo',
@@ -360,6 +360,14 @@ class NvidiaHPC_CCompiler(PGICompiler, CCompiler):
         CCompiler.__init__(self, ccache, exelist, version, for_machine, is_cross,
                            info, linker=linker, full_version=full_version)
         PGICompiler.__init__(self)
+
+    def get_options(self) -> 'MutableKeyedOptionDictType':
+        opts = CCompiler.get_options(self)
+        cppstd_choices = ['c89', 'c90', 'c99', 'c11', 'c17', 'c18']
+        std_opt = opts[self.form_compileropt_key('std')]
+        assert isinstance(std_opt, options.UserStdOption), 'for mypy'
+        std_opt.set_versions(cppstd_choices, gnu=True)
+        return opts
 
 
 class ElbrusCCompiler(ElbrusCompiler, CCompiler):
