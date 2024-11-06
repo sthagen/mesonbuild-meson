@@ -11,9 +11,7 @@ port will be required.
 
 from __future__ import annotations
 import dataclasses
-import glob
 import importlib
-import itertools
 import json
 import os
 import shutil
@@ -30,10 +28,21 @@ from ..wrap.wrap import PackageDefinition
 if T.TYPE_CHECKING:
     from types import ModuleType
 
+    from typing_extensions import Protocol, Self
+
     from . import manifest
     from .. import mparser
     from ..environment import Environment
     from ..interpreterbase import SubProject
+
+    # Copied from typeshed. Blarg that they don't expose this
+    class DataclassInstance(Protocol):
+        __dataclass_fields__: T.ClassVar[dict[str, dataclasses.Field[T.Any]]]
+
+    _UnknownKeysT = T.TypeVar('_UnknownKeysT', manifest.FixedPackage,
+                              manifest.FixedDependency, manifest.FixedLibTarget,
+                              manifest.FixedBuildTarget)
+
 
 # tomllib is present in python 3.11, before that it is a pypi module called tomli,
 # we try to import tomllib, then tomli,
@@ -53,6 +62,14 @@ else:
     # have access to the `Environment` for that in this module.
     toml2json = shutil.which('toml2json')
 
+
+_EXTRA_KEYS_WARNING = (
+    "This may (unlikely) be an error in the cargo manifest, or may be a missing "
+    "implementation in Meson. If this issue can be reproduced with the latest "
+    "version of Meson, please help us by opening an issue at "
+    "https://github.com/mesonbuild/meson/issues. Please include the crate and "
+    "version that is generating this warning if possible."
+)
 
 class TomlImplementationMissing(MesonException):
     pass
@@ -118,6 +135,30 @@ def _fixup_raw_mappings(d: T.Union[manifest.BuildTarget, manifest.LibTarget, man
     return T.cast('T.Union[manifest.FixedBuildTarget, manifest.FixedLibTarget, manifest.FixedDependency]', raw)
 
 
+def _handle_unknown_keys(data: _UnknownKeysT, cls: T.Union[DataclassInstance, T.Type[DataclassInstance]],
+                         msg: str) -> _UnknownKeysT:
+    """Remove and warn on keys that are coming from cargo, but are unknown to
+    our representations.
+
+    This is intended to give users the possibility of things proceeding when a
+    new key is added to Cargo.toml that we don't yet handle, but to still warn
+    them that things might not work.
+
+    :param data: The raw data to look at
+    :param cls: The Dataclass derived type that will be created
+    :param msg: the header for the error message. Usually something like "In N structure".
+    :return: The original data structure, but with all unknown keys removed.
+    """
+    unexpected = set(data) - {x.name for x in dataclasses.fields(cls)}
+    if unexpected:
+        mlog.warning(msg, 'has unexpected keys', '"{}".'.format(', '.join(sorted(unexpected))),
+                     _EXTRA_KEYS_WARNING)
+        for k in unexpected:
+            # Mypy and Pyright can't prove that this is okay
+            del data[k]  # type: ignore[misc]
+    return data
+
+
 @dataclasses.dataclass
 class Package:
 
@@ -155,6 +196,13 @@ class Package:
 
     def __post_init__(self) -> None:
         self.api = _version_to_api(self.version)
+
+    @classmethod
+    def from_raw(cls, raw: manifest.Package) -> Self:
+        pkg = T.cast('manifest.FixedPackage',
+                     {fixup_meson_varname(k): v for k, v in raw.items()})
+        pkg = _handle_unknown_keys(pkg, cls, f'Package entry {pkg["name"]}')
+        return cls(**pkg)
 
 @dataclasses.dataclass
 class SystemDependency:
@@ -234,7 +282,8 @@ class Dependency:
         """Create a dependency from a raw cargo dictionary"""
         if isinstance(raw, str):
             return cls(name, version.convert(raw))
-        return cls(name, **_fixup_raw_mappings(raw))
+        fixed = _handle_unknown_keys(_fixup_raw_mappings(raw), cls, f'Dependency entry {name}')
+        return cls(name, **fixed)
 
 
 @dataclasses.dataclass
@@ -265,6 +314,11 @@ class BuildTarget:
     required_features: T.List[str] = dataclasses.field(default_factory=list)
     plugin: bool = False
 
+    @classmethod
+    def from_raw(cls, raw: manifest.BuildTarget) -> Self:
+        name = raw.get('name', '<anonymous>')
+        build = _handle_unknown_keys(_fixup_raw_mappings(raw), cls, f'Binary entry {name}')
+        return cls(**build)
 
 @dataclasses.dataclass
 class Library(BuildTarget):
@@ -277,6 +331,18 @@ class Library(BuildTarget):
     proc_macro: bool = False
     crate_type: T.List[manifest.CRATE_TYPE] = dataclasses.field(default_factory=lambda: ['lib'])
     doc_scrape_examples: bool = True
+
+    @classmethod
+    def from_raw(cls, raw: manifest.LibTarget, fallback_name: str) -> Self:  # type: ignore[override]
+        fixed = _fixup_raw_mappings(raw)
+
+        # We need to set the name field if it's not set manually, including if
+        # other fields are set in the lib section
+        if 'name' not in fixed:
+            fixed['name'] = fallback_name
+        fixed = _handle_unknown_keys(fixed, cls, f'Library entry {fixed["name"]}')
+
+        return cls(**fixed)
 
 
 @dataclasses.dataclass
@@ -345,72 +411,21 @@ class Manifest:
 
 
 def _convert_manifest(raw_manifest: manifest.Manifest, subdir: str, path: str = '') -> Manifest:
-    # This cast is a bit of a hack to deal with proc-macro
-    lib = _fixup_raw_mappings(raw_manifest.get('lib', {}))
-
-    # We need to set the name field if it's not set manually,
-    # including if other fields are set in the lib section
-    lib.setdefault('name', raw_manifest['package']['name'])
-
-    pkg = T.cast('manifest.FixedPackage',
-                 {fixup_meson_varname(k): v for k, v in raw_manifest['package'].items()})
-
     return Manifest(
-        Package(**pkg),
+        Package.from_raw(raw_manifest['package']),
         {k: Dependency.from_raw(k, v) for k, v in raw_manifest.get('dependencies', {}).items()},
         {k: Dependency.from_raw(k, v) for k, v in raw_manifest.get('dev-dependencies', {}).items()},
         {k: Dependency.from_raw(k, v) for k, v in raw_manifest.get('build-dependencies', {}).items()},
-        Library(**lib),
-        [Binary(**_fixup_raw_mappings(b)) for b in raw_manifest.get('bin', {})],
-        [Test(**_fixup_raw_mappings(b)) for b in raw_manifest.get('test', {})],
-        [Benchmark(**_fixup_raw_mappings(b)) for b in raw_manifest.get('bench', {})],
-        [Example(**_fixup_raw_mappings(b)) for b in raw_manifest.get('example', {})],
+        Library.from_raw(raw_manifest.get('lib', {}), raw_manifest['package']['name']),
+        [Binary.from_raw(b) for b in raw_manifest.get('bin', {})],
+        [Test.from_raw(b) for b in raw_manifest.get('test', {})],
+        [Benchmark.from_raw(b) for b in raw_manifest.get('bench', {})],
+        [Example.from_raw(b) for b in raw_manifest.get('example', {})],
         raw_manifest.get('features', {}),
         {k: {k2: Dependency.from_raw(k2, v2) for k2, v2 in v.get('dependencies', {}).items()}
          for k, v in raw_manifest.get('target', {}).items()},
         path,
     )
-
-
-def _load_manifests(subdir: str) -> T.Dict[str, Manifest]:
-    filename = os.path.join(subdir, 'Cargo.toml')
-    raw = load_toml(filename)
-
-    manifests: T.Dict[str, Manifest] = {}
-
-    raw_manifest: T.Union[manifest.Manifest, manifest.VirtualManifest]
-    if 'package' in raw:
-        raw_manifest = T.cast('manifest.Manifest', raw)
-        manifest_ = _convert_manifest(raw_manifest, subdir)
-        manifests[manifest_.package.name] = manifest_
-    else:
-        raw_manifest = T.cast('manifest.VirtualManifest', raw)
-
-    if 'workspace' in raw_manifest:
-        # XXX: need to verify that python glob and cargo globbing are the
-        # same and probably write  a glob implementation. Blarg
-
-        # We need to chdir here to make the glob work correctly
-        pwd = os.getcwd()
-        os.chdir(subdir)
-        members: T.Iterable[str]
-        try:
-            members = itertools.chain.from_iterable(
-                glob.glob(m) for m in raw_manifest['workspace']['members'])
-        finally:
-            os.chdir(pwd)
-        if 'exclude' in raw_manifest['workspace']:
-            members = (x for x in members if x not in raw_manifest['workspace']['exclude'])
-
-        for m in members:
-            filename = os.path.join(subdir, m, 'Cargo.toml')
-            raw = load_toml(filename)
-
-            raw_manifest = T.cast('manifest.Manifest', raw)
-            man = _convert_manifest(raw_manifest, subdir, m)
-            manifests[man.package.name] = man
-
-    return manifests
 
 
 def _version_to_api(version: str) -> str:
