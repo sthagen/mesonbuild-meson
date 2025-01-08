@@ -69,7 +69,7 @@ class RustCompiler(Compiler):
     id = 'rustc'
 
     _WARNING_LEVELS: T.Dict[str, T.List[str]] = {
-        '0': ['-A', 'warnings'],
+        '0': ['--cap-lints', 'allow'],
         '1': [],
         '2': [],
         '3': ['-W', 'warnings'],
@@ -223,7 +223,7 @@ class RustCompiler(Compiler):
         return dict((self.create_option(options.UserComboOption,
                                         self.form_compileropt_key('std'),
                                         'Rust edition to use',
-                                        ['none', '2015', '2018', '2021'],
+                                        ['none', '2015', '2018', '2021', '2024'],
                                         'none'),))
 
     def get_dependency_compile_args(self, dep: 'Dependency') -> T.List[str]:

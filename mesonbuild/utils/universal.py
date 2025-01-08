@@ -130,6 +130,7 @@ __all__ = [
     'is_wsl',
     'iter_regexin_iter',
     'join_args',
+    'lazy_property',
     'listify',
     'listify_array_value',
     'partition',
@@ -828,21 +829,18 @@ def current_vs_supports_modules() -> bool:
         return True
     return vsver.startswith('16.9.0') and '-pre.' in vsver
 
+_VERSION_TOK_RE = re.compile(r'(\d+)|([a-zA-Z]+)')
+
 # a helper class which implements the same version ordering as RPM
 class Version:
     def __init__(self, s: str) -> None:
         self._s = s
 
-        # split into numeric, alphabetic and non-alphanumeric sequences
-        sequences1 = re.finditer(r'(\d+|[a-zA-Z]+|[^a-zA-Z\d]+)', s)
-
-        # non-alphanumeric separators are discarded
-        sequences2 = [m for m in sequences1 if not re.match(r'[^a-zA-Z\d]+', m.group(1))]
-
+        # extract numeric and alphabetic sequences
         # numeric sequences are converted from strings to ints
-        sequences3 = [int(m.group(1)) if m.group(1).isdigit() else m.group(1) for m in sequences2]
-
-        self._v = sequences3
+        self._v = [
+                int(m.group(1)) if m.group(1) else m.group(2)
+                for m in _VERSION_TOK_RE.finditer(s)]
 
     def __str__(self) -> str:
         return '{} (V={})'.format(self._s, str(self._v))
@@ -2382,3 +2380,22 @@ def first(iter: T.Iterable[_T], predicate: T.Callable[[_T], bool]) -> T.Optional
         if predicate(i):
             return i
     return None
+
+
+class lazy_property(T.Generic[_T]):
+    """Descriptor that replaces the function it wraps with the value generated.
+
+    This property will only be calculated the first time it's queried, and will
+    be cached and the cached value used for subsequent calls.
+
+    This works by shadowing itself with the calculated value, in the instance.
+    Due to Python's MRO that means that the calculated value will be found
+    before this property, speeding up subsequent lookups.
+    """
+    def __init__(self, func: T.Callable[[T.Any], _T]):
+        self.__func = func
+
+    def __get__(self, instance: object, cls: T.Type) -> _T:
+        value = self.__func(instance)
+        setattr(instance, self.__func.__name__, value)
+        return value
