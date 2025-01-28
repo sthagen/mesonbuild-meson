@@ -3185,7 +3185,7 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
                 d = d.rel_to_builddir(self.build_to_src)
             elif not self.has_dir_part(d):
                 d = os.path.join(self.get_target_private_dir(target), d)
-            ninja_element.add_dep(d)
+            ninja_element.add_orderdep(d)
 
     def has_dir_part(self, fname: FileOrString) -> bool:
         # FIXME FIXME: The usage of this is a terrible and unreliable hack
@@ -3371,7 +3371,7 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
             objects_from_static_libs: T.List[ExtractedObjects] = []
             for dep in target.link_whole_targets:
                 l = dep.extract_all_objects(False)
-                objects_from_static_libs += self.determine_ext_objs(l, '')
+                objects_from_static_libs += self.determine_ext_objs(l)
                 objects_from_static_libs.extend(self.flatten_object_list(dep)[0])
 
             return objects_from_static_libs
