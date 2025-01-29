@@ -1481,6 +1481,7 @@ class Interpreter(InterpreterBase, HoldableObject):
                 super().__init__(subproject)
                 self.old_stdout = sys.stdout
                 sys.stdout = self.new_stdout = io.StringIO()
+                sys.stdout.colorize_console = getattr(self.old_stdout, 'colorize_console', None)
                 self.msg = msg
                 self.how = how
 
@@ -3203,6 +3204,8 @@ class Interpreter(InterpreterBase, HoldableObject):
         results: T.List['SourceOutputs'] = []
         for s in sources:
             if isinstance(s, str):
+                if s.endswith(' '):
+                    raise MesonException(f'{s!r} ends with a space. This is probably an error.')
                 if not strict and s.startswith(self.environment.get_build_dir()):
                     results.append(s)
                     mlog.warning(f'Source item {s!r} cannot be converted to File object, because it is a generated file. '
