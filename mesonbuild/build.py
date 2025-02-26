@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 from collections import defaultdict, deque, OrderedDict
-from dataclasses import dataclass, field, InitVar
+from dataclasses import dataclass, field
 from functools import lru_cache
 import abc
 import copy
@@ -521,7 +521,6 @@ class Target(HoldableObject, metaclass=abc.ABCMeta):
     install: bool = False
     build_always_stale: bool = False
     extra_files: T.List[File] = field(default_factory=list)
-    override_options: InitVar[T.Optional[T.Dict[OptionKey, str]]] = None
 
     @abc.abstractproperty
     def typename(self) -> str:
@@ -531,7 +530,7 @@ class Target(HoldableObject, metaclass=abc.ABCMeta):
     def type_suffix(self) -> str:
         pass
 
-    def __post_init__(self, overrides: T.Optional[T.Dict[OptionKey, str]]) -> None:
+    def __post_init__(self) -> None:
         # XXX: this should happen in the interpreter
         if has_path_sep(self.name):
             # Fix failing test 53 when this becomes an error.
@@ -980,8 +979,14 @@ class BuildTarget(Target):
         if 'vala' in self.compilers and 'c' not in self.compilers:
             self.compilers['c'] = self.all_compilers['c']
         if 'cython' in self.compilers:
-            key = OptionKey('cython_language', machine=self.for_machine)
-            value = self.environment.coredata.optstore.get_value_for(key)
+            # Not great, but we can't ask for the override value from "the system"
+            # because this object is currently being constructed so it is not
+            # yet placed in the data store. Grab it directly from override strings
+            # instead.
+            value = self.get_override('cython_language')
+            if value is None:
+                key = OptionKey('cython_language', machine=self.for_machine)
+                value = self.environment.coredata.optstore.get_value_for(key)
             try:
                 self.compilers[value] = self.all_compilers[value]
             except KeyError:
