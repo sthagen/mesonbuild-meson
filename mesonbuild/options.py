@@ -50,8 +50,6 @@ if T.TYPE_CHECKING:
         default: str
         choices: T.List
 
-    OptionValueType: TypeAlias = T.Union[str, int, bool, T.List[str]]
-
 DEFAULT_YIELDING = False
 
 # Can't bind this near the class method it seems, sadly.
@@ -290,7 +288,7 @@ class UserOption(T.Generic[_T], HoldableObject):
     def listify(self, value: T.Any) -> T.List[T.Any]:
         return [value]
 
-    def printable_value(self) -> T.Union[str, int, bool, T.List[T.Union[str, int, bool]]]:
+    def printable_value(self) -> ElementaryOptionValues:
         assert isinstance(self.value, (str, int, bool, list))
         return self.value
 
@@ -797,7 +795,7 @@ class OptionStore:
             key = key.evolve(machine=MachineChoice.HOST)
         return key
 
-    def get_value(self, key: T.Union[OptionKey, str]) -> 'OptionValueType':
+    def get_value(self, key: T.Union[OptionKey, str]) -> ElementaryOptionValues:
         return self.get_value_object(key).value
 
     def __len__(self) -> int:
@@ -833,7 +831,7 @@ class OptionStore:
                 return self.options[parent_key]
             return potential
 
-    def get_value_object_and_value_for(self, key: OptionKey) -> 'T.Tuple[AnyOptionType, OptionValueType]':
+    def get_value_object_and_value_for(self, key: OptionKey) -> T.Tuple[AnyOptionType, ElementaryOptionValues]:
         assert isinstance(key, OptionKey)
         vobject = self.get_value_object_for(key)
         computed_value = vobject.value
@@ -843,7 +841,7 @@ class OptionStore:
                 computed_value = vobject.validate_value(self.augments[keystr])
         return (vobject, computed_value)
 
-    def get_value_for(self, name: 'T.Union[OptionKey, str]', subproject: T.Optional[str] = None) -> 'OptionValueType':
+    def get_value_for(self, name: 'T.Union[OptionKey, str]', subproject: T.Optional[str] = None) -> ElementaryOptionValues:
         if isinstance(name, str):
             key = OptionKey(name, subproject)
         else:
@@ -851,11 +849,6 @@ class OptionStore:
             key = name
         vobject, resolved_value = self.get_value_object_and_value_for(key)
         return resolved_value
-
-    def num_options(self) -> int:
-        basic = len(self.options)
-        build = len(self.build_options) if self.build_options else 0
-        return basic + build
 
     def add_system_option(self, key: T.Union[OptionKey, str], valobj: AnyOptionType) -> None:
         key = self.ensure_and_validate_key(key)
@@ -1102,10 +1095,18 @@ class OptionStore:
         key = self.ensure_and_validate_key(key)
         return self.options[key]
 
-    def get_option_from_meson_file(self, key: OptionKey) -> 'T.Tuple[AnyOptionType, OptionValueType]':
+    def get_option_from_meson_file(self, key: OptionKey) -> T.Tuple[AnyOptionType, ElementaryOptionValues]:
         assert isinstance(key, OptionKey)
         (value_object, value) = self.get_value_object_and_value_for(key)
         return (value_object, value)
+
+    def get_default_for_b_option(self, keyname: str) -> ElementaryOptionValues:
+        assert keyname.startswith('b_')
+        from .compilers.compilers import BASE_OPTIONS
+        for bkey, bvalue in BASE_OPTIONS.items():
+            if bkey.name == keyname:
+                return T.cast('ElementaryOptionValues', bvalue.default)
+        raise MesonBugException(f'Requested base option {keyname} which does not exist.')
 
     def remove(self, key: OptionKey) -> None:
         del self.options[key]

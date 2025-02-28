@@ -26,7 +26,7 @@ from ..arglist import CompilerArgs
 if T.TYPE_CHECKING:
     from .. import coredata
     from ..build import BuildTarget, DFeatures
-    from ..coredata import MutableKeyedOptionDictType, KeyedOptionDictType
+    from ..coredata import MutableKeyedOptionDictType
     from ..envconfig import MachineInfo
     from ..environment import Environment
     from ..linkers import RSPFileSyntax
@@ -272,37 +272,11 @@ def option_enabled(boptions: T.Set[OptionKey],
         return False
 
 
-def get_option_value(options: 'KeyedOptionDictType', opt: OptionKey, fallback: '_T') -> '_T':
-    """Get the value of an option, or the fallback value."""
-    try:
-        v: '_T' = options.get_value(opt) # type: ignore [assignment]
-    except (KeyError, AttributeError):
-        return fallback
-
-    assert isinstance(v, type(fallback)), f'Should have {type(fallback)!r} but was {type(v)!r}'
-    # Mypy doesn't understand that the above assert ensures that v is type _T
-    return v
-
 def get_option_value_for_target(env: 'Environment', target: 'BuildTarget', opt: OptionKey, fallback: '_T') -> '_T':
     """Get the value of an option, or the fallback value."""
     try:
         v = env.coredata.get_option_for_target(target, opt)
     except (KeyError, AttributeError):
-        return fallback
-
-    assert isinstance(v, type(fallback)), f'Should have {type(fallback)!r} but was {type(v)!r}'
-    # Mypy doesn't understand that the above assert ensures that v is type _T
-    return v
-
-
-def get_target_option_value(target: 'BuildTarget',
-                            env: 'Environment',
-                            opt: T.Union[OptionKey, str],
-                            fallback: '_T') -> '_T':
-    """Get the value of an option, or the fallback value."""
-    try:
-        v = env.coredata.get_option_for_target(target, opt)
-    except KeyError:
         return fallback
 
     assert isinstance(v, type(fallback)), f'Should have {type(fallback)!r} but was {type(v)!r}'
@@ -1419,7 +1393,7 @@ class Compiler(HoldableObject, metaclass=abc.ABCMeta):
                               env: Environment,
                               target: T.Optional[BuildTarget],
                               subproject: T.Optional[str] = None
-                              ) -> T.Union[str, int, bool, T.List[str]]:
+                              ) -> options.ElementaryOptionValues:
         if isinstance(key, str):
             key = self.form_compileropt_key(key)
         if target:
