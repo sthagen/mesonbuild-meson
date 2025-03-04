@@ -33,7 +33,7 @@ from .mesonlib import (
 from . import mlog
 
 if T.TYPE_CHECKING:
-    from typing_extensions import Literal, TypeAlias, TypedDict
+    from typing_extensions import Literal, Final, TypeAlias, TypedDict
 
     DeprecatedType: TypeAlias = T.Union[bool, str, T.Dict[str, str], T.List[str]]
     AnyOptionType: TypeAlias = T.Union[
@@ -324,6 +324,8 @@ class UserOption(T.Generic[_T], HoldableObject):
 
     def __post_init__(self, value_: _T) -> None:
         self.value = self.validate_value(value_)
+        # Final isn't technically allowed in a __post_init__ method
+        self.default: Final[_T] = self.value  # type: ignore[misc]
 
     def listify(self, value: T.Any) -> T.List[T.Any]:
         return [value]
@@ -1140,13 +1142,13 @@ class OptionStore:
         (value_object, value) = self.get_value_object_and_value_for(key)
         return (value_object, value)
 
-    def get_default_for_b_option(self, keyname: str) -> ElementaryOptionValues:
-        assert keyname.startswith('b_')
+    def get_default_for_b_option(self, key: OptionKey) -> ElementaryOptionValues:
+        assert self.is_base_option(key)
         from .compilers.compilers import BASE_OPTIONS
-        for bkey, bvalue in BASE_OPTIONS.items():
-            if bkey.name == keyname:
-                return T.cast('ElementaryOptionValues', bvalue.default)
-        raise MesonBugException(f'Requested base option {keyname} which does not exist.')
+        try:
+            return T.cast('ElementaryOptionValues', BASE_OPTIONS[key.evolve(subproject=None)].default)
+        except KeyError:
+            raise MesonBugException(f'Requested base option {key} which does not exist.')
 
     def remove(self, key: OptionKey) -> None:
         del self.options[key]
