@@ -42,6 +42,8 @@ if T.TYPE_CHECKING:
         'UserStringOption', 'UserUmaskOption']
     ElementaryOptionValues: TypeAlias = T.Union[str, int, bool, T.List[str]]
 
+    _OptionKeyTuple: TypeAlias = T.Tuple[T.Optional[str], MachineChoice, str]
+
     class ArgparseKWs(TypedDict, total=False):
 
         action: str
@@ -102,7 +104,7 @@ _BUILTIN_NAMES = {
 }
 
 _BAD_VALUE = 'Qwert Zuiopü'
-_optionkey_cache: T.Dict[T.Tuple[str, str, MachineChoice], OptionKey] = {}
+_optionkey_cache: T.Dict[_OptionKeyTuple, OptionKey] = {}
 
 
 class OptionKey:
@@ -131,7 +133,7 @@ class OptionKey:
         if not name:
             return super().__new__(cls)  # for unpickling, do not cache now
 
-        tuple_ = (name, subproject, machine)
+        tuple_: _OptionKeyTuple = (subproject, machine, name)
         try:
             return _optionkey_cache[tuple_]
         except KeyError:
@@ -168,12 +170,12 @@ class OptionKey:
     def __setstate__(self, state: T.Dict[str, T.Any]) -> None:
         # Here, the object is created using __new__()
         self._init(**state)
-        _optionkey_cache[(self.name, self.subproject, self.machine)] = self
+        _optionkey_cache[self._to_tuple()] = self
 
     def __hash__(self) -> int:
         return self._hash
 
-    def _to_tuple(self) -> T.Tuple[str, MachineChoice, str]:
+    def _to_tuple(self) -> _OptionKeyTuple:
         return (self.subproject, self.machine, self.name)
 
     def __eq__(self, other: object) -> bool:
@@ -811,7 +813,6 @@ class OptionStore:
         self.module_options: T.Set[OptionKey] = set()
         from .compilers import all_languages
         self.all_languages = set(all_languages)
-        self.build_options = None
         self.project_options = set()
         self.augments: T.Dict[str, str] = {}
         self.pending_project_options: T.Dict[OptionKey, str] = {}
@@ -1136,11 +1137,6 @@ class OptionStore:
     def get_value_object(self, key: T.Union[OptionKey, str]) -> AnyOptionType:
         key = self.ensure_and_validate_key(key)
         return self.options[key]
-
-    def get_option_from_meson_file(self, key: OptionKey) -> T.Tuple[AnyOptionType, ElementaryOptionValues]:
-        assert isinstance(key, OptionKey)
-        (value_object, value) = self.get_value_object_and_value_for(key)
-        return (value_object, value)
 
     def get_default_for_b_option(self, key: OptionKey) -> ElementaryOptionValues:
         assert self.is_base_option(key)
