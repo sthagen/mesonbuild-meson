@@ -663,7 +663,7 @@ class Environment:
             # Keep only per machine options from the native file. The cross
             # file takes precedence over all other options.
             for key, value in list(self.options.items()):
-                if self.coredata.is_per_machine_option(key):
+                if self.coredata.optstore.is_per_machine_option(key):
                     self.options[key.as_build()] = value
             self._load_machine_file_options(config, properties.host, MachineChoice.HOST)
 
@@ -690,6 +690,13 @@ class Environment:
                          'See: https://mesonbuild.com/Builtin-options.html#build-type-options',
                          fatal=False)
 
+        # Filter out build machine options that are not valid per-project.
+        # We allow this in the file because it makes the machine files more
+        # useful (ie, the same file can be used for host == build configuration
+        # a host != build configuration)
+        self.options = {k: v for k, v in self.options.items()
+                        if k.machine is MachineChoice.HOST or self.coredata.optstore.is_per_machine_option(k)}
+
         exe_wrapper = self.lookup_binary_entry(MachineChoice.HOST, 'exe_wrapper')
         if exe_wrapper is not None:
             self.exe_wrapper = ExternalProgram.from_bin_list(self, MachineChoice.HOST, 'exe_wrapper')
@@ -702,11 +709,12 @@ class Environment:
         # Store a global state of Cargo dependencies
         self.cargo: T.Optional[cargo.Interpreter] = None
 
-    def mfilestr2key(self, machine_file_string: str, section_subproject: T.Optional[str], machine: MachineChoice) -> OptionKey:
+    def mfilestr2key(self, machine_file_string: str, section: T.Optional[str], section_subproject: T.Optional[str], machine: MachineChoice) -> OptionKey:
         key = OptionKey.from_string(machine_file_string)
         assert key.machine == MachineChoice.HOST
         if key.subproject:
-            raise MesonException('Do not set subproject options in [built-in options] section, use [subproject:built-in options] instead.')
+            suggestion = section if section == 'project options' else 'built-in options'
+            raise MesonException(f'Do not set subproject options in [{section}] section, use [subproject:{suggestion}] instead.')
         if section_subproject:
             key = key.evolve(subproject=section_subproject)
         if machine == MachineChoice.BUILD:
@@ -724,7 +732,7 @@ class Environment:
         if paths:
             mlog.deprecation('The [paths] section is deprecated, use the [built-in options] section instead.')
             for strk, v in paths.items():
-                k = self.mfilestr2key(strk, None, machine)
+                k = self.mfilestr2key(strk, 'paths', None, machine)
                 self.options[k] = v
 
         # Next look for compiler options in the "properties" section, this is
@@ -737,7 +745,7 @@ class Environment:
         for strk, v in properties.properties.copy().items():
             if strk in deprecated_properties:
                 mlog.deprecation(f'{strk} in the [properties] section of the machine file is deprecated, use the [built-in options] section.')
-                k = self.mfilestr2key(strk, None, machine)
+                k = self.mfilestr2key(strk, 'properties', None, machine)
                 self.options[k] = v
                 del properties.properties[strk]
 
@@ -748,7 +756,7 @@ class Environment:
                 section_subproject = ''
             if section == 'built-in options':
                 for strk, v in values.items():
-                    key = self.mfilestr2key(strk, section_subproject, machine)
+                    key = self.mfilestr2key(strk, section, section_subproject, machine)
                     # If we're in the cross file, and there is a `build.foo` warn about that. Later we'll remove it.
                     if machine is MachineChoice.HOST and key.machine is not machine:
                         mlog.deprecation('Setting build machine options in cross files, please use a native file instead, this will be removed in meson 2.0', once=True)
@@ -758,9 +766,7 @@ class Environment:
                 # to read these from the native file
                 for strk, v in values.items():
                     # Project options are always for the host machine
-                    key = self.mfilestr2key(strk, section_subproject, machine)
-                    if key.subproject:
-                        raise MesonException('Do not set subproject options in [built-in options] section, use [subproject:built-in options] instead.')
+                    key = self.mfilestr2key(strk, section, section_subproject, machine)
                     self.options[key] = v
 
     def _set_default_options_from_env(self) -> None:
