@@ -1243,7 +1243,7 @@ class OptionStore:
 
     def first_handle_prefix(self,
                             project_default_options: T.Union[T.List[str], OptionStringLikeDict],
-                            cmd_line_options: T.Union[T.List[str], OptionStringLikeDict],
+                            cmd_line_options: OptionStringLikeDict,
                             machine_file_options: T.Mapping[OptionKey, ElementaryOptionValues]) \
             -> T.Tuple[T.Union[T.List[str], OptionStringLikeDict],
                        T.Union[T.List[str], OptionStringLikeDict],
@@ -1282,7 +1282,7 @@ class OptionStore:
 
     def initialize_from_top_level_project_call(self,
                                                project_default_options_in: T.Union[T.List[str], OptionStringLikeDict],
-                                               cmd_line_options_in: T.Union[T.List[str], OptionStringLikeDict],
+                                               cmd_line_options_in: OptionStringLikeDict,
                                                machine_file_options_in: T.Mapping[OptionKey, ElementaryOptionValues]) -> None:
         first_invocation = True
         (project_default_options, cmd_line_options, machine_file_options) = self.first_handle_prefix(project_default_options_in,
@@ -1370,15 +1370,27 @@ class OptionStore:
                 if proj_key in self.options:
                     self.set_option(proj_key, valstr, True)
                 else:
-                    # Fail on unknown options that we can know must
-                    # exist at this point in time. Subproject and compiler
-                    # options are resolved later.
-                    #
-                    # Some base options (sanitizers etc) might get added later.
-                    # Permitting them all is not strictly correct.
-                    if key.subproject is None and not self.is_compiler_option(key) and not self.is_base_option(key):
-                        raise MesonException(f'Unknown options: "{keystr}"')
                     self.pending_options[key] = valstr
+
+    def validate_cmd_line_options(self, cmd_line_options: OptionStringLikeDict) -> None:
+        unknown_options = []
+        for keystr, valstr in cmd_line_options.items():
+            if isinstance(keystr, str):
+                key = OptionKey.from_string(keystr)
+            else:
+                key = keystr
+            # Fail on unknown options that we can know must exist at this point in time.
+            # Subproject and compiler options are resolved later.
+            #
+            # Some base options (sanitizers etc) might get added later.
+            # Permitting them all is not strictly correct.
+            if key.subproject is None and not self.is_compiler_option(key) and not self.is_base_option(key) and \
+               key in self.pending_options:
+                unknown_options.append(f'"{key}"')
+
+        if unknown_options:
+            keys = ', '.join(unknown_options)
+            raise MesonException(f'Unknown options: {keys}')
 
     def hacky_mchackface_back_to_list(self, optdict: T.Dict[str, str]) -> T.List[str]:
         if isinstance(optdict, dict):
