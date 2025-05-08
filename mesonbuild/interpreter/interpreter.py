@@ -115,6 +115,7 @@ if T.TYPE_CHECKING:
     from . import kwargs as kwtypes
     from ..backend.backends import Backend
     from ..interpreterbase.baseobjects import InterpreterObject, TYPE_var, TYPE_kwargs
+    from ..options import OptionDict
     from ..programs import OverrideProgram
     from .type_checking import SourcesVarargsType
 
@@ -270,7 +271,7 @@ class Interpreter(InterpreterBase, HoldableObject):
                 subproject: str = '',
                 subdir: str = '',
                 subproject_dir: str = 'subprojects',
-                default_project_options: T.Optional[T.Dict[OptionKey, str]] = None,
+                invoker_method_default_options: T.Optional[T.Dict[OptionKey, str]] = None,
                 ast: T.Optional[mparser.CodeBlockNode] = None,
                 relaxations: T.Optional[T.Set[InterpreterRuleRelaxation]] = None,
                 user_defined_options: T.Optional[coredata.SharedCMDOptions] = None,
@@ -295,12 +296,11 @@ class Interpreter(InterpreterBase, HoldableObject):
         self.subproject_stack: T.List[str] = []
         self.configure_file_outputs: T.Dict[str, int] = {}
         # Passed from the outside, only used in subprojects.
-        if default_project_options:
-            self.default_project_options = default_project_options if isinstance(default_project_options, str) else default_project_options.copy()
-            if isinstance(default_project_options, dict):
-                pass
+        if invoker_method_default_options:
+            assert isinstance(invoker_method_default_options, dict)
+            self.invoker_method_default_options = invoker_method_default_options
         else:
-            self.default_project_options = {}
+            self.invoker_method_default_options = {}
         self.project_default_options: T.List[str] = []
         self.build_func_dict()
         self.build_holder_map()
@@ -868,7 +868,8 @@ class Interpreter(InterpreterBase, HoldableObject):
         self.subprojects[subp_name] = sub
         return sub
 
-    def do_subproject(self, subp_name: str, kwargs: kwtypes.DoSubproject, force_method: T.Optional[wrap.Method] = None) -> SubprojectHolder:
+    def do_subproject(self, subp_name: str, kwargs: kwtypes.DoSubproject, force_method: T.Optional[wrap.Method] = None,
+                      extra_default_options: T.Optional[OptionDict] = None) -> SubprojectHolder:
         if subp_name == 'sub_static':
             pass
         disabled, required, feature = extract_required_kwarg(kwargs, self.subproject)
@@ -878,6 +879,8 @@ class Interpreter(InterpreterBase, HoldableObject):
             return self.disabled_subproject(subp_name, disabled_feature=feature)
 
         default_options = kwargs['default_options']
+        if extra_default_options:
+            default_options = {**extra_default_options, **default_options}
 
         if subp_name == '':
             raise InterpreterException('Subproject name must not be empty.')
@@ -952,7 +955,7 @@ class Interpreter(InterpreterBase, HoldableObject):
             raise e
 
     def _do_subproject_meson(self, subp_name: str, subdir: str,
-                             default_options: T.List[str],
+                             default_options: T.Dict[str, options.ElementaryOptionValues],
                              kwargs: kwtypes.DoSubproject,
                              ast: T.Optional[mparser.CodeBlockNode] = None,
                              build_def_files: T.Optional[T.List[str]] = None,
@@ -1012,7 +1015,7 @@ class Interpreter(InterpreterBase, HoldableObject):
         return self.subprojects[subp_name]
 
     def _do_subproject_cmake(self, subp_name: str, subdir: str,
-                             default_options: T.List[str],
+                             default_options: T.Dict[str, options.ElementaryOptionValues],
                              kwargs: kwtypes.DoSubproject) -> SubprojectHolder:
         from ..cmake import CMakeInterpreter
         with mlog.nested(subp_name):
@@ -1039,7 +1042,7 @@ class Interpreter(InterpreterBase, HoldableObject):
         return result
 
     def _do_subproject_cargo(self, subp_name: str, subdir: str,
-                             default_options: T.List[str],
+                             default_options: T.Dict[str, options.ElementaryOptionValues],
                              kwargs: kwtypes.DoSubproject) -> SubprojectHolder:
         from .. import cargo
         FeatureNew.single_use('Cargo subproject', '1.3.0', self.subproject, location=self.current_node)
@@ -1193,9 +1196,8 @@ class Interpreter(InterpreterBase, HoldableObject):
                                                                               self.user_defined_options.cmd_line_options,
                                                                               self.environment.options)
             else:
-                invoker_method_default_options = self.default_project_options
                 self.coredata.optstore.initialize_from_subproject_call(self.subproject,
-                                                                       invoker_method_default_options,
+                                                                       self.invoker_method_default_options,
                                                                        self.project_default_options,
                                                                        self.user_defined_options.cmd_line_options)
                 self.coredata.initialized_subprojects.add(self.subproject)
