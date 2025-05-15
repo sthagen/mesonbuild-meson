@@ -838,6 +838,12 @@ class OptionStore:
             key = key.as_host()
         return key
 
+    def get_pending_value(self, key: T.Union[OptionKey, str], default: T.Optional[ElementaryOptionValues] = None) -> ElementaryOptionValues:
+        key = self.ensure_and_validate_key(key)
+        if key in self.options:
+            return self.options[key].value
+        return self.pending_options.get(key, default)
+
     def get_value(self, key: T.Union[OptionKey, str]) -> ElementaryOptionValues:
         return self.get_value_object(key).value
 
@@ -1040,7 +1046,7 @@ class OptionStore:
             assert isinstance(new_value, str), 'for mypy'
             self.reset_prefixed_options(old_value, new_value)
 
-        if changed and key.name == 'buildtype':
+        if changed and key.name == 'buildtype' and new_value != 'custom':
             assert isinstance(new_value, str), 'for mypy'
             optimization, debug = self.DEFAULT_DEPENDENTS[new_value]
             dkey = key.evolve(name='debug')
