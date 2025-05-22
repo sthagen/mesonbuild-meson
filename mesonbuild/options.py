@@ -1056,15 +1056,19 @@ class OptionStore:
 
         return changed
 
-    def set_option_from_string(self, keystr: T.Union[OptionKey, str], new_value: str) -> bool:
-        if isinstance(keystr, OptionKey):
-            o = keystr
-        else:
-            o = OptionKey.from_string(keystr)
+    def set_option_maybe_root(self, o: OptionKey, new_value: str) -> bool:
+        if not self.is_cross and o.is_for_build():
+            return False
+
         if o in self.options:
             return self.set_option(o, new_value)
-        o = o.as_root()
-        return self.set_option(o, new_value)
+        if self.accept_as_pending_option(o):
+            old_value = self.pending_options.get(o, None)
+            self.pending_options[o] = new_value
+            return old_value is None or str(old_value) == new_value
+        else:
+            o = o.as_root()
+            return self.set_option(o, new_value)
 
     def set_from_configure_command(self, D_args: T.List[str], U_args: T.List[str]) -> bool:
         dirty = False
@@ -1072,9 +1076,9 @@ class OptionStore:
         (global_options, perproject_global_options, project_options) = self.classify_D_arguments(D_args)
         U_args = [] if U_args is None else U_args
         for key, valstr in global_options:
-            dirty |= self.set_option_from_string(key, valstr)
+            dirty |= self.set_option_maybe_root(key, valstr)
         for key, valstr in project_options:
-            dirty |= self.set_option_from_string(key, valstr)
+            dirty |= self.set_option_maybe_root(key, valstr)
         for key, valstr in perproject_global_options:
             if key in self.augments:
                 if self.augments[key] != valstr:
@@ -1354,6 +1358,20 @@ class OptionStore:
                 else:
                     self.pending_options[key] = valstr
 
+    def accept_as_pending_option(self, key: OptionKey, known_subprojects: T.Optional[T.Union[T.Set[str], T.KeysView[str]]] = None) -> bool:
+        # Fail on unknown options that we can know must exist at this point in time.
+        # Subproject and compiler options are resolved later.
+        #
+        # Some base options (sanitizers etc) might get added later.
+        # Permitting them all is not strictly correct.
+        if key.subproject:
+            if known_subprojects is None or key.subproject not in known_subprojects:
+                return True
+        if self.is_compiler_option(key):
+            return True
+        return (self.is_base_option(key) and
+                key.evolve(subproject=None, machine=MachineChoice.HOST) in COMPILER_BASE_OPTIONS)
+
     def validate_cmd_line_options(self, cmd_line_options: OptionDict) -> None:
         unknown_options = []
         for keystr, valstr in cmd_line_options.items():
@@ -1361,13 +1379,8 @@ class OptionStore:
                 key = OptionKey.from_string(keystr)
             else:
                 key = keystr
-            # Fail on unknown options that we can know must exist at this point in time.
-            # Subproject and compiler options are resolved later.
-            #
-            # Some base options (sanitizers etc) might get added later.
-            # Permitting them all is not strictly correct.
-            if key.subproject is None and not self.is_compiler_option(key) and not self.is_base_option(key) and \
-               key in self.pending_options:
+
+            if key in self.pending_options and not self.accept_as_pending_option(key):
                 unknown_options.append(f'"{key}"')
 
         if unknown_options:
