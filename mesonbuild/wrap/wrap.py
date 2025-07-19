@@ -57,7 +57,21 @@ WHITELIST_SUBDOMAIN = 'wrapdb.mesonbuild.com'
 
 ALL_TYPES = ['file', 'git', 'hg', 'svn', 'redirect']
 
-PATCH = shutil.which('patch')
+if mesonlib.is_windows():
+    from ..programs import ExternalProgram
+    from ..mesonlib import version_compare
+    _exclude_paths: T.List[str] = []
+    while True:
+        _patch = ExternalProgram('patch', silent=True, exclude_paths=_exclude_paths)
+        if not _patch.found():
+            break
+        if version_compare(_patch.get_version(), '>=2.6.1'):
+            break
+        _exclude_paths.append(os.path.dirname(_patch.get_path()))
+    PATCH = _patch.get_path() if _patch.found() else None
+else:
+    PATCH = shutil.which('patch')
+
 
 def whitelist_wrapdb(urlstr: str) -> urllib.parse.ParseResult:
     """ raises WrapException if not whitelisted subdomain """
@@ -232,6 +246,15 @@ class PackageDefinition:
         wrap = PackageDefinition.from_values(name, subprojects_dir, type_, values)
         wrap.original_filename = filename
         wrap.parse_provide_section(config)
+
+        patch_url = values.get('patch_url')
+        if patch_url and patch_url.startswith('https://wrapdb.mesonbuild.com/v1'):
+            if name == 'sqlite':
+                mlog.deprecation('sqlite wrap has been renamed to sqlite3, update using `meson wrap install sqlite3`')
+            elif name == 'libjpeg':
+                mlog.deprecation('libjpeg wrap has been renamed to libjpeg-turbo, update using `meson wrap install libjpeg-turbo`')
+            else:
+                mlog.deprecation(f'WrapDB v1 is deprecated, updated using `meson wrap update {name}`')
 
         with open(filename, 'r', encoding='utf-8') as file:
             wrap.wrapfile_hash = hashlib.sha256(file.read().encode('utf-8')).hexdigest()
