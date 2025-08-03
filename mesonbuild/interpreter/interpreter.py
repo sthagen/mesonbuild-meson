@@ -62,6 +62,7 @@ from .type_checking import (
     OUTPUT_KW,
     DEFAULT_OPTIONS,
     DEPENDENCIES_KW,
+    DEPENDENCY_KWS,
     DEPENDS_KW,
     DEPEND_FILES_KW,
     DEPFILE_KW,
@@ -523,6 +524,8 @@ class Interpreter(InterpreterBase, HoldableObject):
                     self.handle_meson_version(val.value, val)
 
     def get_build_def_files(self) -> mesonlib.OrderedSet[str]:
+        if self.environment.cargo:
+            self.build_def_files.update(self.environment.cargo.get_build_def_files())
         return self.build_def_files
 
     def add_build_def_file(self, f: mesonlib.FileOrString) -> None:
@@ -1787,8 +1790,8 @@ class Interpreter(InterpreterBase, HoldableObject):
     @disablerIfNotFound
     @permittedKwargs(permitted_dependency_kwargs)
     @typed_pos_args('dependency', varargs=str, min_varargs=1)
-    @typed_kwargs('dependency', DEFAULT_OPTIONS.evolve(since='0.38.0'), allow_unknown=True)
-    def func_dependency(self, node: mparser.BaseNode, args: T.Tuple[T.List[str]], kwargs) -> Dependency:
+    @typed_kwargs('dependency', *DEPENDENCY_KWS, allow_unknown=True)
+    def func_dependency(self, node: mparser.BaseNode, args: T.Tuple[T.List[str]], kwargs: kwtypes.FuncDependency) -> Dependency:
         # Replace '' by empty list of names
         names = [n for n in args[0] if n]
         if len(names) > 1:
