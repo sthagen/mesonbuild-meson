@@ -242,6 +242,10 @@ class MultilineArgumentDetector(FullAstVisitor):
         if node.is_multiline:
             self.is_multiline = True
 
+        nargs = len(node)
+        if nargs and nargs == len(node.commas):
+            self.is_multiline = True
+
         if self.is_multiline:
             return
 
@@ -670,7 +674,7 @@ class ArgumentFormatter(FullAstVisitor):
             if self.config.group_arg_value:
                 for arg in node.arguments[:-1]:
                     group_args = False
-                    if isinstance(arg, mparser.StringNode) and arg.value.startswith('--'):
+                    if isinstance(arg, mparser.StringNode) and arg.value.startswith('--') and arg.value != '--':
                         next_arg = node.arguments[arg_index + 1]
                         if isinstance(next_arg, mparser.StringNode) and not next_arg.value.startswith('--'):
                             group_args = True
