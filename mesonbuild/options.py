@@ -1162,7 +1162,7 @@ class OptionStore:
     def get_default_for_b_option(self, key: OptionKey) -> ElementaryOptionValues:
         assert self.is_base_option(key)
         try:
-            return T.cast('ElementaryOptionValues', COMPILER_BASE_OPTIONS[key.evolve(subproject=None)].default)
+            return COMPILER_BASE_OPTIONS[key.evolve(subproject=None)].default
         except KeyError:
             raise MesonBugException(f'Requested base option {key} which does not exist.')
 
@@ -1188,10 +1188,6 @@ class OptionStore:
 
     def items(self) -> T.ItemsView['OptionKey', 'AnyOptionType']:
         return self.options.items()
-
-    # FIXME: this method must be deleted and users moved to use "add_xxx_option"s instead.
-    def update(self, **kwargs: AnyOptionType) -> None:
-        self.options.update(**kwargs)
 
     def setdefault(self, k: OptionKey, o: AnyOptionType) -> AnyOptionType:
         return self.options.setdefault(k, o)
