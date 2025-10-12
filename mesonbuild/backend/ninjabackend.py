@@ -2050,14 +2050,8 @@ class NinjaBackend(backends.Backend):
             if rustc.has_verbatim():
                 modifiers.append('+verbatim')
             else:
-                # undo the effects of -l without verbatim
-                badname = not is_library(libname)
-                libname, ext = os.path.splitext(libname)
-                if libname.startswith('lib'):
-                    libname = libname[3:]
-                else:
-                    badname = True
-                if badname:
+                libname = rustc.lib_file_to_l_arg(self.environment, libname)
+                if libname is None:
                     raise MesonException(f"rustc does not implement '-l{type_}:+verbatim'; cannot link to '{orig_libname}' due to nonstandard name")
 
             if modifiers:
@@ -2122,7 +2116,7 @@ class NinjaBackend(backends.Backend):
                         _link_library(a, static)
                         continue
 
-                    dir_, _ = os.path.split(lib)
+                    dir_, _ = os.path.split(a)
                     linkdirs.add(dir_)
 
                 args.append(f'-Clink-arg={a}')
