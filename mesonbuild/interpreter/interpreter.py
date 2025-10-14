@@ -113,6 +113,7 @@ import copy
 if T.TYPE_CHECKING:
     from typing_extensions import Literal
 
+    from . import cargo
     from . import kwargs as kwtypes
     from ..backend.backends import Backend
     from ..interpreterbase.baseobjects import InterpreterObject, TYPE_var, TYPE_kwargs
@@ -121,13 +122,11 @@ if T.TYPE_CHECKING:
     from .type_checking import SourcesVarargsType
 
     # Input source types passed to Targets
-    SourceInputs = T.Union[mesonlib.File, build.GeneratedList, build.BuildTarget, build.BothLibraries,
-                           build.CustomTargetIndex, build.CustomTarget, build.GeneratedList,
-                           build.ExtractedObjects, str]
+    SourceInputs = T.Union[mesonlib.FileOrString, build.GeneratedTypes, build.BuildTarget,
+                           build.BothLibraries, build.ExtractedObjects]
     # Input source types passed to the build.Target classes
-    SourceOutputs = T.Union[mesonlib.File, build.GeneratedList,
-                            build.BuildTarget, build.CustomTargetIndex, build.CustomTarget,
-                            build.ExtractedObjects, build.GeneratedList, build.StructuredSources]
+    SourceOutputs = T.Union[mesonlib.File, build.GeneratedTypes, build.BuildTarget,
+                            build.ExtractedObjects, build.StructuredSources]
 
     BuildTargetSource = T.Union[mesonlib.FileOrString, build.GeneratedTypes, build.StructuredSources]
 
@@ -276,11 +275,13 @@ class Interpreter(InterpreterBase, HoldableObject):
                 ast: T.Optional[mparser.CodeBlockNode] = None,
                 relaxations: T.Optional[T.Set[InterpreterRuleRelaxation]] = None,
                 user_defined_options: T.Optional[coredata.SharedCMDOptions] = None,
+                cargo: T.Optional[cargo.Interpreter] = None,
             ) -> None:
         super().__init__(_build.environment.get_source_dir(), subdir, subproject, subproject_dir, _build.environment)
         self.active_projectname = ''
         self.build = _build
         self.backend = backend
+        self.cargo = cargo
         self.summary: T.Dict[str, 'Summary'] = {}
         self.modules: T.Dict[str, NewExtensionModule] = {}
         self.relaxations = relaxations or set()
@@ -312,6 +313,18 @@ class Interpreter(InterpreterBase, HoldableObject):
 
     def __getnewargs_ex__(self) -> T.Tuple[T.Tuple[object], T.Dict[str, object]]:
         raise MesonBugException('This class is unpicklable')
+
+    def load_root_cargo_lock_file(self) -> None:
+        cargo_lock_filename = os.path.join(self.subdir, 'Cargo.lock')
+        cargo_lock = os.path.join(self.source_root, cargo_lock_filename)
+        if not os.path.isfile(cargo_lock):
+            return
+        from .. import cargo
+        try:
+            self.cargo = cargo.Interpreter(self.environment, self.subdir, self.subproject_dir)
+        except cargo.TomlImplementationMissing as e:
+            # error delayed to actual usage of a Cargo subproject
+            mlog.warning(f'cannot load Cargo.lock: {e}', fatal=False)
 
     def _redetect_machines(self) -> None:
         # Re-initialize machine descriptions. We can do a better job now because we
@@ -524,8 +537,8 @@ class Interpreter(InterpreterBase, HoldableObject):
                     self.handle_meson_version(val.value, val)
 
     def get_build_def_files(self) -> mesonlib.OrderedSet[str]:
-        if self.environment.cargo:
-            self.build_def_files.update(self.environment.cargo.get_build_def_files())
+        if self.cargo:
+            self.build_def_files.update(self.cargo.get_build_def_files())
         return self.build_def_files
 
     def add_build_def_file(self, f: mesonlib.FileOrString) -> None:
@@ -694,7 +707,7 @@ class Interpreter(InterpreterBase, HoldableObject):
     def func_declare_dependency(self, node: mparser.BaseNode, args: T.List[TYPE_var],
                                 kwargs: kwtypes.FuncDeclareDependency) -> dependencies.Dependency:
         deps = kwargs['dependencies']
-        incs = self.extract_incdirs(kwargs)
+        incs = self.extract_incdirs(kwargs, strings_since='0.50.0')
         libs = kwargs['link_with']
         libs_whole = kwargs['link_whole']
         objects = kwargs['objects']
@@ -972,7 +985,8 @@ class Interpreter(InterpreterBase, HoldableObject):
                              kwargs: kwtypes.DoSubproject,
                              ast: T.Optional[mparser.CodeBlockNode] = None,
                              build_def_files: T.Optional[T.List[str]] = None,
-                             relaxations: T.Optional[T.Set[InterpreterRuleRelaxation]] = None) -> SubprojectHolder:
+                             relaxations: T.Optional[T.Set[InterpreterRuleRelaxation]] = None,
+                             cargo: T.Optional[cargo.Interpreter] = None) -> SubprojectHolder:
         with mlog.nested(subp_name):
             if ast:
                 # Debug print the generated meson file
@@ -990,7 +1004,8 @@ class Interpreter(InterpreterBase, HoldableObject):
             new_build = self.build.copy()
             subi = Interpreter(new_build, self.backend, subp_name, subdir, self.subproject_dir,
                                default_options, ast=ast, relaxations=relaxations,
-                               user_defined_options=self.user_defined_options)
+                               user_defined_options=self.user_defined_options,
+                               cargo=cargo or self.cargo)
             # Those lists are shared by all interpreters. That means that
             # even if the subproject fails, any modification that the subproject
             # made to those lists will affect the parent project.
@@ -1022,7 +1037,7 @@ class Interpreter(InterpreterBase, HoldableObject):
         if build_def_files:
             self.build_def_files.update(build_def_files)
         # We always need the subi.build_def_files, to propagate sub-sub-projects
-        self.build_def_files.update(subi.build_def_files)
+        self.build_def_files.update(subi.get_build_def_files())
         self.build.merge(subi.build)
         self.build.subprojects[subp_name] = subi.project_version
         return self.subprojects[subp_name]
@@ -1061,15 +1076,17 @@ class Interpreter(InterpreterBase, HoldableObject):
         FeatureNew.single_use('Cargo subproject', '1.3.0', self.subproject, location=self.current_node)
         mlog.warning('Cargo subproject is an experimental feature and has no backwards compatibility guarantees.',
                      once=True, location=self.current_node)
-        if self.environment.cargo is None:
-            self.add_languages(['rust'], True, MachineChoice.HOST)
-            self.environment.cargo = cargo.Interpreter(self.environment)
+        self.add_languages(['rust'], True, MachineChoice.HOST)
         with mlog.nested(subp_name):
-            ast = self.environment.cargo.interpret(subdir)
+            try:
+                cargo_int = self.cargo or cargo.Interpreter(self.environment, subdir, self.subproject_dir)
+            except cargo.TomlImplementationMissing as e:
+                raise MesonException(f'Failed to load Cargo.lock: {e!s}')
+
+            ast = cargo_int.interpret(subdir)
             return self._do_subproject_meson(
                 subp_name, subdir, default_options, kwargs, ast,
-                # FIXME: Are there other files used by cargo interpreter?
-                [os.path.join(subdir, 'Cargo.toml')])
+                cargo=cargo_int)
 
     @typed_pos_args('get_option', str)
     @noKwargs
@@ -1280,6 +1297,9 @@ class Interpreter(InterpreterBase, HoldableObject):
         else:
             assert self.environment.wrap_resolver is not None, 'for mypy'
             self.environment.wrap_resolver.load_and_merge(subprojects_dir, self.subproject)
+
+        if self.cargo is None:
+            self.load_root_cargo_lock_file()
 
         self.build.projects[self.subproject] = proj_name
         mlog.log('Project name:', mlog.bold(proj_name))
@@ -2777,12 +2797,12 @@ class Interpreter(InterpreterBase, HoldableObject):
                                               install_tag=install_tag, data_type='configure'))
         return mesonlib.File.from_built_file(self.subdir, output)
 
-    def extract_incdirs(self, kwargs, key: str = 'include_directories') -> T.List[build.IncludeDirs]:
+    def extract_incdirs(self, kwargs, key: str = 'include_directories', strings_since: T.Optional[str] = None) -> T.List[build.IncludeDirs]:
         prospectives = extract_as_list(kwargs, key)
-        if key == 'include_directories':
+        if strings_since:
             for i in prospectives:
                 if isinstance(i, str):
-                    FeatureNew.single_use('include_directories kwarg of type string', '0.50.0', self.subproject,
+                    FeatureNew.single_use(f'{key} kwarg of type string', strings_since, self.subproject,
                                           f'Use include_directories({i!r}) instead', location=self.current_node)
                     break
 
@@ -3450,7 +3470,7 @@ class Interpreter(InterpreterBase, HoldableObject):
                             node=node)
                     outputs.update(o)
 
-        kwargs['include_directories'] = self.extract_incdirs(kwargs)
+        kwargs['include_directories'] = self.extract_incdirs(kwargs, strings_since='0.50.0')
 
         if targetclass is build.Executable:
             kwargs = T.cast('kwtypes.Executable', kwargs)
