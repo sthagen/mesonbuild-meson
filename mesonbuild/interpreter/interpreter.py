@@ -536,10 +536,10 @@ class Interpreter(InterpreterBase, HoldableObject):
                 if isinstance(val, mparser.StringNode):
                     self.handle_meson_version(val.value, val)
 
-    def get_build_def_files(self) -> mesonlib.OrderedSet[str]:
+    def get_build_def_files(self) -> T.List[str]:
         if self.cargo:
             self.build_def_files.update(self.cargo.get_build_def_files())
-        return self.build_def_files
+        return list(self.build_def_files)
 
     def add_build_def_file(self, f: mesonlib.FileOrString) -> None:
         # Use relative path for files within source directory, and absolute path
@@ -1158,10 +1158,10 @@ class Interpreter(InterpreterBase, HoldableObject):
             # Use of the '--genvslite vsxxxx' option ultimately overrides any '--backend xxx'
             # option the user may specify.
             backend_name = self.coredata.optstore.get_value_for(OptionKey('genvslite'))
-            self.backend = backends.get_genvslite_backend(backend_name, self.build, self)
+            self.backend = backends.get_genvslite_backend(backend_name, self.build)
         else:
             backend_name = self.coredata.optstore.get_value_for(OptionKey('backend'))
-            self.backend = backends.get_backend_from_name(backend_name, self.build, self)
+            self.backend = backends.get_backend_from_name(backend_name, self.build)
 
         if self.backend is None:
             raise InterpreterException(f'Unknown backend "{backend_name}".')
@@ -2228,7 +2228,7 @@ class Interpreter(InterpreterBase, HoldableObject):
                 if '@OUTPUT@' in o:
                     raise InvalidArguments('Tried to use @OUTPUT@ in a rule with more than one output.')
 
-        return build.Generator(args[0], **kwargs)
+        return build.Generator(self.environment, args[0], **kwargs)
 
     @typed_pos_args('benchmark', str, (build.Executable, build.Jar, ExternalProgram, mesonlib.File, build.CustomTarget, build.CustomTargetIndex))
     @typed_kwargs('benchmark', *TEST_KWS)
@@ -3406,12 +3406,6 @@ class Interpreter(InterpreterBase, HoldableObject):
         sources = [s for s in sources
                    if not isinstance(s, (build.BuildTarget, build.ExtractedObjects))]
 
-        # due to lack of type checking, these are "allowed" for legacy reasons
-        if not isinstance(kwargs['install'], bool):
-            FeatureBroken.single_use('install kwarg with non-boolean value', '1.3.0', self.subproject,
-                                     'This was never intended to work, and is essentially the same as using `install: true` regardless of value.',
-                                     node)
-
         sources = self.source_strings_to_files(sources)
         objs = kwargs['objects']
         kwargs['dependencies'] = extract_as_list(kwargs, 'dependencies')
@@ -3493,11 +3487,10 @@ class Interpreter(InterpreterBase, HoldableObject):
             elif kwargs['export_dynamic']:
                 if kwargs['implib'] is False:
                     raise InvalidArguments('"implib" keyword" must not be false if "export_dynamic" is set and not false.')
-                kwargs['implib'] = True
             if kwargs['export_dynamic'] is None:
                 kwargs['export_dynamic'] = False
-            if kwargs['implib'] is None:
-                kwargs['implib'] = False
+            if isinstance(kwargs['implib'], bool):
+                kwargs['implib'] = None
 
         target = targetclass(name, self.subdir, self.subproject, for_machine, srcs, struct, objs,
                              self.environment, self.compilers[for_machine], kwargs)
