@@ -32,8 +32,10 @@ if T.TYPE_CHECKING:
     from ..interpreterbase import SubProject
     from ..compilers.rust import RustCompiler
 
+    from typing_extensions import Literal
+
 def _dependency_name(package_name: str, api: str, suffix: str = '-rs') -> str:
-    basename = package_name[:-len(suffix)] if package_name.endswith(suffix) else package_name
+    basename = package_name[:-len(suffix)] if suffix and package_name.endswith(suffix) else package_name
     return f'{basename}-{api}{suffix}'
 
 
@@ -137,10 +139,22 @@ class Interpreter:
         ]
         ast += self._create_dependencies(pkg, build)
         ast += self._create_meson_subdir(build)
+        ast += self._create_env_args(pkg, build, subdir)
 
         if pkg.manifest.lib:
-            for crate_type in pkg.manifest.lib.crate_type:
-                ast.extend(self._create_lib(pkg, build, crate_type))
+            crate_type = pkg.manifest.lib.crate_type
+            if 'dylib' in crate_type and 'cdylib' in crate_type:
+                raise MesonException('Cannot build both dylib and cdylib due to file name conflict')
+            if 'proc-macro' in crate_type:
+                ast.extend(self._create_lib(pkg, build, 'proc-macro', shared=True))
+            if any(x in crate_type for x in ['lib', 'rlib', 'dylib']):
+                ast.extend(self._create_lib(pkg, build, 'rust',
+                                            static=('lib' in crate_type or 'rlib' in crate_type),
+                                            shared='dylib' in crate_type))
+            if any(x in crate_type for x in ['staticlib', 'cdylib']):
+                ast.extend(self._create_lib(pkg, build, 'c',
+                                            static='staticlib' in crate_type,
+                                            shared='cdylib' in crate_type))
 
         return ast
 
@@ -381,6 +395,12 @@ class Interpreter:
             else:
                 self._enable_feature(pkg, f)
 
+    def has_check_cfg(self, machine: MachineChoice) -> bool:
+        if not self.environment.is_cross_build():
+            machine = MachineChoice.HOST
+        rustc = T.cast('RustCompiler', self.environment.coredata.compilers[machine]['rust'])
+        return rustc.has_check_cfg
+
     @functools.lru_cache(maxsize=None)
     def _get_cfgs(self, machine: MachineChoice) -> T.Dict[str, str]:
         if not self.environment.is_cross_build():
@@ -401,6 +421,18 @@ class Interpreter:
         if value and value[0] == '"':
             value = value[1:-1]
         return pair[0], value
+
+    def _lints_to_args(self, pkg: PackageState) -> T.List[str]:
+        args = []
+        has_check_cfg = self.has_check_cfg(MachineChoice.HOST)
+        for lint in pkg.manifest.lints:
+            args.extend(lint.to_arguments(has_check_cfg))
+        if has_check_cfg:
+            for feature in pkg.manifest.features:
+                if feature != 'default':
+                    args.append('--check-cfg')
+                    args.append(f'cfg(feature,values("{feature}"))')
+        return args
 
     def _create_project(self, name: str, pkg: T.Optional[PackageState], build: builder.Builder) -> T.List[mparser.BaseNode]:
         """Create the project() function call
@@ -424,15 +456,20 @@ class Interpreter:
                 build.function('project', args, kwargs),
             ]
 
-        default_options: T.List[mparser.BaseNode] = []
-        default_options.append(build.string(f'rust_std={pkg.manifest.package.edition}'))
-        default_options.append(build.string(f'build.rust_std={pkg.manifest.package.edition}'))
+        default_options: T.Dict[str, mparser.BaseNode] = {
+            'rust_std': build.string(pkg.manifest.package.edition),
+            'build.rust_std': build.string(pkg.manifest.package.edition),
+        }
         if pkg.downloaded:
-            default_options.append(build.string('warning_level=0'))
+            default_options['warning_level'] = build.string('0')
+        else:
+            lint_args = build.array([build.string(arg) for arg in self._lints_to_args(pkg)])
+            default_options['rust_args'] = lint_args
+            default_options['build.rust_args'] = lint_args
 
         kwargs.update({
             'version': build.string(pkg.manifest.package.version),
-            'default_options': build.array(default_options),
+            'default_options': build.dict({build.string(k): v for k, v in default_options.items()}),
         })
         if pkg.manifest.package.license:
             kwargs['license'] = build.string(pkg.manifest.package.license)
@@ -560,7 +597,59 @@ class Interpreter:
                       build.block([build.function('subdir', [build.string('meson')])]))
         ]
 
-    def _create_lib(self, pkg: PackageState, build: builder.Builder, crate_type: raw.CRATE_TYPE) -> T.List[mparser.BaseNode]:
+    def _pkg_common_env(self, pkg: PackageState, subdir: str) -> T.Dict[str, str]:
+        # Common variables for build.rs and crates
+        # https://doc.rust-lang.org/cargo/reference/environment-variables.html
+        # OUT_DIR is the directory where build.rs generate files. In our case,
+        # it's the directory where meson/meson.build places generated files.
+        out_dir = os.path.join(self.environment.build_dir, subdir, 'meson')
+        os.makedirs(out_dir, exist_ok=True)
+        version_arr = pkg.manifest.package.version.split('.')
+        version_arr += ['' * (4 - len(version_arr))]
+        return {
+            'OUT_DIR': out_dir,
+            'CARGO_MANIFEST_DIR': os.path.join(self.environment.source_dir, subdir),
+            'CARGO_MANIFEST_PATH': os.path.join(self.environment.source_dir, subdir, 'Cargo.toml'),
+            'CARGO_PKG_VERSION': pkg.manifest.package.version,
+            'CARGO_PKG_VERSION_MAJOR': version_arr[0],
+            'CARGO_PKG_VERSION_MINOR': version_arr[1],
+            'CARGO_PKG_VERSION_PATCH': version_arr[2],
+            'CARGO_PKG_VERSION_PRE': version_arr[3],
+            'CARGO_PKG_AUTHORS': ','.join(pkg.manifest.package.authors),
+            'CARGO_PKG_NAME': pkg.manifest.package.name,
+            # FIXME: description can contain newlines which breaks ninja.
+            #'CARGO_PKG_DESCRIPTION': pkg.manifest.package.description or '',
+            'CARGO_PKG_HOMEPAGE': pkg.manifest.package.homepage or '',
+            'CARGO_PKG_REPOSITORY': pkg.manifest.package.repository or '',
+            'CARGO_PKG_LICENSE': pkg.manifest.package.license or '',
+            'CARGO_PKG_LICENSE_FILE': pkg.manifest.package.license_file or '',
+            'CARGO_PKG_RUST_VERSION': pkg.manifest.package.rust_version or '',
+            'CARGO_PKG_README': pkg.manifest.package.readme or '',
+        }
+
+    def _create_env_args(self, pkg: PackageState, build: builder.Builder, subdir: str) -> T.List[mparser.BaseNode]:
+        host_rustc = T.cast('RustCompiler', self.environment.coredata.compilers[MachineChoice.HOST]['rust'])
+        enable_env_set_args = host_rustc.enable_env_set_args()
+        if enable_env_set_args is None:
+            return [build.assign(build.array([]), 'env_args')]
+        # https://doc.rust-lang.org/cargo/reference/environment-variables.html#environment-variables-cargo-sets-for-crates
+        env_dict = self._pkg_common_env(pkg, subdir)
+        env_dict.update({
+            'CARGO_CRATE_NAME': fixup_meson_varname(pkg.manifest.package.name),
+            #FIXME: TODO
+            #CARGO_BIN_NAME
+            #CARGO_BIN_EXE_<name>
+            #CARGO_PRIMARY_PACKAGE
+            #CARGO_TARGET_TMPDIR
+        })
+        env_args: T.List[mparser.BaseNode] = [build.string(a) for a in enable_env_set_args]
+        for k, v in env_dict.items():
+            env_args += [build.string('--env-set'), build.string(f'{k}={v}')]
+        return [build.assign(build.array(env_args), 'env_args')]
+
+    def _create_lib(self, pkg: PackageState, build: builder.Builder,
+                    lib_type: Literal['rust', 'c', 'proc-macro'],
+                    static: bool = False, shared: bool = False) -> T.List[mparser.BaseNode]:
         dependencies: T.List[mparser.BaseNode] = []
         dependency_map: T.Dict[mparser.BaseNode, mparser.BaseNode] = {}
         for name in pkg.required_deps:
@@ -578,6 +667,7 @@ class Interpreter:
             build.identifier('features_args'),
             build.identifier(_extra_args_varname()),
             build.identifier('system_deps_args'),
+            build.identifier('env_args'),
         ]
 
         dependencies.append(build.identifier(_extra_deps_varname()))
@@ -593,21 +683,19 @@ class Interpreter:
             'rust_args': build.array(rust_args),
         }
 
-        depname_suffix = '-rs' if crate_type in {'lib', 'rlib', 'proc-macro'} else f'-{crate_type}'
+        depname_suffix = '' if lib_type == 'c' else '-rs'
         depname = _dependency_name(pkg.manifest.package.name, pkg.manifest.package.api, depname_suffix)
 
         lib: mparser.BaseNode
-        if pkg.manifest.lib.proc_macro or crate_type == 'proc-macro':
+        if lib_type == 'proc-macro':
             lib = build.method('proc_macro', build.identifier('rust'), posargs, kwargs)
         else:
-            if crate_type in {'lib', 'rlib', 'staticlib'}:
-                target_type = 'static_library'
-            elif crate_type in {'dylib', 'cdylib'}:
-                target_type = 'shared_library'
+            if static and shared:
+                target_type = 'both_libraries'
             else:
-                raise MesonException(f'Unsupported crate type {crate_type}')
-            if crate_type in {'staticlib', 'cdylib'}:
-                kwargs['rust_abi'] = build.string('c')
+                target_type = 'shared_library' if shared else 'static_library'
+
+            kwargs['rust_abi'] = build.string(lib_type)
             lib = build.function(target_type, posargs, kwargs)
 
         features_args: T.List[mparser.BaseNode] = []

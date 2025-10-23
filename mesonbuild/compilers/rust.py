@@ -104,6 +104,8 @@ class RustCompiler(Compiler):
         self.native_static_libs: T.List[str] = []
         self.is_beta = '-beta' in full_version
         self.is_nightly = '-nightly' in full_version
+        self.allow_nightly = False # Will be set in sanity_check()
+        self.has_check_cfg = version_compare(version, '>=1.80.0')
 
     def needs_static_linker(self) -> bool:
         return False
@@ -143,6 +145,14 @@ class RustCompiler(Compiler):
             raise EnvironmentException(f'Rust compiler {self.name_string()} cannot compile programs.')
         self._native_static_libs(work_dir, source_name)
         self.run_sanity_check(environment, [output_name], work_dir)
+        # Check if we are allowed to use nightly features.
+        # This is done here because it's the only place we have access to
+        # environment object, and sanity_check() is called after the compiler
+        # options have been initialized.
+        nightly_opt = self.get_compileropt_value('nightly', environment, None)
+        if nightly_opt == 'enabled' and not self.is_nightly:
+            raise EnvironmentException(f'Rust compiler {self.name_string()} is not a nightly compiler as required by the "nightly" option.')
+        self.allow_nightly = nightly_opt != 'disabled' and self.is_nightly
 
     def _native_static_libs(self, work_dir: str, source_name: str) -> None:
         # Get libraries needed to link with a Rust staticlib
@@ -287,6 +297,12 @@ class RustCompiler(Compiler):
             'Whether to link Rust build targets to a dynamic libstd',
             False)
 
+        key = self.form_compileropt_key('nightly')
+        opts[key] = options.UserFeatureOption(
+            self.make_option_name(key),
+            "Nightly Rust compiler (enabled=required, disabled=don't use nightly feature, auto=use nightly feature if available)",
+            'auto')
+
         return opts
 
     def get_dependency_compile_args(self, dep: 'Dependency') -> T.List[str]:
@@ -382,6 +398,15 @@ class RustCompiler(Compiler):
         return RustdocTestCompiler(exelist, self.version, self.for_machine,
                                    self.is_cross, self.info, full_version=self.full_version,
                                    linker=self.linker, rustc=self)
+
+    def enable_env_set_args(self) -> T.Optional[T.List[str]]:
+        '''Extra arguments to enable --env-set support in rustc.
+        Returns None if not supported.
+        '''
+        if version_compare(self.version, '>= 1.76') and self.allow_nightly:
+            return ['-Z', 'unstable-options']
+        return None
+
 
 class ClippyRustCompiler(RustCompiler):
 
