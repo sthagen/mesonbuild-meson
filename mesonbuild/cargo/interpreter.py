@@ -39,8 +39,17 @@ def _dependency_name(package_name: str, api: str, suffix: str = '-rs') -> str:
     return f'{basename}-{api}{suffix}'
 
 
-def _dependency_varname(package_name: str) -> str:
-    return f'{fixup_meson_varname(package_name)}_dep'
+def _dependency_varname(dep: Dependency) -> str:
+    return f'{fixup_meson_varname(dep.package)}_{(dep.api.replace(".", "_"))}_dep'
+
+
+def _library_name(name: str, api: str, lib_type: Literal['rust', 'c', 'proc-macro'] = 'rust') -> str:
+    # Add the API version to the library name to avoid conflicts when multiple
+    # versions of the same crate are used. The Ninja backend removed everything
+    # after the + to form the crate name.
+    if lib_type == 'c':
+        return name
+    return f'{name}+{api.replace(".", "_")}'
 
 
 def _extra_args_varname() -> str:
@@ -329,6 +338,8 @@ class Interpreter:
                 if not dep.meson_version:
                     raise MesonException(f'Cannot determine version of cargo package {dep.package}')
             dep_pkg = self._fetch_package(dep.package, dep.api)
+        if not dep.version:
+            dep.update_version(f'={dep_pkg.manifest.package.version}')
         return dep_pkg
 
     def _load_manifest(self, subdir: str, workspace: T.Optional[Workspace] = None, member_path: str = '') -> T.Union[Manifest, Workspace]:
@@ -513,7 +524,6 @@ class Interpreter:
 
     def _create_dependency(self, pkg: PackageState, dep: Dependency, build: builder.Builder) -> T.List[mparser.BaseNode]:
         version_ = dep.meson_version or [pkg.manifest.package.version]
-        api = dep.api or pkg.manifest.package.api
         kw = {
             'version': build.array([build.string(s) for s in version_]),
         }
@@ -533,10 +543,10 @@ class Interpreter:
             build.assign(
                 build.function(
                     'dependency',
-                    [build.string(_dependency_name(dep.package, api))],
+                    [build.string(_dependency_name(dep.package, dep.api))],
                     kw,
                 ),
-                _dependency_varname(dep.package),
+                _dependency_varname(dep),
             ),
             # actual_features = xxx_dep.get_variable('features', default_value : '').split(',')
             build.assign(
@@ -544,7 +554,7 @@ class Interpreter:
                     'split',
                     build.method(
                         'get_variable',
-                        build.identifier(_dependency_varname(dep.package)),
+                        build.identifier(_dependency_varname(dep)),
                         [build.string('features')],
                         {'default_value': build.string('')}
                     ),
@@ -563,7 +573,7 @@ class Interpreter:
                 build.if_(build.not_in(build.identifier('f'), build.identifier('actual_features')), build.block([
                     build.function('error', [
                         build.string('Dependency'),
-                        build.string(_dependency_name(dep.package, api)),
+                        build.string(_dependency_name(dep.package, dep.api)),
                         build.string('previously configured with features'),
                         build.identifier('actual_features'),
                         build.string('but need'),
@@ -599,7 +609,7 @@ class Interpreter:
         out_dir = os.path.join(self.environment.build_dir, subdir, 'meson')
         os.makedirs(out_dir, exist_ok=True)
         version_arr = pkg.manifest.package.version.split('.')
-        version_arr += ['' * (4 - len(version_arr))]
+        version_arr += [''] * (4 - len(version_arr))
         return {
             'OUT_DIR': out_dir,
             'CARGO_MANIFEST_DIR': os.path.join(self.environment.source_dir, subdir),
@@ -648,11 +658,11 @@ class Interpreter:
         dependency_map: T.Dict[mparser.BaseNode, mparser.BaseNode] = {}
         for name in pkg.required_deps:
             dep = pkg.manifest.dependencies[name]
-            dependencies.append(build.identifier(_dependency_varname(dep.package)))
+            dependencies.append(build.identifier(_dependency_varname(dep)))
             if name != dep.package:
                 dep_pkg = self._dep_package(pkg, dep)
-                dep_lib_name = dep_pkg.manifest.lib.name
-                dependency_map[build.string(fixup_meson_varname(dep_lib_name))] = build.string(name)
+                dep_lib_name = _library_name(dep_pkg.manifest.lib.name, dep_pkg.manifest.package.api)
+                dependency_map[build.string(dep_lib_name)] = build.string(name)
         for name, sys_dep in pkg.manifest.system_dependencies.items():
             if sys_dep.enabled(pkg.features):
                 dependencies.append(build.identifier(f'{fixup_meson_varname(name)}_system_dep'))
@@ -672,7 +682,7 @@ class Interpreter:
         }
 
         posargs: T.List[mparser.BaseNode] = [
-            build.string(fixup_meson_varname(pkg.manifest.lib.name)),
+            build.string(_library_name(pkg.manifest.lib.name, pkg.manifest.package.api, lib_type)),
             build.string(pkg.manifest.lib.path),
         ]
 
