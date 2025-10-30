@@ -30,7 +30,8 @@ modules = [
     'mesonbuild/arglist.py',
     'mesonbuild/backend/backends.py',
     'mesonbuild/backend/nonebackend.py',
-    # 'mesonbuild/coredata.py',
+    'mesonbuild/cmdline.py',
+    'mesonbuild/coredata.py',
     'mesonbuild/depfile.py',
     'mesonbuild/envconfig.py',
     'mesonbuild/environment.py',
@@ -70,6 +71,7 @@ modules = [
     'mesonbuild/modules/qt6.py',
     'mesonbuild/modules/rust.py',
     'mesonbuild/modules/simd.py',
+    'mesonbuild/modules/snippets.py',
     'mesonbuild/modules/sourceset.py',
     'mesonbuild/modules/wayland.py',
     'mesonbuild/modules/windows.py',
@@ -80,6 +82,7 @@ modules = [
     'mesonbuild/options.py',
     'mesonbuild/programs.py',
     'mesonbuild/rewriter.py',
+    'mesonbuild/tooldetect.py',
 ]
 additional = [
     'run_mypy.py',
