@@ -993,6 +993,19 @@ class CLikeCompiler(Compiler):
 
     def _get_patterns(self, env: 'Environment', prefixes: T.List[str], suffixes: T.List[str], shared: bool = False) -> T.List[str]:
         patterns: T.List[str] = []
+        if env.machines[self.for_machine].is_os2():
+            # On OS/2, search order for shared libs is
+            #   1. libfoo_dll.a
+            #   2. foo_dll.a
+            #   3. libfoo.a
+            #   4. foo.a
+            #   5. foo.dll
+            # For static libs, `_s' is used instead of `_dll'.
+            for s in suffixes:
+                dot = '' if s.startswith(('_dll.', '_s.')) else '.'
+                for p in prefixes:
+                    patterns.append(p + '{}' + dot + s)
+            return patterns
         for p in prefixes:
             for s in suffixes:
                 patterns.append(p + '{}.' + s)
@@ -1018,7 +1031,8 @@ class CLikeCompiler(Compiler):
         # people depend on it. Also, some people use prebuilt `foo.so` instead
         # of `libfoo.so` for unknown reasons, and may also want to create
         # `foo.so` by setting name_prefix to ''
-        if strict and not isinstance(self, VisualStudioLikeCompiler): # lib prefix is not usually used with msvc
+        # lib prefix is not usually used with msvc and OS/2
+        if strict and not isinstance(self, VisualStudioLikeCompiler) and not env.machines[self.for_machine].is_os2():
             prefixes = ['lib']
         else:
             prefixes = ['lib', '']
@@ -1041,6 +1055,9 @@ class CLikeCompiler(Compiler):
             # TI C28x compilers can use both extensions for static or dynamic libs.
             stlibext = ['a', 'lib']
             shlibext = ['dll', 'so']
+        elif env.machines[self.for_machine].is_os2():
+            stlibext = ['_s.lib', '_s.a', 'lib', 'a']
+            shlibext = ['_dll.lib', '_dll.a', 'lib', 'a', 'dll']
         else:
             # Linux/BSDs
             shlibext = ['so']
@@ -1267,6 +1284,8 @@ class CLikeCompiler(Compiler):
         host_m = env.machines[self.for_machine]
         if host_m.is_haiku() or host_m.is_darwin():
             return []
+        if host_m.is_os2():
+            return ['-lpthread']
         return ['-pthread']
 
     def linker_to_compiler_args(self, args: T.List[str]) -> T.List[str]:
@@ -1314,9 +1333,6 @@ class CLikeCompiler(Compiler):
         return self._has_multi_arguments(args, env, 'extern int i;\nint i;\n')
 
     def _has_multi_link_arguments(self, args: T.List[str], env: 'Environment', code: str) -> T.Tuple[bool, bool]:
-        # First time we check for link flags we need to first check if we have
-        # --fatal-warnings, otherwise some linker checks could give some
-        # false positive.
         args = self.linker.fatal_warnings() + args
         args = self.linker_to_compiler_args(args)
         return self.has_arguments(args, env, code, mode=CompileCheckMode.LINK)

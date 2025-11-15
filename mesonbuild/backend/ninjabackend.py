@@ -1807,6 +1807,8 @@ class NinjaBackend(backends.Backend):
                                     self.compiler_to_rule_name(valac),
                                     all_files + dependency_vapis)
         element.add_item('ARGS', args)
+        depfile = valac.depfile_for_object(os.path.join(self.get_target_dir(target), target.name))
+        element.add_item('DEPFILE', depfile)
         element.add_dep(extra_dep_files)
         self.add_build(element)
         self.create_target_source_introspection(target, valac, args, all_files, [])
@@ -2029,8 +2031,9 @@ class NinjaBackend(backends.Backend):
         args.extend(['--crate-type', src_crate_type])
 
         # If we're dynamically linking, add those arguments
-        if target.rust_crate_type in {'bin', 'dylib'}:
+        if target.rust_crate_type in {'bin', 'dylib', 'cdylib'}:
             args.extend(rustc.get_linker_always_args())
+            args += compilers.get_base_link_args(target, rustc, self.environment)
 
         args += self.generate_basic_compiler_args(target, rustc)
         args += ['--crate-name', self._get_rust_crate_name(target.name)]
@@ -2046,17 +2049,6 @@ class NinjaBackend(backends.Backend):
         deps: T.List[str] = []
         project_deps: T.List[RustDep] = []
         args: T.List[str] = []
-
-        # Rustc always use non-debug Windows runtime. Inject the one selected
-        # by Meson options instead.
-        # https://github.com/rust-lang/rust/issues/39016
-        if not isinstance(target, build.StaticLibrary):
-            try:
-                buildtype = self.get_target_option(target, 'buildtype')
-                crt = self.get_target_option(target, 'b_vscrt')
-                args += rustc.get_crt_link_args(crt, buildtype)
-            except (KeyError, AttributeError):
-                pass
 
         def _link_library(libname: str, static: bool, bundle: bool = False) -> None:
             orig_libname = libname
@@ -2489,6 +2481,13 @@ class NinjaBackend(backends.Backend):
                 args = []
                 options = {}
                 self.add_rule(NinjaRule(rule, cmdlist, args, description, **options, extra=None))
+            if self.environment.machines[for_machine].is_os2() and complist:
+                rule = 'IMPORTLIB{}'.format(self.get_rule_suffix(for_machine))
+                description = 'Generating import library $out'
+                command = ['emximp']
+                args = ['-o', '$out', '$in']
+                options = {}
+                self.add_rule(NinjaRule(rule, command, args, description, **options, extra=None))
 
         args = self.environment.get_build_command() + \
             ['--internal',
@@ -2520,9 +2519,19 @@ class NinjaBackend(backends.Backend):
 
     def generate_vala_compile_rules(self, compiler) -> None:
         rule = self.compiler_to_rule_name(compiler)
-        command = compiler.get_exelist() + ['$ARGS', '$in']
+        command = compiler.get_exelist()
         description = 'Compiling Vala source $in'
-        self.add_rule(NinjaRule(rule, command, [], description, extra='restat = 1'))
+
+        depargs = compiler.get_dependency_gen_args('$out', '$DEPFILE')
+        depfile = '$DEPFILE' if depargs else None
+        depstyle = 'gcc' if depargs else None
+
+        args = depargs + ['$ARGS', '$in']
+
+        self.add_rule(NinjaRule(rule, command + args, [], description,
+                                depfile=depfile,
+                                deps=depstyle,
+                                extra='restat = 1'))
 
     def generate_cython_compile_rules(self, compiler: 'Compiler') -> None:
         rule = self.compiler_to_rule_name(compiler)
@@ -3413,7 +3422,12 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
         return os.path.join(targetdir, target.get_filename() + '.symbols')
 
     def generate_shsym(self, target) -> None:
-        target_file = self.get_target_filename(target)
+        # On OS/2, an import library is generated after linking a DLL, so
+        # if a DLL is used as a target, import library is not generated.
+        if self.environment.machines[target.for_machine].is_os2():
+            target_file = self.get_target_filename_for_linking(target)
+        else:
+            target_file = self.get_target_filename(target)
         if isinstance(target, build.SharedLibrary) and target.aix_so_archive:
             if self.environment.machines[target.for_machine].is_aix():
                 linker, stdlib_args = target.get_clink_dynamic_linker_and_stdlibs()
@@ -3630,6 +3644,11 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
             linker_base = linker.get_language() # Fixme.
         if isinstance(target, build.SharedLibrary):
             self.generate_shsym(target)
+            if self.environment.machines[target.for_machine].is_os2():
+                target_file = self.get_target_filename(target)
+                import_name = self.get_import_filename(target)
+                elem = NinjaBuildElement(self.all_outputs, import_name, 'IMPORTLIB', target_file)
+                self.add_build(elem)
         crstr = self.get_rule_suffix(target.for_machine)
         linker_rule = linker_base + '_LINKER' + crstr
         # Create an empty commands list, and start adding link arguments from
