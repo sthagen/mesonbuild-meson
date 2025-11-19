@@ -2083,8 +2083,8 @@ class AllPlatformTests(BasePlatformTests):
         against what was detected in the binary.
         '''
         env, cc = get_convincing_fake_env_and_cc(self.builddir, self.prefix)
-        expected_uscore = cc._symbols_have_underscore_prefix_searchbin(env)
-        list_uscore = cc._symbols_have_underscore_prefix_list(env)
+        expected_uscore = cc._symbols_have_underscore_prefix_searchbin()
+        list_uscore = cc._symbols_have_underscore_prefix_list()
         if list_uscore is not None:
             self.assertEqual(list_uscore, expected_uscore)
         else:
@@ -2096,8 +2096,8 @@ class AllPlatformTests(BasePlatformTests):
         against what was detected in the binary.
         '''
         env, cc = get_convincing_fake_env_and_cc(self.builddir, self.prefix)
-        expected_uscore = cc._symbols_have_underscore_prefix_searchbin(env)
-        define_uscore = cc._symbols_have_underscore_prefix_define(env)
+        expected_uscore = cc._symbols_have_underscore_prefix_searchbin()
+        define_uscore = cc._symbols_have_underscore_prefix_define()
         if define_uscore is not None:
             self.assertEqual(define_uscore, expected_uscore)
         else:
@@ -2513,7 +2513,7 @@ class AllPlatformTests(BasePlatformTests):
             try:
                 comp = detect_compiler_for(env, l, MachineChoice.HOST, True, '')
                 with tempfile.TemporaryDirectory() as d:
-                    comp.sanity_check(d, env)
+                    comp.sanity_check(d)
                 langs.append(l)
             except EnvironmentException:
                 pass
@@ -5451,7 +5451,9 @@ class AllPlatformTests(BasePlatformTests):
                                  '10/10': [10],
                                  }.items():
             output = self._run(self.mtest_command + ['--slice=' + arg])
-            tests = sorted([ int(x) for x in re.findall(r'\n[ 0-9]+/[0-9]+ test_slice:test-([0-9]*)', output) ])
+            tests = sorted([
+                int(x) for x in re.findall(r'^[ 0-9]+/[0-9]+ test_slice:test-([0-9]*)', output, flags=re.MULTILINE)
+            ])
             self.assertEqual(tests, expectation)
 
         for arg, expectation in {'': 'error: argument --slice: value does not conform to format \'SLICE/NUM_SLICES\'',
