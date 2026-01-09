@@ -46,6 +46,7 @@ if T.TYPE_CHECKING:
     from ..compilers.cs import CsCompiler
     from ..compilers.fortran import FortranCompiler
     from ..compilers.rust import RustCompiler
+    from ..compilers.swift import SwiftCompiler
     from ..mesonlib import FileOrString
     from .backends import TargetIntrospectionData
 
@@ -1576,20 +1577,18 @@ class NinjaBackend(backends.Backend):
 
         self.create_target_source_introspection(target, compiler, commands, rel_srcs, generated_rel_srcs)
 
-    def determine_java_compile_args(self, target, compiler) -> T.List[str]:
-        args = []
+    def determine_java_compile_args(self, target: build.Jar, compiler: Compiler) -> T.List[str]:
         args = self.generate_basic_compiler_args(target, compiler)
         args += target.get_java_args()
         args += compiler.get_output_args(self.get_target_private_dir(target))
         args += target.get_classpath_args()
         curdir = target.get_subdir()
-        sourcepath = os.path.join(self.build_to_src, curdir) + os.pathsep
-        sourcepath += os.path.normpath(curdir) + os.pathsep
+        sourcepaths = [os.path.join(self.build_to_src, curdir)]
+        sourcepaths.append(os.path.normpath(curdir))
         for i in target.include_dirs:
-            for idir in i.get_incdirs():
-                sourcepath += os.path.join(self.build_to_src, i.curdir, idir) + os.pathsep
-        args += ['-sourcepath', sourcepath]
-        return args
+            sourcepaths.extend(i.abs_string_list(self.source_dir, self.build_dir))
+        args += ['-sourcepath', os.pathsep.join(sourcepaths)]
+        return list(args)
 
     def generate_java_compile(self, srcs, target, compiler, args) -> str:
         deps = [os.path.join(self.get_target_dir(l), l.get_filename()) for l in target.link_targets]
@@ -2275,20 +2274,17 @@ class NinjaBackend(backends.Backend):
             result.append(self.get_target_filename(l))
         return result
 
-    def split_swift_generated_sources(self, target):
+    def split_swift_generated_sources(self, target: build.BuildTarget) -> T.List[str]:
         all_srcs = self.get_target_generated_sources(target)
-        srcs = []
-        others = []
+        srcs: T.List[str] = []
         for i in all_srcs:
             if i.endswith('.swift'):
                 srcs.append(i)
-            else:
-                others.append(i)
-        return srcs, others
+        return srcs
 
-    def generate_swift_target(self, target) -> None:
+    def generate_swift_target(self, target: build.BuildTarget) -> None:
         module_name = target.swift_module_name
-        swiftc = target.compilers['swift']
+        swiftc = T.cast('SwiftCompiler', target.compilers['swift'])
         abssrc = []
         relsrc = []
         abs_headers = []
@@ -2334,15 +2330,8 @@ class NinjaBackend(backends.Backend):
             if len(abssrc) == 1 and os.path.basename(abssrc[0]) != 'main.swift':
                 compile_args += swiftc.get_library_args()
         for i in reversed(target.get_include_dirs()):
-            basedir = i.get_curdir()
-            for d in i.get_incdirs():
-                if d not in ('', '.'):
-                    expdir = os.path.join(basedir, d)
-                else:
-                    expdir = basedir
-                srctreedir = os.path.normpath(os.path.join(self.environment.get_build_dir(), self.build_to_src, expdir))
-                sargs = swiftc.get_include_args(srctreedir, False)
-                compile_args += sargs
+            for path in i.abs_string_list(self.source_dir, self.build_dir):
+                compile_args.extend(swiftc.get_include_args(path, False))
         compile_args += target.get_extra_args('swift')
         link_args = swiftc.get_output_args(os.path.join(self.environment.get_build_dir(), self.get_target_filename(target)))
         link_args += self.build.get_project_link_args(swiftc, target.subproject, target.for_machine)
@@ -2361,7 +2350,7 @@ class NinjaBackend(backends.Backend):
             if reldir == '':
                 reldir = '.'
             link_args += ['-L', os.path.normpath(os.path.join(self.environment.get_build_dir(), reldir))]
-        (rel_generated, _) = self.split_swift_generated_sources(target)
+        rel_generated = self.split_swift_generated_sources(target)
         abs_generated = [os.path.join(self.environment.get_build_dir(), x) for x in rel_generated]
         # We need absolute paths because swiftc needs to be invoked in a subdir
         # and this is the easiest way about it.
@@ -2792,6 +2781,10 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
         exe = generator.get_exe()
         infilelist = genlist.get_inputs()
         extra_dependencies = self.get_target_depend_files(genlist)
+        for d in genlist.extra_depends:
+            # Add a dependency on all the outputs of this target
+            for output in d.get_outputs():
+                extra_dependencies.append(os.path.join(self.get_target_dir(d), output))
         for curfile in infilelist:
             infilename = curfile.rel_to_builddir(self.build_to_src, self.get_target_private_dir(target))
             base_args = generator.get_arglist(infilename)
@@ -2838,8 +2831,6 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
                 reason = f' (wrapped by meson {reason})'
             elem.add_item('DESC', f'Generating {what}{reason}')
 
-            if isinstance(exe, build.BuildTarget):
-                elem.add_dep(self.get_target_filename(exe))
             elem.add_item('COMMAND', cmdlist)
             self.add_build(elem)
 
@@ -3018,26 +3009,15 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
         return (rel_obj, rel_src)
 
     @lru_cache(maxsize=None)
-    def generate_inc_dir(self, compiler: 'Compiler', d: str, basedir: str, is_system: bool) -> \
-            T.Tuple['ImmutableListProtocol[str]', 'ImmutableListProtocol[str]']:
-        # Avoid superfluous '/.' at the end of paths when d is '.'
-        if d not in ('', '.'):
-            expdir = os.path.normpath(os.path.join(basedir, d))
-        else:
-            expdir = basedir
-        srctreedir = os.path.normpath(os.path.join(self.build_to_src, expdir))
-        sargs = compiler.get_include_args(srctreedir, is_system)
-        # There may be include dirs where a build directory has not been
-        # created for some source dir. For example if someone does this:
-        #
-        # inc = include_directories('foo/bar/baz')
-        #
-        # But never subdir()s into the actual dir.
-        if os.path.isdir(os.path.join(self.environment.get_build_dir(), expdir)):
-            bargs = compiler.get_include_args(expdir, is_system)
-        else:
-            bargs = []
-        return (sargs, bargs)
+    def generate_inc_dir(self, compiler: 'Compiler', inc: build.IncludeDirs
+                         ) -> ImmutableListProtocol[str]:
+        # We should iterate include dirs in reversed orders because
+        # -Ipath will add to begin of array. And without reverse
+        # flags will be added in reversed order.
+        args: T.List[str] = []
+        for p in inc.rel_string_list(self.build_to_src, self.build_dir):
+            args.extend(compiler.get_include_args(p, inc.is_system))
+        return args
 
     def _generate_single_compile(self, target: build.BuildTarget, compiler: Compiler) -> CompilerArgs:
         commands = self._generate_single_compile_base_args(target, compiler)
@@ -3076,17 +3056,10 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
         # external deps and must maintain the order in which they are specified.
         # Hence, we must reverse the list so that the order is preserved.
         for i in reversed(target.get_include_dirs()):
-            basedir = i.get_curdir()
             # We should iterate include dirs in reversed orders because
             # -Ipath will add to begin of array. And without reverse
             # flags will be added in reversed order.
-            for d in reversed(i.get_incdirs()):
-                # Add source subdir first so that the build subdir overrides it
-                (compile_obj, includeargs) = self.generate_inc_dir(compiler, d, basedir, i.is_system)
-                commands += compile_obj
-                commands += includeargs
-            for d in i.get_extra_build_dirs():
-                commands += compiler.get_include_args(d, i.is_system)
+            commands += self.generate_inc_dir(compiler, i)
         # Add per-target compile args, f.ex, `c_args : ['-DFOO']`. We set these
         # near the end since these are supposed to override everything else.
         commands += self.escape_extra_args(target.get_extra_args(compiler.get_language()))
@@ -4061,6 +4034,11 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
                         linker, stdlib_args = t.get_clink_dynamic_linker_and_stdlibs()
                         t.get_outputs()[0] = linker.get_archive_name(t.get_outputs()[0])
                 targetlist.append(os.path.join(self.get_target_dir(t), t.get_outputs()[0]))
+
+                # Add an import library if shared library in OS/2 for build all
+                if isinstance(t, build.SharedLibrary):
+                    if self.environment.machines[t.for_machine].is_os2():
+                        targetlist.append(os.path.join(self.get_target_dir(t), t.import_filename))
 
             elem = NinjaBuildElement(self.all_outputs, targ, 'phony', targetlist)
             self.add_build(elem)

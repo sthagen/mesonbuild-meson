@@ -22,6 +22,7 @@ if T.TYPE_CHECKING:
     from . import ModuleState
     from ..compilers import Compiler
     from ..interpreter import Interpreter
+    from ..programs import CommandList
 
     from typing_extensions import TypedDict
 
@@ -32,13 +33,6 @@ if T.TYPE_CHECKING:
         include_directories: T.List[T.Union[str, build.IncludeDirs]]
         args: T.List[str]
 
-    class RcKwargs(TypedDict):
-        output: str
-        input: T.List[T.Union[mesonlib.FileOrString, build.CustomTargetIndex]]
-        depfile: T.Optional[str]
-        depend_files: T.List[mesonlib.FileOrString]
-        depends: T.List[T.Union[build.BuildTarget, build.CustomTarget]]
-        command: T.List[T.Union[str, ExternalProgram]]
 
 class ResourceCompilerType(enum.Enum):
     windres = 1
@@ -125,7 +119,7 @@ class WindowsModule(ExtensionModule):
         for d in wrc_depends:
             if isinstance(d, build.CustomTarget):
                 extra_args += state.get_include_args([
-                    build.IncludeDirs('', [], False, [os.path.join('@BUILD_ROOT@', self.interpreter.backend.get_target_dir(d))])
+                    build.IncludeDirs('', [], False, [self.interpreter.backend.get_target_dir(d)])
                 ])
         extra_args += state.get_include_args(kwargs['include_directories'])
 
@@ -180,7 +174,7 @@ class WindowsModule(ExtensionModule):
             name = name.replace('/', '_').replace('\\', '_').replace(':', '_')
             name_formatted = name_formatted.replace('/', '_').replace('\\', '_').replace(':', '_')
             output = f'{name}_@BASENAME@.{suffix}'
-            command: T.List[T.Union[str, ExternalProgram]] = []
+            command: CommandList = []
             command.append(rescomp)
             command.extend(res_args)
             depfile: T.Optional[str] = None

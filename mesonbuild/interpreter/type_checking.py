@@ -16,7 +16,7 @@ from ..dependencies import Dependency, DependencyMethods, InternalDependency
 from ..interpreterbase.decorators import KwargInfo, ContainerTypeInfo, FeatureBroken, FeatureDeprecated
 from ..mesonlib import (File, FileMode, MachineChoice, has_path_sep, listify, stringlistify,
                         EnvironmentVariables)
-from ..programs import ExternalProgram
+from ..programs import Program, ExternalProgram
 
 # Helper definition for type checks that are `Optional[T]`
 NoneType: T.Type[None] = type(None)
@@ -285,9 +285,9 @@ DEPEND_FILES_KW: KwargInfo[T.List[T.Union[str, File]]] = KwargInfo(
     default=[],
 )
 
-COMMAND_KW: KwargInfo[T.List[T.Union[str, BuildTargetTypes, ExternalProgram, File]]] = KwargInfo(
+COMMAND_KW: KwargInfo[T.List[T.Union[str, BuildTargetTypes, Program, File]]] = KwargInfo(
     'command',
-    ContainerTypeInfo(list, (str, BuildTarget, CustomTarget, CustomTargetIndex, ExternalProgram, File), allow_empty=False),
+    ContainerTypeInfo(list, (str, BuildTarget, CustomTarget, CustomTargetIndex, Program, File), allow_empty=False),
     required=True,
     listify=True,
     default=[],
@@ -528,7 +528,7 @@ TEST_KWS_NO_ARGS: T.List[KwargInfo] = [
 ]
 
 TEST_KWS: T.List[KwargInfo] = TEST_KWS_NO_ARGS + [
-    KwargInfo('args', ContainerTypeInfo(list, (str, File, BuildTarget, CustomTarget, CustomTargetIndex, ExternalProgram)),
+    KwargInfo('args', ContainerTypeInfo(list, (str, File, BuildTarget, CustomTarget, CustomTargetIndex, Program)),
               listify=True, default=[]),
 ]
 
@@ -613,6 +613,7 @@ def _extra_files_validator(args: T.List[T.Union[File, str]]) -> T.Optional[str]:
 _ALL_TARGET_KWS: T.List[KwargInfo] = [
     OVERRIDE_OPTIONS_KW,
     KwargInfo('build_by_default', bool, default=True, since='0.38.0'),
+    DEPENDENCIES_KW,
     KwargInfo(
         'extra_files',
         ContainerTypeInfo(list, (str, File)),
@@ -620,6 +621,7 @@ _ALL_TARGET_KWS: T.List[KwargInfo] = [
         listify=True,
         validator=_extra_files_validator,
     ),
+    INCLUDE_DIRECTORIES.evolve(since_values={ContainerTypeInfo(list, str): '0.50.0'}),
     KwargInfo(
         'install',
         object,
@@ -636,6 +638,7 @@ _ALL_TARGET_KWS: T.List[KwargInfo] = [
         listify=True,
     ),
     KwargInfo('implicit_include_directories', bool, default=True, since='0.42.0'),
+    LINK_WITH_KW,
     NATIVE_KW,
     KwargInfo('resources', ContainerTypeInfo(list, str), default=[], listify=True),
     KwargInfo(
@@ -744,12 +747,9 @@ _BUILD_TARGET_KWS: T.List[KwargInfo] = [
     *_ALL_TARGET_KWS,
     *_LANGUAGE_KWS,
     BT_SOURCES_KW,
-    INCLUDE_DIRECTORIES.evolve(since_values={ContainerTypeInfo(list, str): '0.50.0'}),
-    DEPENDENCIES_KW,
     INCLUDE_DIRECTORIES.evolve(name='d_import_dirs'),
     LINK_ARGS_KW,
     LINK_WHOLE_KW,
-    LINK_WITH_KW,
     _NAME_PREFIX_KW,
     _NAME_PREFIX_KW.evolve(name='name_suffix', validator=_name_suffix_validator),
     RUST_CRATE_TYPE_KW,

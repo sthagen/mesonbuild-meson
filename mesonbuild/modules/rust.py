@@ -33,7 +33,7 @@ if T.TYPE_CHECKING:
     from ..interpreter import kwargs as _kwargs
     from ..interpreter.interpreter import SourceInputs, SourceOutputs
     from ..interpreter.interpreterobjects import Test
-    from ..programs import OverrideProgram
+    from ..programs import Program
     from ..interpreter.type_checking import SourcesVarargsType
 
     from typing_extensions import TypedDict, Literal
@@ -91,7 +91,7 @@ class RustModule(ExtensionModule):
 
     def __init__(self, interpreter: Interpreter) -> None:
         super().__init__(interpreter)
-        self._bindgen_bin: T.Optional[T.Union[ExternalProgram, Executable, OverrideProgram]] = None
+        self._bindgen_bin: T.Optional[Program] = None
         if 'rust' in interpreter.compilers.host:
             rustc = T.cast('RustCompiler', interpreter.compilers.host['rust'])
             self._bindgen_rust_target = 'nightly' if rustc.is_nightly else rustc.version
@@ -356,14 +356,14 @@ class RustModule(ExtensionModule):
 
         for i in state.process_include_dirs(kwargs['include_directories']):
             # bindgen always uses clang, so it's safe to hardcode -I here
-            clang_args.extend([f'-I{x}' for x in i.to_string_list(
+            clang_args.extend([f'-I{x}' for x in i.abs_string_list(
                 state.environment.get_source_dir(), state.environment.get_build_dir())])
         if are_asserts_disabled_for_subproject(state.subproject, state.environment):
             clang_args.append('-DNDEBUG')
 
         for de in kwargs['dependencies']:
             for i in de.get_include_dirs():
-                clang_args.extend([f'-I{x}' for x in i.to_string_list(
+                clang_args.extend([f'-I{x}' for x in i.abs_string_list(
                     state.environment.get_source_dir(), state.environment.get_build_dir())])
             clang_args.extend(de.get_all_compile_args())
             for s in de.get_sources():
@@ -375,10 +375,7 @@ class RustModule(ExtensionModule):
         if self._bindgen_bin is None:
             self._bindgen_bin = state.find_program('bindgen', wanted=kwargs['bindgen_version'])
             if self._bindgen_rust_target is not None:
-                # ExternalCommand.command's type is bonkers
-                _, _, err = mesonlib.Popen_safe(
-                    T.cast('T.List[str]', self._bindgen_bin.get_command()) +
-                    ['--rust-target', self._bindgen_rust_target])
+                _, _, err = mesonlib.Popen_safe(self._bindgen_bin.get_command() + ['--rust-target', self._bindgen_rust_target])
                 # < 0.71: Sometimes this is "invalid Rust target" and
                 # sometimes "invalid # rust target"
                 # >= 0.71: error: invalid value '...' for '--rust-target <RUST_TARGET>': "..." is not a valid Rust target, accepted values are of the form ...
@@ -386,9 +383,7 @@ class RustModule(ExtensionModule):
                 if 'Got an invalid' in err or 'is not a valid Rust target' in err:
                     self._bindgen_rust_target = None
 
-            # TODO: Executable needs to learn about get_version
-            if isinstance(self._bindgen_bin, ExternalProgram):
-                self._bindgen_set_std = mesonlib.version_compare(self._bindgen_bin.get_version(), '>= 0.71')
+            self._bindgen_set_std = mesonlib.version_compare(self._bindgen_bin.get_version(), '>= 0.71')
 
         name: str
         if isinstance(header, File):
@@ -492,7 +487,7 @@ class RustModule(ExtensionModule):
     @permittedKwargs({'rust_args', 'rust_dependency_map', 'sources', 'dependencies', 'extra_files',
                       'link_args', 'link_depends', 'link_with', 'override_options'})
     @typed_pos_args('rust.proc_macro', str, varargs=SOURCES_VARARGS)
-    @typed_kwargs('rust.proc_macro', *SHARED_LIB_KWS, allow_unknown=True)
+    @typed_kwargs('rust.proc_macro', *SHARED_LIB_KWS)
     def proc_macro(self, state: ModuleState, args: T.Tuple[str, SourcesVarargsType], kwargs: _kwargs.SharedLibrary) -> SharedLibrary:
         kwargs['native'] = MachineChoice.BUILD
         kwargs['rust_crate_type'] = 'proc-macro'
