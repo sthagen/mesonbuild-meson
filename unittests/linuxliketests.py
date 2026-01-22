@@ -105,6 +105,21 @@ class LinuxlikeTests(BasePlatformTests):
         soname = get_soname(lib1)
         self.assertEqual(soname, 'libmylib.so')
 
+    @skip_if_not_language('rust')
+    def test_rust_soname(self):
+        '''
+        Test that the soname is set correctly for shared libraries. This can't
+        be an ordinary test case because we need to run `readelf` and actually
+        check the soname.
+        https://github.com/mesonbuild/meson/issues/785
+        '''
+        testdir = os.path.join(self.rust_test_dir, '2 sharedlib')
+        self.init(testdir)
+        self.build()
+        lib1 = os.path.join(self.builddir, 'cdylib/libnot_so_rusty.so')
+        soname = get_soname(lib1)
+        self.assertEqual(soname, 'libnot_so_rusty.so')
+
     def test_custom_soname(self):
         '''
         Test that the soname is set correctly for shared libraries when
@@ -1629,11 +1644,11 @@ class LinuxlikeTests(BasePlatformTests):
             raise SkipTest('Solaris currently cannot override the linker.')
         if not shutil.which(check):
             raise SkipTest(f'Could not find {check}.')
-        envvars = [mesonbuild.envconfig.ENV_VAR_PROG_MAP[f'{lang}_ld']]
+        envvars = mesonbuild.envconfig.ENV_VAR_PROG_MAP[f'{lang}_ld'].copy()
 
         # Also test a deprecated variable if there is one.
         if f'{lang}_ld' in mesonbuild.envconfig.DEPRECATED_ENV_PROG_MAP:
-            envvars.append(
+            envvars.extend(
                 mesonbuild.envconfig.DEPRECATED_ENV_PROG_MAP[f'{lang}_ld'])
 
         for envvar in envvars:

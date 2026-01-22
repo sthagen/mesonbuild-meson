@@ -43,6 +43,7 @@ if T.TYPE_CHECKING:
     from .._typing import ImmutableListProtocol
     from ..build import ExtractedObjects, LibTypes
     from ..linkers.linkers import DynamicLinker, StaticLinker
+    from ..compilers.compilers import Language
     from ..compilers.cs import CsCompiler
     from ..compilers.fortran import FortranCompiler
     from ..compilers.rust import RustCompiler
@@ -2043,6 +2044,9 @@ class NinjaBackend(backends.Backend):
         if target.rust_crate_type in {'bin', 'dylib', 'cdylib'}:
             args.extend(rustc.get_linker_always_args())
             args += compilers.get_base_link_args(target, rustc, self.environment)
+            # Add soname for shared libraries
+            args += self.get_soname_args(target, rustc)
+            args += rustc.get_target_link_args(target)
 
         args += self.generate_basic_compiler_args(target, rustc)
         args += ['--crate-name', self._get_rust_crate_name(target.name)]
@@ -2082,6 +2086,8 @@ class NinjaBackend(backends.Backend):
         for o in obj_list:
             args.append(f'-Clink-arg={o}')
             deps.append(o)
+
+        deps.extend([self.get_dependency_filename(t) for t in target.link_depends])
 
         linkdirs = mesonlib.OrderedSet()
         external_deps = target.external_deps.copy()
@@ -3089,12 +3095,12 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
     # Returns a dictionary, mapping from each compiler src type (e.g. 'c', 'cpp', etc.) to a list of compiler arg strings
     # used for that respective src type.
     # Currently used for the purpose of populating VisualStudio intellisense fields but possibly useful in other scenarios.
-    def generate_common_compile_args_per_src_type(self, target: build.BuildTarget) -> dict[str, list[str]]:
+    def generate_common_compile_args_per_src_type(self, target: build.BuildTarget) -> T.Dict[Language, T.List[str]]:
         src_type_to_args = {}
 
         use_pch = self.target_uses_pch(target)
 
-        for src_type_str in target.compilers.keys():
+        for src_type_str in target.compilers:
             compiler = target.compilers[src_type_str]
             commands = self._generate_single_compile_base_args(target, compiler)
 
@@ -3425,7 +3431,7 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
     def generate_pch(self, target: build.BuildTarget, header_deps=None):
         header_deps = header_deps if header_deps is not None else []
         pch_objects = []
-        for lang in ['c', 'cpp']:
+        for lang in T.cast('T.Tuple[Language, ...]', ('c', 'cpp')):
             pch = target.pch[lang]
             if not pch:
                 continue
@@ -3485,6 +3491,16 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
     def get_import_filename(self, target) -> str:
         return os.path.join(self.get_target_dir(target), target.import_filename)
 
+    def get_soname_args(self, target: build.BuildTarget, linker: Compiler) -> T.List[str]:
+        """Get soname arguments for shared libraries."""
+        if not isinstance(target, build.SharedLibrary):
+            return []
+        if isinstance(target, build.SharedModule) and not target.force_soname:
+            return []
+        return linker.get_soname_args(
+            target.prefix, target.name, target.suffix,
+            target.soversion, target.darwin_versions)
+
     def get_target_type_link_args(self, target: build.BuildTarget, linker: Compiler):
         commands: T.List[str] = []
         if isinstance(target, build.Executable):
@@ -3507,11 +3523,8 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
                 commands += linker.get_std_shared_lib_link_args()
             # All shared libraries are PIC
             commands += linker.get_pic_args()
-            if not isinstance(target, build.SharedModule) or target.force_soname:
-                # Add -Wl,-soname arguments on Linux, -install_name on OS X
-                commands += linker.get_soname_args(
-                    target.prefix, target.name, target.suffix,
-                    target.soversion, target.darwin_versions)
+            # Add -Wl,-soname arguments on Linux, -install_name on OS X
+            commands += self.get_soname_args(target, linker)
             if target.vs_module_defs:
                 commands += linker.gen_vs_module_defs_args(target.vs_module_defs.rel_to_builddir(self.build_to_src))
             # This is only visited when building for Windows using either GCC or Visual Studio
