@@ -15,6 +15,7 @@ from .. import mesonlib, mlog
 from ..build import (BothLibraries, BuildTarget, CustomTargetIndex, Executable, ExtractedObjects, GeneratedList,
                      CustomTarget, InvalidArguments, Jar, StructuredSources, SharedLibrary, StaticLibrary)
 from ..compilers.compilers import are_asserts_disabled_for_subproject, lang_suffixes
+from ..compilers.rust import parse_target
 from ..interpreter.type_checking import (
     DEPENDENCIES_KW, LINK_WITH_KW, LINK_WHOLE_KW, SHARED_LIB_KWS, TEST_KWS, TEST_KWS_NO_ARGS,
     OUTPUT_KW, INCLUDE_DIRECTORIES, SOURCES_VARARGS, NoneType, in_set_validator
@@ -75,6 +76,7 @@ RUST_TEST_KWS: T.List[KwargInfo] = [
      ),
      KwargInfo('is_parallel', bool, default=False),
 ]
+
 
 def no_spaces_validator(arg: T.Optional[T.Union[str, T.List]]) -> T.Optional[str]:
     if any(bool(re.search(r'\s', x)) for x in arg):
@@ -287,7 +289,9 @@ class RustModule(ExtensionModule):
             self.interpreter.current_node, (name, rustdoc_prog), tkwargs, Doctest)
 
         # Note that the new_target is intentionally not returned, as it
-        # is only reached via the base_target and never built by "ninja"
+        # is only reached via the base_target and never built by "ninja",
+        # so we need to complete its initialization here
+        new_target.process_compilers_late()
         doctests.target = new_target
         base_target.doctests = doctests
         return ModuleReturnValue(None, [doctests])
@@ -336,6 +340,14 @@ class RustModule(ExtensionModule):
         # Copy to avoid subsequent calls mutating the original
         # TODO: if we want this to be per-machine we'll need a native kwarg
         clang_args = state.environment.properties.host.get_bindgen_clang_args().copy()
+
+        # Look for --target in the rust command itself if there isn't one passed in clang_args
+        target_arg = parse_target(clang_args)
+        if not target_arg:
+            rust_args = state._interpreter.compilers.host['rust'].get_exe_args()
+            target_arg = parse_target(rust_args)
+            if target_arg:
+                clang_args.append(f'--target={target_arg}')
 
         # Find the first C'ish compiler to fetch the default compiler flags
         # from. Append those to the bindgen flags to ensure we use a compatible

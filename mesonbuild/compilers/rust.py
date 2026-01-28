@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import argparse
 import functools
 import os.path
 import textwrap
@@ -17,12 +18,18 @@ from ..options import OptionKey
 from .compilers import Compiler, CompileCheckMode, clike_debug_args, is_library
 
 if T.TYPE_CHECKING:
+    from .. import build
     from ..options import MutableKeyedOptionDictType
     from ..environment import Environment  # noqa: F401
     from ..linkers.linkers import DynamicLinker
     from ..mesonlib import MachineChoice
     from ..dependencies import Dependency
     from ..build import BuildTarget
+
+    from typing_extensions import Protocol
+
+    class TargetParse(Protocol):
+        target: T.Optional[str]
 
 
 rust_optimization_args: T.Dict[str, T.List[str]] = {
@@ -34,6 +41,32 @@ rust_optimization_args: T.Dict[str, T.List[str]] = {
     '3': ['-C', 'opt-level=3'],
     's': ['-C', 'opt-level=s'],
 }
+
+
+class _TargetParser:
+
+    """Helper for bindgen to look for --target in various command line arguments.
+
+    Storing this as a helper class avoids the need to set up the ArgumentParser
+    multiple times, and simplifies it's use as well as the typing.
+    """
+
+    def __init__(self) -> None:
+        parser = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
+        parser.add_argument('--target', action='store', default=None)
+        self._parser = parser
+
+    def parse(self, args: T.List[str]) -> T.Optional[str]:
+        """Parse arguments looking for --target
+
+        :param args: A list of arguments to search
+        :return: the argument to --target if it exists, otherwise None
+        """
+        parsed = T.cast('TargetParse', self._parser.parse_known_args(args)[0])
+        return parsed.target
+
+
+parse_target = _TargetParser().parse
 
 def get_rustup_run_and_args(exelist: T.List[str]) -> T.Optional[T.Tuple[T.List[str], T.List[str]]]:
     """Given the command for a rustc executable, check if it is invoked via
@@ -396,6 +429,9 @@ class RustCompiler(Compiler):
     def gen_vs_module_defs_args(self, defsfile: str) -> T.List[str]:
         return rustc_link_args(super().gen_vs_module_defs_args(defsfile))
 
+    def gen_export_dynamic_link_args(self) -> T.List[str]:
+        return rustc_link_args(self.linker.export_dynamic_args())
+
     def get_profile_generate_args(self) -> T.List[str]:
         return ['-C', 'profile-generate']
 
@@ -417,8 +453,14 @@ class RustCompiler(Compiler):
     def get_allow_undefined_link_args(self) -> T.List[str]:
         return rustc_link_args(super().get_allow_undefined_link_args())
 
+    def get_build_link_args(self, target: BuildTarget, build: build.Build) -> T.List[str]:
+        return rustc_link_args(super().get_build_link_args(target, build))
+
     def get_target_link_args(self, target: 'BuildTarget') -> T.List[str]:
         return rustc_link_args(super().get_target_link_args(target))
+
+    def get_win_subsystem_args(self, value: str) -> T.List[str]:
+        return rustc_link_args(super().get_win_subsystem_args(value))
 
     def get_werror_args(self) -> T.List[str]:
         # Use -D warnings, which makes every warning not explicitly allowed an
@@ -433,7 +475,24 @@ class RustCompiler(Compiler):
         # relocation-model=pic is rustc's default already.
         return []
 
+    def get_std_link_args(self, env: Environment, is_thin: bool) -> T.List[str]:
+        # Rust handles static library creation via --crate-type
+        return []
+
+    def get_std_shared_lib_link_args(self) -> T.List[str]:
+        # Rust handles shared library creation via --crate-type
+        return []
+
+    def get_std_shared_module_link_args(self, target: BuildTarget) -> T.List[str]:
+        # Rust handles shared module creation via --crate-type
+        return []
+
     def get_pie_args(self) -> T.List[str]:
+        # Rustc currently has no way to toggle this, it's controlled by whether
+        # pic is on by rustc
+        return []
+
+    def get_pie_link_args(self) -> T.List[str]:
         # Rustc currently has no way to toggle this, it's controlled by whether
         # pic is on by rustc
         return []
@@ -464,7 +523,9 @@ class RustCompiler(Compiler):
     def has_multi_arguments(self, args: T.List[str]) -> T.Tuple[bool, bool]:
         return self.compiles('fn main() { std::process::exit(0) }\n', extra_args=args, mode=CompileCheckMode.COMPILE)
 
-    def has_multi_link_arguments(self, args: T.List[str]) -> T.Tuple[bool, bool]:
+    def has_multi_link_arguments(self, args: T.List[str], to_host_args: bool = True) -> T.Tuple[bool, bool]:
+        if to_host_args:
+            args = rustc_link_args(args)
         args = rustc_link_args(self.linker.fatal_warnings()) + args
         return self.compiles('fn main() { std::process::exit(0) }\n', extra_args=args, mode=CompileCheckMode.LINK)
 

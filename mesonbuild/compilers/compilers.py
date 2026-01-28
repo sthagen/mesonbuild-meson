@@ -17,7 +17,7 @@ from .. import mesonlib
 from .. import options
 from ..mesonlib import (
     HoldableObject,
-    EnvironmentException, MesonException,
+    EnvironmentException, MesonBugException, MesonException,
     Popen_safe_logged, LibType, TemporaryDirectoryWinProof,
 )
 from ..options import OptionKey
@@ -26,6 +26,7 @@ from ..arglist import CompilerArgs
 if T.TYPE_CHECKING:
     from typing_extensions import Literal, TypeAlias
 
+    from .. import build
     from .. import coredata
     from ..build import BuildTarget, DFeatures
     from ..options import MutableKeyedOptionDictType
@@ -389,7 +390,7 @@ def get_base_link_args(target: 'BuildTarget',
         # We consider that if there are no sanitizer arguments returned, then
         # the language doesn't support them.
         if sanitizer_args:
-            if not linker.has_multi_link_arguments(sanitizer_args)[0]:
+            if not linker.has_multi_link_arguments(sanitizer_args, False)[0]:
                 raise MesonException(f'Linker {linker.name_string()} does not support sanitizer arguments {sanitizer_args}')
             args.extend(sanitizer_args)
     except KeyError:
@@ -639,6 +640,9 @@ class Compiler(HoldableObject, metaclass=abc.ABCMeta):
         """
         return []
 
+    def gen_export_dynamic_link_args(self) -> T.List[str]:
+        raise MesonException('Language %s does not support export_dynamic.' % self.get_display_language())
+
     def make_option_name(self, key: OptionKey) -> str:
         return f'{self.language}_{key.name}'
 
@@ -801,8 +805,10 @@ class Compiler(HoldableObject, metaclass=abc.ABCMeta):
             'Language {} does not support has_multi_arguments.'.format(
                 self.get_display_language()))
 
-    def has_multi_link_arguments(self, args: T.List[str]) -> T.Tuple[bool, bool]:
+    def has_multi_link_arguments(self, args: T.List[str], to_host_args: bool = True) -> T.Tuple[bool, bool]:
         """Checks if the linker has all of the arguments.
+
+        to_host_args is False if the arguments were returned by this same Compiler object.
 
         :returns:
             A tuple of (bool, bool). The first value is whether the check
@@ -950,6 +956,9 @@ class Compiler(HoldableObject, metaclass=abc.ABCMeta):
 
     def get_link_debugfile_args(self, targetfile: str) -> T.List[str]:
         return self.linker.get_debugfile_args(targetfile)
+
+    def get_std_link_args(self, env: Environment, is_thin: bool) -> T.List[str]:
+        raise MesonBugException("get_std_link_args() not implemented; if needs_static_linker() is False it needs to be")
 
     def get_std_shared_lib_link_args(self) -> T.List[str]:
         return self.linker.get_std_shared_lib_args()
@@ -1104,6 +1113,14 @@ class Compiler(HoldableObject, metaclass=abc.ABCMeta):
         return self.linker.get_soname_args(
             prefix, shlib_name, suffix, soversion,
             darwin_versions)
+
+    def get_build_link_args(self, target: BuildTarget, build: build.Build) -> T.List[str]:
+        # Link args added using add_global_link_arguments() override
+        # per-project link arguments.  Link args added from the env (LDFLAGS)
+        # override all the defaults but not the per-target link args.
+        return build.get_project_link_args(self, target) \
+            + build.get_global_link_args(self, self.for_machine) \
+            + self.environment.coredata.get_external_link_args(self.for_machine, self.get_language())
 
     def get_target_link_args(self, target: 'BuildTarget') -> T.List[str]:
         return target.link_args
@@ -1293,6 +1310,9 @@ class Compiler(HoldableObject, metaclass=abc.ABCMeta):
         return []
 
     def get_werror_args(self) -> T.List[str]:
+        return []
+
+    def get_cpp_modules_args(self) -> T.List[str]:
         return []
 
     @abc.abstractmethod

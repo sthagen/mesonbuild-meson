@@ -1100,6 +1100,8 @@ class NinjaBackend(backends.Backend):
 
         self.generate_dependency_scan_target(target, compiled_sources, source2object, fortran_order_deps)
 
+        if isinstance(target, build.SharedLibrary):
+            self.generate_shsym(target)
         if target.uses_rust():
             self.generate_rust_target(target, outname, final_obj_list, fortran_order_deps)
             return
@@ -1121,8 +1123,9 @@ class NinjaBackend(backends.Backend):
             return True
         if 'cpp' not in target.compilers:
             return False
-        if '-fmodules-ts' in target.extra_args['cpp']:
-            return True
+        for arg in target.compilers['cpp'].get_cpp_modules_args():
+            if arg in target.extra_args['cpp']:
+                return True
         # Currently only the preview version of Visual Studio is supported.
         cpp = target.compilers['cpp']
         if cpp.get_id() != 'msvc':
@@ -2044,8 +2047,11 @@ class NinjaBackend(backends.Backend):
         if target.rust_crate_type in {'bin', 'dylib', 'cdylib'}:
             args.extend(rustc.get_linker_always_args())
             args += compilers.get_base_link_args(target, rustc, self.environment)
-            # Add soname for shared libraries
-            args += self.get_soname_args(target, rustc)
+
+        args += self.get_target_type_link_args(target, rustc)
+
+        if target.rust_crate_type in {'bin', 'dylib', 'cdylib'}:
+            args += rustc.get_build_link_args(target, self.build)
             args += rustc.get_target_link_args(target)
 
         args += self.generate_basic_compiler_args(target, rustc)
@@ -2185,6 +2191,9 @@ class NinjaBackend(backends.Backend):
             # want libstd as a shared dep
             has_rust_shared_deps = True
 
+        # Add link args specific to this BuildTarget type that must not be overridden by dependencies
+        args += self.get_target_type_link_args_post_dependencies(target, rustc)
+
         if has_rust_shared_deps:
             args += ['-C', 'prefer-dynamic']
         if has_shared_deps or has_rust_shared_deps:
@@ -2230,8 +2239,6 @@ class NinjaBackend(backends.Backend):
         element.add_item('ARGS', args)
         element.add_item('targetdep', depfile)
         self.add_build(element)
-        if isinstance(target, build.SharedLibrary):
-            self.generate_shsym(target)
         self.create_target_source_introspection(target, rustc, args, [main_rust_file], [])
 
         if target.doctests:
@@ -3491,16 +3498,6 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
     def get_import_filename(self, target) -> str:
         return os.path.join(self.get_target_dir(target), target.import_filename)
 
-    def get_soname_args(self, target: build.BuildTarget, linker: Compiler) -> T.List[str]:
-        """Get soname arguments for shared libraries."""
-        if not isinstance(target, build.SharedLibrary):
-            return []
-        if isinstance(target, build.SharedModule) and not target.force_soname:
-            return []
-        return linker.get_soname_args(
-            target.prefix, target.name, target.suffix,
-            target.soversion, target.darwin_versions)
-
     def get_target_type_link_args(self, target: build.BuildTarget, linker: Compiler):
         commands: T.List[str] = []
         if isinstance(target, build.Executable):
@@ -3524,7 +3521,10 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
             # All shared libraries are PIC
             commands += linker.get_pic_args()
             # Add -Wl,-soname arguments on Linux, -install_name on OS X
-            commands += self.get_soname_args(target, linker)
+            if not isinstance(target, build.SharedModule) or target.force_soname:
+                commands += linker.get_soname_args(
+                    target.prefix, target.name, target.suffix,
+                    target.soversion, target.darwin_versions)
             if target.vs_module_defs:
                 commands += linker.gen_vs_module_defs_args(target.vs_module_defs.rel_to_builddir(self.build_to_src))
             # This is only visited when building for Windows using either GCC or Visual Studio
@@ -3693,13 +3693,11 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
             linker_base = 'STATIC'
         else:
             linker_base = linker.get_language() # Fixme.
-        if isinstance(target, build.SharedLibrary):
-            self.generate_shsym(target)
-            if self.environment.machines[target.for_machine].is_os2():
-                target_file = self.get_target_filename(target)
-                import_name = self.get_import_filename(target)
-                elem = NinjaBuildElement(self.all_outputs, import_name, 'IMPORTLIB', target_file)
-                self.add_build(elem)
+        if isinstance(target, build.SharedLibrary) and self.environment.machines[target.for_machine].is_os2():
+            target_file = self.get_target_filename(target)
+            import_name = self.get_import_filename(target)
+            elem = NinjaBuildElement(self.all_outputs, import_name, 'IMPORTLIB', target_file)
+            self.add_build(elem)
         crstr = self.get_rule_suffix(target.for_machine)
         linker_rule = linker_base + '_LINKER' + crstr
         # Create an empty commands list, and start adding link arguments from
@@ -3742,14 +3740,7 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
             commands += self.get_link_whole_args(linker, target)
 
         if not isinstance(target, build.StaticLibrary):
-            # Add link args added using add_project_link_arguments()
-            commands += self.build.get_project_link_args(linker, target)
-            # Add link args added using add_global_link_arguments()
-            # These override per-project link arguments
-            commands += self.build.get_global_link_args(linker, target.for_machine)
-            # Link args added from the env: LDFLAGS. We want these to override
-            # all the defaults but not the per-target link args.
-            commands += self.environment.coredata.get_external_link_args(target.for_machine, linker.get_language())
+            commands += linker.get_build_link_args(target, self.build)
 
         # Now we will add libraries and library paths from various sources
 
