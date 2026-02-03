@@ -273,6 +273,7 @@ class Man(HoldableObject):
     custom_install_mode: 'FileMode'
     subproject: str
     locale: T.Optional[str]
+    install_tag: T.Optional[str] = None
 
     def get_custom_install_dir(self) -> T.Optional[str]:
         return self.custom_install_dir
@@ -1042,13 +1043,12 @@ class BuildTarget(Target):
             for t in itertools.chain(self.link_targets, self.link_whole_targets):
                 if isinstance(t, (CustomTarget, CustomTargetIndex)):
                     continue # We can't know anything about these.
-                for name, compiler in t.compilers.items():
-                    if name == 'rust':
-                        # Rust is always linked through a C-ABI target, so do not add
-                        # the compiler here
-                        continue
-                    if name in link_langs and name not in self.compilers:
-                        self.compilers[name] = compiler
+                target_langs = [t.link_language] if t.link_language else list(t.compilers)
+                for lang in target_langs:
+                    # Rust is always linked through a C-ABI target, so do not add
+                    # the compiler here
+                    if lang != 'rust' and lang in link_langs and lang not in self.compilers:
+                        self.compilers[lang] = t.all_compilers[lang]
 
         if not self.compilers:
             # No source files or parent targets, target consists of only object
@@ -1426,10 +1426,10 @@ class BuildTarget(Target):
             if t not in result:
                 result.add(t)
                 if isinstance(t, StaticLibrary):
-                    t.get_dependencies_recurse(result, include_proc_macros = self.uses_rust())
+                    t.get_dependencies_recurse(result, handled_by_rustc=self.uses_rust())
         return result
 
-    def get_dependencies_recurse(self, result: OrderedSet[BuildTargetTypes], include_internals: bool = True, include_proc_macros: bool = False) -> None:
+    def get_dependencies_recurse(self, result: OrderedSet[BuildTargetTypes], include_internals: bool = True, handled_by_rustc: bool = False) -> None:
         # self is always a static library because we don't need to pull dependencies
         # of shared libraries. If self is installed (not internal) it already
         # include objects extracted from all its internal dependencies so we can
@@ -1438,14 +1438,33 @@ class BuildTarget(Target):
         for t in self.link_targets:
             if t in result:
                 continue
-            if not include_proc_macros and t.rust_crate_type == 'proc-macro':
-                continue
-            if include_internals or not t.is_internal():
+            uses_rust_abi = isinstance(t, BuildTarget) and t.uses_rust_abi()
+            if not handled_by_rustc and uses_rust_abi:
+                # Rules for including libraries via Rust rlibs and staticlibs are complex:
+                # - proc-macro crates should be skipped completely when the build product
+                #   is not a Rust program, because only rustc knows that they are
+                #   special build-machine shared libraries
+                # - rlibs must always be returned for Rust programs, because even though
+                #   the -l flag is implicitly added, the -L flag is not.  ninjabackend.py
+                #   handles leaving out the -l flag
+                # - rlibs are bundled into staticlibs and need not be in the command line of
+                #   non-Rust programs; this is the case when t is not added to result.
+                # - C-ABI libraries included in link_with use -lstatic:-bundle, so even for
+                #   staticlibs we do need to recurse into rlibs and collect these non-bundled
+                #   libraries.  So don't return, unlike for procedural macros
+                if t.rust_crate_type == 'proc-macro':
+                    continue
+
+            elif not include_internals and t.is_internal():
+                pass
+
+            else:
                 result.add(t)
             if isinstance(t, StaticLibrary):
-                t.get_dependencies_recurse(result, include_internals, include_proc_macros)
+                t.get_dependencies_recurse(result, include_internals, handled_by_rustc and uses_rust_abi)
         for t in self.link_whole_targets:
-            t.get_dependencies_recurse(result, include_internals, include_proc_macros)
+            uses_rust_abi = isinstance(t, BuildTarget) and t.uses_rust_abi()
+            t.get_dependencies_recurse(result, include_internals, handled_by_rustc and uses_rust_abi)
 
     def get_sources(self) -> T.List[File]:
         return self.sources
@@ -1581,11 +1600,12 @@ class BuildTarget(Target):
                 langs.append(dep.language)
         # Check if any of the internal libraries this target links to were
         # written in this language
-        for link_target in itertools.chain(self.link_targets, self.link_whole_targets):
-            if isinstance(link_target, (CustomTarget, CustomTargetIndex)):
+        for t in itertools.chain(self.link_targets, self.link_whole_targets):
+            if isinstance(t, (CustomTarget, CustomTargetIndex)):
                 continue
-            for language in link_target.compilers:
-                if language == 'rust' and not link_target.uses_rust_abi():
+            target_langs = [t.link_language] if t.link_language else list(t.compilers)
+            for language in target_langs:
+                if language == 'rust' and not t.uses_rust_abi():
                     # All Rust dependencies must go through a C-ABI dependency, so ignore it
                     continue
                 if language not in langs:
