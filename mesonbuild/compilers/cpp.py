@@ -45,7 +45,8 @@ if T.TYPE_CHECKING:
 else:
     CompilerMixinBase = object
 
-ALL_STDS = ['c++98', 'c++0x', 'c++03', 'c++1y', 'c++1z', 'c++11', 'c++14', 'c++17', 'c++2a', 'c++20', 'c++23', 'c++26']
+ALL_STDS = ['c++98', 'c++0x', 'c++03', 'c++1y', 'c++1z', 'c++11', 'c++14', 'c++17']
+ALL_STDS += ['c++2a', 'c++2b', 'c++2c', 'c++20', 'c++23', 'c++26']
 ALL_STDS += [f'gnu{std[1:]}' for std in ALL_STDS]
 ALL_STDS += ['vc++11', 'vc++14', 'vc++17', 'vc++20', 'vc++latest', 'c++latest']
 
@@ -630,6 +631,8 @@ class ElbrusCPPCompiler(ElbrusCompiler, CPPCompiler):
             cpp_stds += ['c++2a']
         if version_compare(self.version, '>=1.26.00'):
             cpp_stds += ['c++20']
+        if version_compare(self.version, '>=1.28.00'):
+            cpp_stds += ['c++2b', 'c++23']
 
         key = self.form_compileropt_key('std')
         std_opt = opts[key]
@@ -655,7 +658,7 @@ class ElbrusCPPCompiler(ElbrusCompiler, CPPCompiler):
         non_msvc_eh_options(eh, args)
 
         debugstl = self.get_compileropt_value('debugstl', target, subproject)
-        assert isinstance(debugstl, str)
+        assert isinstance(debugstl, bool)
         if debugstl:
             args.append('-D_GLIBCXX_DEBUG=1')
         return args
