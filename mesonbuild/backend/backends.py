@@ -1707,7 +1707,8 @@ class Backend:
         for t in self.build.get_targets().values():
             if not t.should_install():
                 continue
-            outdirs, install_dir_names, custom_install_dir = t.get_install_dir()
+            outdirs = t.install_dir
+            install_dir_names = t.install_dir_names()
             # Sanity-check the outputs and install_dirs
             num_outdirs, num_out = len(outdirs), len(t.get_outputs())
             if num_outdirs not in {1, num_out}:
@@ -1761,7 +1762,7 @@ class Backend:
                         # linking (separate from the shared library with all the
                         # code), we need to install that too (dll.a/.lib).
                         if t.get_import_filename():
-                            if custom_install_dir:
+                            if t.has_custom_install_dir:
                                 # If the DLL is installed into a custom directory,
                                 # install the import library into the same place so
                                 # it doesn't go into a surprising place
@@ -1958,7 +1959,7 @@ class Backend:
                 if isinstance(j, mesonlib.File):
                     source_list += [j.absolute_path(self.source_dir, self.build_dir)]
                 elif isinstance(j, str):
-                    source_list += [os.path.join(self.source_dir, j)]
+                    source_list += [os.path.join(self.source_dir, target.subdir, j)]
                 elif isinstance(j, (build.CustomTarget, build.BuildTarget)):
                     source_list += [os.path.join(self.build_dir, j.get_builddir(), o) for o in j.get_outputs()]
             source_list = [os.path.normpath(s) for s in source_list]
@@ -2001,7 +2002,7 @@ class Backend:
                 # directory. We have to add in PATH the location of every DLL needed.
                 library_paths.update(self.determine_windows_extra_paths(t, []))
 
-            if t.get_install_dir()[2]:
+            if t.has_custom_install_dir:
                 # Do not update paths for target installed in non default location
                 continue
 
