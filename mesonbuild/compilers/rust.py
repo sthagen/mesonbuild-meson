@@ -12,7 +12,8 @@ import re
 import typing as T
 
 from .. import options
-from ..mesonlib import EnvironmentException, MesonException, Popen_safe_logged, version_compare
+from ..dependencies import InternalDependency
+from ..mesonlib import EnvironmentException, MesonException, Popen_safe, Popen_safe_logged, version_compare
 from ..linkers.linkers import VisualStudioLikeLinkerMixin
 from ..options import OptionKey
 from .compilers import Compiler, CompileCheckMode, clike_debug_args, is_library
@@ -105,6 +106,11 @@ def rustc_link_args(args: T.List[str]) -> T.List[str]:
         rustc_args.append('-C')
         rustc_args.append(f'link-arg={arg}')
     return rustc_args
+
+
+class RustSystemDependency(InternalDependency):
+    pass
+
 
 class RustCompiler(Compiler):
 
@@ -242,6 +248,20 @@ class RustCompiler(Compiler):
         return stdo.splitlines()
 
     @functools.lru_cache(maxsize=None)
+    def get_target_triple(self) -> str:
+        # First check if --target is explicitly set in the compiler command
+        target = parse_target(self.get_exe_args())
+        if target:
+            return target
+        # Fall back to parsing the host triple from `rustc -vV`
+        cmd = self.get_exelist(ccache=False) + ['-vV']
+        p, stdo, stde = Popen_safe(cmd)
+        for line in stdo.splitlines():
+            if line.startswith('host:'):
+                return line.split(':', 1)[1].strip()
+        raise EnvironmentException('Could not determine Rust target triple')
+
+    @functools.lru_cache(maxsize=None)
     def get_crt_static(self) -> bool:
         return 'target_feature="crt-static"' in self.get_cfgs()
 
@@ -359,6 +379,8 @@ class RustCompiler(Compiler):
         return opts
 
     def get_dependency_compile_args(self, dep: 'Dependency') -> T.List[str]:
+        if isinstance(dep, RustSystemDependency):
+            return dep.get_compile_args()
         # Rust doesn't have dependency compile arguments so simply return
         # nothing here. Dependencies are linked and all required metadata is
         # provided by the linker flags.

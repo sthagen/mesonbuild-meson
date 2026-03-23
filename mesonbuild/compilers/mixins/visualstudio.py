@@ -21,7 +21,6 @@ from mesonbuild.linkers.linkers import ClangClDynamicLinker, MSVCDynamicLinker
 if T.TYPE_CHECKING:
     from ...build import BuildTarget
     from ...environment import Environment
-    from ...dependencies import Dependency
     from .clike import CLikeCompiler as Compiler
 else:
     # This is a bit clever, for mypy we pretend that these mixins descend from
@@ -207,14 +206,23 @@ class VisualStudioLikeCompiler(Compiler, metaclass=abc.ABCMeta):
         return []
 
     @classmethod
+    def include_arg_to_native(cls, opt: str, path: str) -> str:
+        # msvc does not have a concept of system header dirs.
+        return f'/I{path}'
+
+    @classmethod
     def unix_args_to_native(cls, args: T.List[str]) -> T.List[str]:
         result: T.List[str] = []
+        prev = None
         for i in args:
+            if prev:
+                i = cls.include_arg_to_native(prev, i)
+                prev = None
             # -mms-bitfields is specific to MinGW-GCC
             # -pthread is only valid for GCC
-            if i in {'-mms-bitfields', '-pthread'}:
+            elif i in {'-mms-bitfields', '-pthread'}:
                 continue
-            if i.startswith('-LIBPATH:'):
+            elif i.startswith('-LIBPATH:'):
                 i = '/LIBPATH:' + i[9:]
             elif i.startswith('-L'):
                 i = '/LIBPATH:' + i[2:]
@@ -227,21 +235,18 @@ class VisualStudioLikeCompiler(Compiler, metaclass=abc.ABCMeta):
                     continue
                 else:
                     i = name + '.lib'
-            elif i.startswith('-isystem'):
-                # just use /I for -isystem system include path s
-                if i.startswith('-isystem='):
-                    i = '/I' + i[9:]
-                else:
-                    i = '/I' + i[8:]
-            elif i.startswith('-idirafter'):
-                # same as -isystem, but appends the path instead
-                if i.startswith('-idirafter='):
-                    i = '/I' + i[11:]
-                else:
-                    i = '/I' + i[10:]
-            # -pthread in link flags is only used on Linux
-            elif i == '-pthread':
+            elif i.startswith(('-iquote=', '-isystem=', '-idirafter=')):
+                opt, i = i.split('=',  1)
+                i = cls.include_arg_to_native(opt, i)
+            elif i in {'-iquote', '-isystem', '-idirafter'}:
+                prev = i
                 continue
+            elif i.startswith('-iquote'):
+                i = cls.include_arg_to_native('-iquote', i[7:])
+            elif i.startswith('-isystem'):
+                i = cls.include_arg_to_native('-isystem', i[8:])
+            elif i.startswith('-idirafter'):
+                i = cls.include_arg_to_native('-idirafter', i[10:])
             # cl.exe does not allow specifying both, so remove /utf-8 that we
             # added automatically in the case the user overrides it manually.
             elif (i.startswith('/source-charset:')
@@ -272,7 +277,9 @@ class VisualStudioLikeCompiler(Compiler, metaclass=abc.ABCMeta):
     def get_include_args(self, path: str, is_system: bool) -> T.List[str]:
         if path == '':
             path = '.'
-        # msvc does not have a concept of system header dirs.
+        if is_system:
+            # fixed up by unix_args_to_native() for Microsoft cl.exe
+            return ['-isystem', path]
         return ['-I' + path]
 
     def compute_parameters_with_absolute_paths(self, parameter_list: T.List[str], build_dir: str) -> T.List[str]:
@@ -428,6 +435,13 @@ class ClangClCompiler(VisualStudioLikeCompiler):
 
     id = 'clang-cl'
 
+    @classmethod
+    def include_arg_to_native(cls, opt: str, path: str) -> str:
+        # clang-cl does not seem to like a syntax like -iquote=...
+        # but unix_args_to_native() canonicalizes opt to not have
+        # a trailing equals sign
+        return f'/clang:{opt}{path}'
+
     def __init__(self, target: str):
         super().__init__(target)
 
@@ -459,11 +473,6 @@ class ClangClCompiler(VisualStudioLikeCompiler):
     def get_pch_base_name(self, header: str) -> str:
         return header
 
-    def get_include_args(self, path: str, is_system: bool) -> T.List[str]:
-        if path == '':
-            path = '.'
-        return ['/clang:-isystem' + path] if is_system else ['-I' + path]
-
     @classmethod
     def use_linker_args(cls, linker: str, version: str) -> T.List[str]:
         # Clang additionally can use a linker specified as a path, unlike MSVC.
@@ -475,18 +484,6 @@ class ClangClCompiler(VisualStudioLikeCompiler):
         # clang-cl forwards arguments span-wise with the /LINK flag
         # therefore -Wl will be received by lld-link or LINK and rejected
         return super().use_linker_args(self.linker.id, '') + super().linker_to_compiler_args([flag[4:] if flag.startswith('-Wl,') else flag for flag in args])
-
-    def get_dependency_compile_args(self, dep: 'Dependency') -> T.List[str]:
-        if dep.get_include_type() == 'system':
-            converted: T.List[str] = []
-            for i in dep.get_compile_args():
-                if i.startswith('-isystem'):
-                    converted += ['/clang:' + i]
-                else:
-                    converted += [i]
-            return converted
-        else:
-            return dep.get_compile_args()
 
     def openmp_link_flags(self) -> T.List[str]:
         # see https://github.com/mesonbuild/meson/issues/5298
