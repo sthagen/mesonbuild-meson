@@ -1869,28 +1869,12 @@ class Interpreter(InterpreterBase, HoldableObject):
     def func_disabler(self, node, args, kwargs):
         return Disabler()
 
-    def _exe_to_shlib_kwargs(self, kwargs: kwtypes.Executable) -> kwtypes.SharedLibrary:
-        nkwargs = T.cast('kwtypes.SharedLibrary', kwargs.copy())
-        for exe_kwarg in EXCLUSIVE_EXECUTABLE_KWS:
-            del nkwargs[exe_kwarg.name]  # type: ignore[misc]
-        for sh_kwarg in SHARED_LIB_KWS:
-            nkwargs.setdefault(sh_kwarg.name, sh_kwarg.default)  # type: ignore[misc]
-        nkwargs['rust_abi'] = None
-        nkwargs['rust_crate_type'] = 'cdylib'
-        return nkwargs
-
     @permittedKwargs(build.known_exe_kwargs)
     @typed_pos_args('executable', str, varargs=SOURCES_VARARGS)
     @typed_kwargs('executable', *EXECUTABLE_KWS)
     def func_executable(self, node: mparser.BaseNode,
                         args: T.Tuple[str, SourcesVarargsType],
                         kwargs: kwtypes.Executable) -> T.Union[build.Executable, build.SharedLibrary]:
-        for_machine = kwargs['native']
-        m = self.environment.machines[for_machine]
-        if m.is_android() and kwargs.get('android_exe_type') == 'application':
-            holder = self.build_target(node, args, self._exe_to_shlib_kwargs(kwargs), build.SharedLibrary)
-            holder.shared_library_only = True
-            return holder
         return self.build_target(node, args, kwargs, build.Executable)
 
     @permittedKwargs(build.known_stlib_kwargs)
@@ -1907,9 +1891,7 @@ class Interpreter(InterpreterBase, HoldableObject):
     def func_shared_lib(self, node: mparser.BaseNode,
                         args: T.Tuple[str, SourcesVarargsType],
                         kwargs: kwtypes.SharedLibrary) -> build.SharedLibrary:
-        holder = self.build_target(node, args, kwargs, build.SharedLibrary)
-        holder.shared_library_only = True
-        return holder
+        return self.build_target(node, args, kwargs, build.SharedLibrary)
 
     @permittedKwargs(known_library_kwargs)
     @typed_pos_args('both_libraries', str, varargs=SOURCES_VARARGS)
@@ -3341,7 +3323,7 @@ class Interpreter(InterpreterBase, HoldableObject):
 
     @FeatureNew('both_libraries', '0.46.0')
     def build_both_libraries(self, node: mparser.BaseNode, args: T.Tuple[str, SourcesVarargsType], kwargs: kwtypes.Library) -> build.BothLibraries:
-        shared_lib = self.build_target(node, args, kwargs, build.SharedLibrary)
+        shared_lib = self.build_target(node, args, kwargs, build.SharedLibrary, shared_library_only=False)
         static_lib = self.build_target(node, args, kwargs, build.StaticLibrary)
         preferred_library = self.coredata.optstore.get_value_for(OptionKey('default_both_libraries', subproject=self.subproject))
         if preferred_library == 'auto':
@@ -3471,6 +3453,16 @@ class Interpreter(InterpreterBase, HoldableObject):
             crate_type = default_rust_type
         return crate_type
 
+    def _exe_to_shlib_kwargs(self, kwargs: kwtypes.Executable) -> kwtypes.SharedLibrary:
+        nkwargs = T.cast('kwtypes.SharedLibrary', kwargs.copy())
+        for exe_kwarg in EXCLUSIVE_EXECUTABLE_KWS:
+            del nkwargs[exe_kwarg.name]  # type: ignore[misc]
+        for sh_kwarg in SHARED_LIB_KWS:
+            nkwargs.setdefault(sh_kwarg.name, sh_kwarg.default)  # type: ignore[misc]
+        nkwargs['rust_abi'] = None
+        nkwargs['rust_crate_type'] = 'cdylib'
+        return nkwargs
+
     @T.overload
     def build_target(self, node: mparser.BaseNode, args: T.Tuple[str, SourcesVarargsType],
                      kwargs: kwtypes.Executable, targetclass: T.Type[build.Executable]) -> build.Executable: ...
@@ -3485,7 +3477,8 @@ class Interpreter(InterpreterBase, HoldableObject):
 
     @T.overload
     def build_target(self, node: mparser.BaseNode, args: T.Tuple[str, SourcesVarargsType],
-                     kwargs: kwtypes.SharedLibrary, targetclass: T.Type[build.SharedLibrary]) -> build.SharedLibrary: ...
+                     kwargs: kwtypes.SharedLibrary, targetclass: T.Type[build.SharedLibrary],
+                     shared_library_only: bool = True) -> build.SharedLibrary: ...
 
     @T.overload
     def build_target(self, node: mparser.BaseNode, args: T.Tuple[str, SourcesVarargsType],
@@ -3493,21 +3486,27 @@ class Interpreter(InterpreterBase, HoldableObject):
 
     def build_target(self, node: mparser.BaseNode, args: T.Tuple[str, SourcesVarargsType],
                      kwargs: T.Union[kwtypes.Executable, kwtypes.StaticLibrary, kwtypes.SharedLibrary, kwtypes.SharedModule, kwtypes.Jar],
-                     targetclass: T.Type[T.Union[build.Executable, build.StaticLibrary, build.SharedModule, build.SharedLibrary, build.Jar]]
+                     targetclass: T.Type[T.Union[build.Executable, build.StaticLibrary, build.SharedModule, build.SharedLibrary, build.Jar]],
+                     shared_library_only: bool = True
                      ) -> T.Union[build.Executable, build.StaticLibrary, build.SharedModule, build.SharedLibrary, build.Jar]:
         if targetclass not in {build.Executable, build.SharedLibrary, build.SharedModule, build.StaticLibrary, build.Jar}:
             mlog.debug('Unknown target type:', str(targetclass))
             raise RuntimeError('Unreachable code')
 
-        # Because who owns this isn't clear
-        kwargs = kwargs.copy()
-
-        name, sources = args
         for_machine = kwargs['native']
         if kwargs.get('rust_crate_type') == 'proc-macro':
             # Silently force to native because that's the only sensible value
             # and rust_crate_type is deprecated any way.
             for_machine = MachineChoice.BUILD
+
+        if targetclass is build.Executable and kwargs.get('android_exe_type') == 'application':
+            m = self.environment.machines[for_machine]
+            if m.is_android():
+                return self.build_target(node, args, self._exe_to_shlib_kwargs(kwargs), build.SharedLibrary)
+
+        # Because who owns this isn't clear
+        kwargs = kwargs.copy()
+        name, sources = args
         # Avoid mutating, since there could be other references to sources
         sources = sources + kwargs['sources']
         if any(isinstance(s, build.BuildTarget) for s in sources):
@@ -3677,6 +3676,8 @@ class Interpreter(InterpreterBase, HoldableObject):
                              self.environment, self.compilers[for_machine], kwargs)
         if objs and target.uses_rust():
             FeatureNew.single_use('objects in Rust targets', '1.8.0', self.subproject)
+        if targetclass is build.SharedLibrary:
+            target.shared_library_only = shared_library_only
 
         self.add_target(name, target)
         self.project_args_frozen = True
