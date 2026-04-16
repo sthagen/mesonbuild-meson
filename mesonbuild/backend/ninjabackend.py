@@ -564,8 +564,15 @@ class NinjaBackend(backends.Backend):
         # and locale dependent. Any attempt at converting it to
         # Python strings leads to failure. We _must_ do this detection
         # in raw byte mode and write the result in raw bytes.
+        #
+        # Pass the compiler's external args (e.g. -I flags from c_args /
+        # cpp_args in a native file) so that cl.exe can locate system headers
+        # even when the INCLUDE environment variable is not set — for example,
+        # when using a bundled MSVC toolchain outside a VS Developer Shell.
+        extra_args = self.environment.coredata.get_external_args(
+            MachineChoice.HOST, compiler.language)
         pc = subprocess.Popen(compiler.get_exelist() +
-                              ['/showIncludes', '/c', filebase],
+                              ['/showIncludes', '/c', filebase] + extra_args,
                               cwd=self.environment.get_scratch_dir(),
                               stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         (stdout, stderr) = pc.communicate()
@@ -3057,21 +3064,8 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
         return (sargs, bargs)
 
     def _generate_single_compile(self, target: build.BuildTarget, compiler: Compiler) -> CompilerArgs:
-        commands = self._generate_single_compile_base_args(target, compiler)
+        commands = target.get_single_compile_base_args(compiler)
         commands += self._generate_single_compile_target_args(target, compiler)
-        return commands
-
-    def _generate_single_compile_base_args(self, target: build.BuildTarget, compiler: 'Compiler') -> 'CompilerArgs':
-        # Create an empty commands list, and start adding arguments from
-        # various sources in the order in which they must override each other
-        commands = compiler.compiler_args()
-        # Start with symbol visibility.
-        commands += compiler.gnu_symbol_visibility_args(target.gnu_symbol_visibility)
-        # Add compiler args for compiling this target derived from 'base' build
-        # options passed on the command-line, in default_options, etc.
-        # These have the lowest priority.
-        commands += compilers.get_base_compile_args(target,
-                                                    compiler, self.environment)
         return commands
 
     @lru_cache(maxsize=None)
@@ -3159,7 +3153,7 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
 
         for src_type_str in target.compilers:
             compiler = target.compilers[src_type_str]
-            commands = self._generate_single_compile_base_args(target, compiler)
+            commands = target.get_single_compile_base_args(compiler)
 
             # Include PCH header as first thing as it must be the first one or it will be
             # ignored by gcc https://gcc.gnu.org/bugzilla/show_bug.cgi?id=100462
@@ -3193,7 +3187,7 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
             raise AssertionError(f'BUG: sources should not contain headers {src!r}')
 
         compiler = get_compiler_for_source(target.compilers.values(), src)
-        commands = self._generate_single_compile_base_args(target, compiler)
+        commands = target.get_single_compile_base_args(compiler)
 
         # Include PCH header as first thing as it must be the first one or it will be
         # ignored by gcc https://gcc.gnu.org/bugzilla/show_bug.cgi?id=100462
@@ -3709,7 +3703,7 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
         obj_list, args = prelinker.get_prelink_args(prelink_name, obj_list)
         cmd += args
         if prelinker.get_prelink_append_compile_args():
-            compile_args = self._generate_single_compile_base_args(target, prelinker)
+            compile_args = target.get_single_compile_base_args(prelinker)
             compile_args += self._generate_single_compile_target_args(target, prelinker)
             compile_args = compile_args.compiler.compiler_args(compile_args)
             cmd += compile_args.to_native()

@@ -1234,6 +1234,22 @@ class Vs2010Backend(backends.Backend):
 
         return (nmake_base_meson_command, exe_search_paths)
 
+    def get_target_whole_program_opt(self, target: build.BuildTarget) -> str:
+        lto = False
+        pgo = 'off'
+        try:
+            lto = self.get_target_option(target, 'b_lto')
+            pgo = self.get_target_option(target, 'b_pgo')
+        except KeyError:
+            pass
+
+        if pgo == 'off':
+            return 'true' if lto else 'false'
+
+        if not lto:
+            raise MesonException("b_pgo requires b_lto on MSVC.")
+        return 'PGInstrument' if pgo == 'generate' else 'PGOptimize'
+
     def add_gen_lite_makefile_vcxproj_elements(self,
                                                root: ET.Element,
                                                platform: str,
@@ -1322,19 +1338,7 @@ class Vs2010Backend(backends.Backend):
         # FIXME: Should the following just be set in create_basic_project(), even if
         # irrelevant for current target?
 
-        lto = self.get_target_option(target, 'b_lto')
-        pgo = self.get_target_option(target, 'b_pgo')
-
-        if lto:
-            if pgo == 'off':
-                ET.SubElement(type_config, 'WholeProgramOptimization').text = 'true'
-            elif pgo == 'generate':
-                ET.SubElement(type_config, 'WholeProgramOptimization').text = 'PGInstrument'
-            elif pgo == 'use':
-                ET.SubElement(type_config, 'WholeProgramOptimization').text = 'PGOptimize'
-        else:
-            if pgo != 'off':
-                raise MesonException("b_pgo requires b_lto on MSVC.")
+        ET.SubElement(type_config, 'WholeProgramOptimization').text = self.get_target_whole_program_opt(target)
 
         # Let VS auto-set the RTC level
         ET.SubElement(type_config, 'BasicRuntimeChecks').text = 'Default'
@@ -1349,7 +1353,7 @@ class Vs2010Backend(backends.Backend):
             ET.SubElement(clconf, 'OpenMPSupport').text = 'true'
         # CRT type; debug or release
         vscrt_type = self.get_target_option(target, 'b_vscrt')
-        vscrt_val = compiler.get_crt_val(vscrt_type, self.environment)
+        vscrt_val = compiler.get_crt_val(vscrt_type)
         if vscrt_val == 'mdd':
             ET.SubElement(type_config, 'UseDebugLibraries').text = 'true'
             ET.SubElement(clconf, 'RuntimeLibrary').text = 'MultiThreadedDebugDLL'

@@ -12,12 +12,11 @@ import re
 
 from . import ModuleReturnValue, ExtensionModule
 from .. import build
-from .. import options
 from .. import mlog
 from ..dependencies import DependencyMethods, find_external_dependency, Dependency, ExternalLibrary, InternalDependency
 from ..mesonlib import MachineChoice, MesonException, File, FileMode, version_compare, Popen_safe
 from ..interpreter import extract_required_kwarg
-from ..interpreter.type_checking import DEPENDENCY_METHOD_KW, INSTALL_DIR_KW, INSTALL_KW, NoneType
+from ..interpreter.type_checking import DEPENDENCY_METHOD_KW, INSTALL_DIR_KW, INSTALL_KW, REQUIRED_KW, NoneType
 from ..interpreterbase import ContainerTypeInfo, FeatureDeprecated, KwargInfo, noPosargs, FeatureNew, typed_kwargs, typed_pos_args
 from ..programs import NonExistingExternalProgram
 
@@ -266,11 +265,12 @@ class QtBaseModule(ExtensionModule):
             if p.found():
                 self.tools[name] = p
 
-    def _detect_tools(self, state: ModuleState, method: DependencyMethods, required: bool = True, version: T.List[str] = None) -> None:
+    def _detect_tools(self, state: ModuleState, method: DependencyMethods, required: bool = True, version: T.Optional[T.List[str]] = None) -> None:
         if self._tools_detected:
             return
         self._tools_detected = True
         mlog.log(f'Detecting Qt{self.qt_version} tools')
+        version = version or []
         kwargs: DependencyObjectKWs = {'required': required, 'modules': ['Core'], 'method': method, 'native': MachineChoice.HOST, 'version': version}
         # Just pick one to make mypy happy
         qt = T.cast('QtPkgConfigDependency', find_external_dependency(f'qt{self.qt_version}', state.environment, kwargs))
@@ -368,7 +368,7 @@ class QtBaseModule(ExtensionModule):
     @typed_kwargs(
         'qt.has_tools',
         DEPENDENCY_METHOD_KW,
-        KwargInfo('required', (bool, options.UserFeatureOption), default=False),
+        REQUIRED_KW.evolve(default=False),
         KwargInfo('tools', ContainerTypeInfo(list, str), listify=True,
                   default=['moc', 'uic', 'rcc', 'lrelease'],
                   validator=_list_in_set_validator(_set_of_qt_tools),
