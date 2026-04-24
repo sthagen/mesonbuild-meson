@@ -67,6 +67,7 @@ modules = [
     'mesonbuild/modules/keyval.py',
     'mesonbuild/modules/modtest.py',
     'mesonbuild/modules/pkgconfig.py',
+    'mesonbuild/modules/python.py',
     'mesonbuild/modules/_qt.py',
     'mesonbuild/modules/qt4.py',
     'mesonbuild/modules/qt5.py',
@@ -157,7 +158,7 @@ def main() -> int:
         print('Running mypy (this can take some time) ...')
 
     if opts.allver:
-        versions = ['default'] + [f'3.{minor}' for minor in range(7, sys.version_info[1])]
+        versions = ['default'] + [f'3.{minor}' for minor in range(10, sys.version_info[1])]
     else:
         versions = ['default']
 

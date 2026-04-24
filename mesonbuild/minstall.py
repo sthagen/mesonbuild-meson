@@ -39,7 +39,7 @@ if T.TYPE_CHECKING:
     try:
         from typing import Protocol
     except AttributeError:
-        from typing_extensions import Protocol  # type: ignore
+        from typing_extensions import Protocol
 
     class ArgumentType(Protocol):
         """Typing information for the object returned by argparse."""
@@ -165,7 +165,7 @@ def set_chown(path: str, user: T.Union[str, int, None] = None,
     if sys.version_info >= (3, 13):
         # pylint: disable=unexpected-keyword-arg
         # cannot handle sys.version_info, https://github.com/pylint-dev/pylint/issues/9622
-        shutil.chown(path, user, group, dir_fd=dir_fd, follow_symlinks=follow_symlinks)  # type: ignore[call-overload]
+        shutil.chown(path, user, group, dir_fd=dir_fd, follow_symlinks=follow_symlinks)
     else:
         real_os_chown = os.chown
 
@@ -786,7 +786,7 @@ class Installer:
                 self.did_install_something = True
                 try:
                     self.fix_rpath(outname, t.rpath_dirs_to_remove, install_rpath, final_path,
-                                   install_name_mappings, verbose=False)
+                                   install_name_mappings, t.system, verbose=False)
                 except SystemExit as e:
                     if isinstance(e.code, int) and e.code == 0:
                         pass
