@@ -109,4 +109,4 @@ jobs:
         # We need this to avoid objfw test failures.
         export PATH="$HOME/tools:/opt/homebrew/opt/qt@5/bin:/opt/homebrew/opt/ncurses/bin:$PATH:/opt/homebrew/opt/llvm/bin"
         export PKG_CONFIG_PATH="/opt/homebrew/opt/qt@5/lib/pkgconfig:/opt/homebrew/opt/lapack/lib/pkgconfig:/opt/homebrew/opt/ncurses/lib/pkgconfig:$PKG_CONFIG_PATH"
-        ./run_project_tests.py --backend=ninja
+        ./run_project_tests.py --backend=ninja -- $MESON_ARGS
