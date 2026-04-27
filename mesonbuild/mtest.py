@@ -150,6 +150,8 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
                         help='Only run tests belonging to the given suite.')
     parser.add_argument('--no-suite', default=[], dest='exclude_suites', action='append', metavar='SUITE',
                         help='Do not run tests belonging to the given suite.')
+    parser.add_argument('--exclude', default=[], dest='exclude', action='append',
+                        help='Exclude tests with the given name.')
     parser.add_argument('--no-stdsplit', default=True, dest='split', action='store_false',
                         help='Do not split stderr and stdout in test logs.')
     parser.add_argument('--print-errorlogs', default=False, action='store_true',
@@ -555,7 +557,7 @@ class ConsoleLogger(TestLogger):
         self.test_count = 0
         self.started_tests = 0
         self.spinner_index = 0
-        self.is_tty = os.isatty(1)
+        self.is_tty = sys.stdout.isatty()
         self.cols = 80
         if self.is_tty:
             try:
@@ -582,7 +584,10 @@ class ConsoleLogger(TestLogger):
 
     def print_progress(self, line: str) -> None:
         print(self.should_erase_line, line, sep='', end='\r')
-        self.should_erase_line = '\x1b[K'
+        if self.is_tty:
+            self.should_erase_line = '\x1b[K'
+        else:
+            self.should_erase_line = '\n'
 
     def request_update(self) -> None:
         self.update.set()
@@ -1970,8 +1975,16 @@ class TestHarness:
                         return True
         return False
 
-    def test_suitable(self, test: TestSerialisation) -> bool:
+    def test_suitable(self, test: TestSerialisation, excluded_tests: set[str]) -> bool:
         if TestHarness.test_in_suites(test, self.options.exclude_suites):
+            return False
+
+        # Accept both --exclude name and --exclude subproject:name.
+        # For the main project, we also accept 'name' without qualification
+        # for convenience.
+        if self.build_data.project_name == test.project_name and test.name in excluded_tests:
+            return False
+        if f'{test.project_name}:{test.name}' in excluded_tests:
             return False
 
         if self.options.include_suites:
@@ -2044,7 +2057,9 @@ class TestHarness:
             print('No tests defined.', file=errorfile)
             return []
 
-        tests = [t for t in self.tests if self.test_suitable(t)]
+        excluded_tests = set(self.options.exclude)
+        tests = [t for t in self.tests if self.test_suitable(t, excluded_tests)]
+
         if self.options.args:
             tests = list(self.tests_from_args(tests))
         if self.options.slice:
