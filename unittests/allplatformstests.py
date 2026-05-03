@@ -910,6 +910,7 @@ class AllPlatformTests(BasePlatformTests):
         self.assertFailedTestCount(4, self.mtest_command + ['--exclude', 'mainprj-failing_test',
                                                             '--exclude', 'subprjfail:subprjfail-failing_test_no_suite'])
         self.assertFailedTestCount(5, self.mtest_command + ['--exclude', 'buggy'])
+        self.assertFailedTestCount(5, self.mtest_command + ['--exclude', 'mainprj:buggy'])
 
         self.assertFailedTestCount(0, self.mtest_command + ['--suite', ':success'])
         self.assertFailedTestCount(5, self.mtest_command + ['--suite', ':fail'])
