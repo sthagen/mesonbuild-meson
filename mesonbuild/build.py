@@ -49,6 +49,7 @@ if T.TYPE_CHECKING:
     from .linkers.linkers import StaticLinker
     from .mesonlib import ExecutableSerialisation, FileMode, FileOrString
     from .mparser import BaseNode
+    from .options import ElementaryOptionValues
 
     GeneratedTypes: TypeAlias = T.Union['CustomTarget', 'CustomTargetIndex', 'GeneratedList']
     LibTypes: TypeAlias = T.Union['SharedLibrary', 'StaticLibrary', 'CustomTarget', 'CustomTargetIndex']
@@ -80,6 +81,7 @@ if T.TYPE_CHECKING:
         d_module_versions: T.List[T.Union[str, int]]
         d_unittest: bool
         dependencies: T.List[dependencies.Dependency]
+        depend_files: T.List[File]
         extra_files: T.List[File]
         gnu_symbol_visibility: Literal['default', 'internal', 'hidden', 'protected', 'inlineshidden', '']
         implicit_include_directories: bool
@@ -92,14 +94,14 @@ if T.TYPE_CHECKING:
         language_args: T.DefaultDict[Language, T.List[str]]
         link_args: T.List[str]
         link_early_args: T.List[str]
-        link_depends: T.List[T.Union[str, File, CustomTarget, CustomTargetIndex]]
+        link_depends: T.List[T.Union[File, BuildTargetTypes]]
         link_language: Language
         link_whole: T.List[StaticTargetTypes]
         link_with: T.List[BuildTargetTypes]
         name_prefix: T.Optional[str]
         name_suffix: T.Optional[str]
         native: MachineChoice
-        override_options: T.Dict[OptionKey, str]
+        override_options: T.Dict[str, ElementaryOptionValues]
         resources: T.List[str]
         swift_interoperability_mode: Literal['c', 'cpp']
         swift_module_name: str
@@ -114,7 +116,6 @@ if T.TYPE_CHECKING:
         vala_vapi: T.Optional[str]
         install_vala_vapi: bool
         install_vala_vapi_dir: T.Optional[str]
-        win_subsystem: str
 
         _allow_no_sources: bool
 
@@ -125,6 +126,7 @@ if T.TYPE_CHECKING:
         export_dynamic: bool
         pie: bool
         vs_module_defs: T.Union[str, File, CustomTarget, CustomTargetIndex]
+        win_subsystem: str
 
     class SharedModuleKeywordArguments(BuildTargetKeywordArguments, total=False):
 
@@ -141,6 +143,13 @@ if T.TYPE_CHECKING:
 
         pic: bool
         prelink: bool
+
+    class JarKeywordArguments(BuildTargetKeywordArguments, total=False):
+
+        java_args: T.List[str]
+        java_resources: T.Optional[StructuredSources]
+        main_class: str
+
 
 _T = T.TypeVar('_T')
 
@@ -776,7 +785,7 @@ class Target(HoldableObject, metaclass=SimpleABC):
     def get_id(self) -> str:
         return self.id
 
-    def get_override(self, name: str) -> T.Optional[str]:
+    def get_override(self, name: str) -> T.Optional[ElementaryOptionValues]:
         return self.raw_overrides.get(name, None)
 
     def is_linkable_target(self) -> bool:
@@ -827,7 +836,7 @@ class BuildTarget(Target):
         self.link_language: T.Optional[Language] = kwargs.get('link_language')
         self.link_targets: T.List[BuildTargetTypes] = []
         self.link_whole_targets: T.List[StaticTargetTypes] = []
-        self.depend_files: T.List[File] = []
+        self.depend_files = kwargs.get('depend_files', [])
         self.link_depends: T.List[T.Union[File, BuildTargetTypes]] = []
         self.added_deps: T.Set[dependencies.Dependency] = set()
         self.name_prefix_set = False
@@ -887,7 +896,6 @@ class BuildTarget(Target):
             mlog.warning(f'Build target {name} has no sources. '
                          'This was never supposed to be allowed but did because of a bug, '
                          'support will be removed in a future release of Meson')
-        self.check_unknown_kwargs(kwargs)
         self.validate_install()
         self.check_module_linking()
 
@@ -975,23 +983,6 @@ class BuildTarget(Target):
                 raise InvalidArguments('Tried to install a target for the build machine in a cross build.')
             else:
                 mlog.warning('Installing target build for the build machine. This will fail in a cross build.')
-
-    def check_unknown_kwargs(self, kwargs: BuildTargetKeywordArguments) -> None:
-        # Override this method in derived classes that have more
-        # keywords.
-        self.check_unknown_kwargs_int(kwargs, self.known_kwargs)
-
-    def check_unknown_kwargs_int(self, kwargs: BuildTargetKeywordArguments, known_kwargs: T.Set[str]) -> None:
-        unknowns = []
-        for k in kwargs:
-            if k in {'language_args', 'install_vala_header', 'install_vala_vapi',
-                     'install_vala_gir', 'install_vala_header_dir',
-                     'install_vala_vapi_dir', 'install_vala_gir_dir'}:
-                continue
-            if k not in known_kwargs:
-                unknowns.append(k)
-        if len(unknowns) > 0:
-            mlog.warning('Unknown keyword argument(s) in target {}: {}.'.format(self.name, ', '.join(unknowns)))
 
     def process_objectlist(self, objects: T.List[ObjectTypes]) -> None:
         assert isinstance(objects, list)
@@ -3327,7 +3318,7 @@ class Jar(BuildTarget):
     def __init__(self, name: str, subdir: str, subproject: str, for_machine: MachineChoice,
                  sources: T.List[SourceOutputs], structured_sources: T.Optional['StructuredSources'],
                  objects, environment: Environment, compilers: CompilerDict,
-                 kwargs):
+                 kwargs: JarKeywordArguments):
         super().__init__(name, subdir, subproject, for_machine, sources, structured_sources, objects,
                          environment, compilers, kwargs)
         for s in self.sources:

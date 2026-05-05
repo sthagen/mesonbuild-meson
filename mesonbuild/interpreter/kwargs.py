@@ -350,16 +350,17 @@ class _BaseBuildTarget(TypedDict):
 
     build_by_default: bool
     build_rpath: str
+    build_subdir: str
     dependencies: T.List[Dependency]
     extra_files: T.List[FileOrString]
     gnu_symbol_visibility: str
-    include_directories: T.List[build.IncludeDirs]
+    include_directories: T.List[T.Union[str, build.IncludeDirs]]
     install: bool
     install_mode: FileMode
     install_tag: T.Optional[str]
     install_rpath: str
     implicit_include_directories: bool
-    link_depends: T.List[T.Union[str, File, build.GeneratedTypes]]
+    link_depends: T.List[T.Union[str, File, build.BuildTargetTypes]]
     link_language: T.Optional[Language]
     link_whole: T.List[build.StaticTargetTypes]
     link_with: T.List[build.BuildTargetTypes]
@@ -375,7 +376,7 @@ class _BaseBuildTarget(TypedDict):
     vala_gir: T.Optional[str]
 
 
-class _BuildTarget(_BaseBuildTarget):
+class BuildTarget(_BaseBuildTarget):
 
     """Arguments shared by non-JAR functions"""
 
@@ -393,8 +394,9 @@ class _BuildTarget(_BaseBuildTarget):
     swift_module_name: str
     sources: SourcesVarargsType
     link_args: T.List[str]
-    c_pch: T.List[str]
-    cpp_pch: T.List[str]
+    link_early_args: T.List[str]
+    c_pch: T.Optional[T.Tuple[str, T.Optional[str]]]
+    cpp_pch: T.Optional[T.Tuple[str, T.Optional[str]]]
     c_args: T.List[str]
     cpp_args: T.List[str]
     cuda_args: T.List[str]
@@ -416,7 +418,7 @@ class _LibraryMixin(TypedDict):
     rust_abi: T.Optional[RustAbi]
 
 
-class Executable(_BuildTarget):
+class Executable(BuildTarget):
 
     export_dynamic: T.Optional[bool]
     gui_app: T.Optional[bool]
@@ -433,7 +435,7 @@ class _StaticLibMixin(TypedDict):
     pic: T.Optional[bool]
 
 
-class StaticLibrary(_BuildTarget, _StaticLibMixin, _LibraryMixin):
+class StaticLibrary(BuildTarget, _StaticLibMixin, _LibraryMixin):
     pass
 
 
@@ -443,18 +445,19 @@ class _SharedLibMixin(TypedDict):
     soversion: T.Optional[str]
     version: T.Optional[str]
     vs_module_defs: T.Optional[T.Union[str, File, build.CustomTarget, build.CustomTargetIndex]]
+    shortname: str
 
 
-class SharedLibrary(_BuildTarget, _SharedLibMixin, _LibraryMixin):
+class SharedLibrary(BuildTarget, _SharedLibMixin, _LibraryMixin):
     pass
 
 
-class SharedModule(_BuildTarget, _LibraryMixin):
+class SharedModule(BuildTarget, _LibraryMixin):
 
     vs_module_defs: T.Optional[T.Union[str, File, build.CustomTarget, build.CustomTargetIndex]]
 
 
-class Library(_BuildTarget, _SharedLibMixin, _StaticLibMixin, _LibraryMixin):
+class Library(BuildTarget, _SharedLibMixin, _StaticLibMixin, _LibraryMixin):
 
     """For library, both_library, and as a base for build_target"""
 
@@ -488,7 +491,7 @@ class Library(_BuildTarget, _SharedLibMixin, _StaticLibMixin, _LibraryMixin):
     masm_shared_args: NotRequired[T.List[str]]
 
 
-class BuildTarget(Library):
+class BuildTargetFunc(Library):
 
     target_type: Literal['executable', 'shared_library', 'static_library',
                          'shared_module', 'both_libraries', 'library', 'jar']
