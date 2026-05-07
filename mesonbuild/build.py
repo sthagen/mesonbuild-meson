@@ -46,6 +46,7 @@ if T.TYPE_CHECKING:
     from .compilers.compilers import Compiler, CompilerDict, Language
     from .interpreter.interpreter import CustomTargetSources, SourceOutputs, Interpreter
     from .interpreter.interpreterobjects import Test, Doctest
+    from .interpreter.kwargs import TargetDepends
     from .linkers.linkers import StaticLinker
     from .mesonlib import ExecutableSerialisation, FileMode, FileOrString
     from .mparser import BaseNode
@@ -2055,13 +2056,13 @@ class Generator(HoldableObject):
                  *,
                  depfile: T.Optional[str] = None,
                  capture: bool = False,
-                 depends: T.Optional[T.List[BuildTargetTypes]] = None,
+                 depends: T.Optional[T.Sequence[TargetDepends]] = None,
                  name: str = 'Generator'):
         self.environment = env
         self.exe = exe
         self.depfile = depfile
         self.capture = capture
-        self.depends: T.List[BuildTargetTypes] = depends or []
+        self.depends: T.List[TargetDepends] = list(depends or [])
         self.arglist = arguments
         self.outputs = output
         self.name = name
@@ -2079,7 +2080,7 @@ class Generator(HoldableObject):
         bases = [x.replace('@BASENAME@', basename).replace('@PLAINNAME@', plainname) for x in self.outputs]
         return bases
 
-    def get_dep_outname(self, inname: str) -> T.List[str]:
+    def get_dep_outname(self, inname: str) -> str:
         if self.depfile is None:
             raise InvalidArguments('Tried to get dep name for rule that does not have dependency file defined.')
         plainname = os.path.basename(inname)
@@ -2096,7 +2097,7 @@ class Generator(HoldableObject):
                       preserve_path_from: T.Optional[str] = None,
                       extra_args: T.Optional[T.List[str]] = None,
                       env: T.Optional[EnvironmentVariables] = None,
-                      extra_depends: T.Optional[T.List[GeneratedTypes]] = None) -> 'GeneratedList':
+                      extra_depends: T.Optional[T.Sequence[TargetDepends]] = None) -> 'GeneratedList':
         output = GeneratedList(
             self,
             subdir,
@@ -2125,7 +2126,7 @@ class Generator(HoldableObject):
                     if not is_parent_path(preserve_path_from, abs_f):
                         raise InvalidArguments('generator.process: When using preserve_path_from, all input files must be in a subdirectory of the given dir.')
                 f = FileMaybeInTargetPrivateDir(f)
-                output.add_file(f, self.environment)
+                output.add_file(f)
         return output
 
 
@@ -2139,7 +2140,7 @@ class GeneratedList(HoldableObject):
     preserve_path_from: T.Optional[str]
     extra_args: T.List[str]
     env: T.Optional[EnvironmentVariables]
-    extra_depends: T.List[GeneratedTypes]
+    extra_depends: T.List[TargetDepends]
 
     def __post_init__(self) -> None:
         self.name = self.generator.exe
@@ -2156,13 +2157,17 @@ class GeneratedList(HoldableObject):
             self.env: EnvironmentVariables = EnvironmentVariables()
 
         if self.extra_depends is None:
-            self.extra_depends: T.List[GeneratedTypes] = []
+            self.extra_depends: T.List[TargetDepends] = []
 
         if isinstance(self.generator.exe, programs.Program):
             if not self.generator.exe.found():
                 raise InvalidArguments('Tried to use not-found external program as generator')
         if isinstance(self.generator.exe, LocalProgram):
-            self.extra_depends.append(self.generator.exe.program)
+            t = self.generator.exe.get_target()
+            if isinstance(t, File):
+                self.depend_files.append(t)
+            else:
+                self.extra_depends.append(t)
         else:
             path = self.generator.exe.get_path()
             if os.path.isabs(path):
@@ -2170,21 +2175,18 @@ class GeneratedList(HoldableObject):
                 # know the absolute path of
                 self.depend_files.append(File.from_absolute_file(path))
 
-    def add_preserved_path_segment(self, infile: FileMaybeInTargetPrivateDir, outfiles: T.List[str], environment: Environment) -> T.List[str]:
-        result: T.List[str] = []
-        in_abs = infile.absolute_path(environment.source_dir, environment.build_dir)
+    def get_preserved_path_segment(self, infile: FileMaybeInTargetPrivateDir) -> str:
+        in_abs = infile.absolute_path(self.generator.environment.source_dir, self.generator.environment.build_dir)
         assert os.path.isabs(self.preserve_path_from)
         rel = os.path.relpath(in_abs, self.preserve_path_from)
-        path_segment = os.path.dirname(rel)
-        for of in outfiles:
-            result.append(os.path.join(path_segment, of))
-        return result
+        return os.path.dirname(rel)
 
-    def add_file(self, newfile: FileMaybeInTargetPrivateDir, environment: Environment) -> None:
+    def add_file(self, newfile: FileMaybeInTargetPrivateDir) -> None:
         self.infilelist.append(newfile)
         outfiles = self.generator.get_base_outnames(newfile.fname)
         if self.preserve_path_from:
-            outfiles = self.add_preserved_path_segment(newfile, outfiles, environment)
+            path_segment = self.get_preserved_path_segment(newfile)
+            outfiles = [os.path.join(path_segment, of) for of in outfiles]
         self.outfilelist += outfiles
         self.outmap[newfile] = outfiles
 
@@ -2984,7 +2986,7 @@ class CustomTarget(Target, CustomTargetBase, CommandBase):
                  subproject: str,
                  environment: Environment,
                  command: T.Sequence[T.Union[
-                     str, BuildTargetTypes, GeneratedList,
+                     str, BuildTargetTypes,
                      programs.Program, File]],
                  sources: T.Sequence[CustomTargetSources],
                  outputs: T.List[str],
@@ -2994,7 +2996,7 @@ class CustomTarget(Target, CustomTargetBase, CommandBase):
                  capture: bool = False,
                  console: bool = False,
                  depend_files: T.Optional[T.Sequence[FileOrString]] = None,
-                 extra_depends: T.Optional[T.Sequence[T.Union[str, SourceOutputs]]] = None,
+                 extra_depends: T.Optional[T.Sequence[TargetDepends]] = None,
                  depfile: T.Optional[str] = None,
                  depfile_type: T.Optional[Literal['gcc', 'msvc']] = None,
                  env: T.Optional[EnvironmentVariables] = None,
@@ -3027,7 +3029,6 @@ class CustomTarget(Target, CustomTargetBase, CommandBase):
         self.depfile = depfile
         self.depfile_type = 'gcc' if depfile else depfile_type
         self.env = env or EnvironmentVariables()
-        self.extra_depends = list(extra_depends or [])
         self.feed = feed
         self.install_dir = list(install_dir or [])
         self.has_custom_install_dir = bool(self.install_dir)
@@ -3042,6 +3043,23 @@ class CustomTarget(Target, CustomTargetBase, CommandBase):
         # Whether to enable using response files for the underlying tool
         self.rspable = rspable
 
+        self.extra_depends: T.List[T.Union[GeneratedTypes, BuildTarget]] = []
+        if extra_depends:
+            for d in extra_depends:
+                if isinstance(d, LocalProgram):
+                    d = d.get_target()
+                elif isinstance(d, programs.Program):
+                    path = d.get_path()
+                    # Can only add a dependency on an external program which we
+                    # know the absolute path of
+                    if not os.path.isabs(path):
+                        continue
+                    d = File.from_absolute_file(path)
+                if isinstance(d, File):
+                    self.depend_files.append(d)
+                else:
+                    self.extra_depends.append(d)
+
     def install_dir_names(self) -> T.List[T.Optional[str]]:
         install_dir_names: T.List[T.Optional[str]] = []
         if self.has_custom_install_dir:
@@ -3053,8 +3071,8 @@ class CustomTarget(Target, CustomTargetBase, CommandBase):
         repr_str = "<{0} {1}: {2}>"
         return repr_str.format(self.__class__.__name__, self.get_id(), self.command)
 
-    def get_target_dependencies(self) -> T.List[T.Union[SourceOutputs, str]]:
-        deps: T.List[T.Union[SourceOutputs, str]] = []
+    def get_target_dependencies(self) -> T.List[TargetDepends]:
+        deps: T.List[TargetDepends] = []
         deps.extend(self.dependencies)
         deps.extend(self.extra_depends)
         for c in self.sources:
@@ -3252,7 +3270,8 @@ class RunTarget(Target, CommandBase):
 
     def __init__(self, name: str,
                  command: T.Sequence[T.Union[str, File, BuildTargetTypes, programs.Program]],
-                 dependencies: T.Sequence[AnyTargetType],
+                 # the RunTarget case is used by gnome.yelp()
+                 dependencies: T.Sequence[T.Union[RunTarget, TargetDepends]],
                  subdir: str,
                  subproject: str,
                  environment: Environment,
@@ -3260,7 +3279,7 @@ class RunTarget(Target, CommandBase):
                  default_env: bool = True):
         # These don't produce output artifacts
         super().__init__(name, subdir, subproject, False, MachineChoice.BUILD, environment)
-        self.dependencies = dependencies
+        self.dependencies = list(dependencies)
         self.depend_files = []
         self.command = self.flatten_command(command)
         self.absolute_paths = False
@@ -3271,7 +3290,7 @@ class RunTarget(Target, CommandBase):
         repr_str = "<{0} {1}: {2}>"
         return repr_str.format(self.__class__.__name__, self.get_id(), self.command[0])
 
-    def get_dependencies(self) -> T.List[BuildTargetTypes]:
+    def get_dependencies(self) -> T.List[T.Union[RunTarget, TargetDepends]]:
         return self.dependencies
 
     def get_generated_sources(self) -> T.List[GeneratedTypes]:
@@ -3500,12 +3519,17 @@ class ConfigurationData(HoldableObject):
         return self.values.keys()
 
 class LocalProgram(programs.Program):
-    def __init__(self, program: T.Union[programs.ExternalProgram, Executable, CustomTarget, CustomTargetIndex], version: str) -> None:
+    def __init__(self, program: T.Union[programs.ExternalProgram, Executable, CustomTarget, CustomTargetIndex], version: str,
+                 file: T.Optional[File] = None) -> None:
         super().__init__()
         if isinstance(program, CustomTarget):
             if len(program.outputs) != 1:
                 raise InvalidArguments('CustomTarget used as LocalProgram must have exactly one output.')
+        if isinstance(program, programs.ExternalProgram):
+            if not file:
+                raise MesonBugException('ExternalProgram used as LocalProgram must be a file from the project')
         self.name = program.name
+        self.file = file
         self.for_machine = program.for_machine
         self.program = program
         self.version = version
@@ -3527,6 +3551,12 @@ class LocalProgram(programs.Program):
             return self.program.get_path()
         # Only the backend knows the actual path to the build program.
         raise MesonBugException('Cannot call get_path() on program that is a build target.')
+
+    def get_target(self) -> T.Union[File, Executable, CustomTarget, CustomTargetIndex]:
+        if self.file:
+            return self.file
+        assert not isinstance(self.program, programs.ExternalProgram)
+        return self.program
 
     def description(self) -> str:
         if isinstance(self.program, programs.ExternalProgram):
@@ -3577,10 +3607,11 @@ class TestSetup:
     env: EnvironmentVariables
     exclude_suites: T.List[str]
 
-def get_sources_string_names(sources, backend):
+
+def get_sources_string_names(sources: T.Sequence[CustomTargetSources], backend: Backend) -> list[str]:
     '''
-    For the specified list of @sources which can be strings, Files, or targets,
-    get all the output basenames.
+    For the specified list of @sources which can be strings, Files,
+    ExternalPrograms, or targets, get all the output basenames.
     '''
     names = []
     for s in sources:
@@ -3590,8 +3621,10 @@ def get_sources_string_names(sources, backend):
             names += backend.determine_ext_objs(s)
         elif isinstance(s, File):
             names.append(s.fname)
+        elif isinstance(s, programs.ExternalProgram):
+            names.append(s.get_path())
         else:
-            raise AssertionError(f'Unknown source type: {s!r}')
+            raise MesonBugException(f'Unknown source type: {s!r}')
     return names
 
 def load(build_dir: str) -> Build:

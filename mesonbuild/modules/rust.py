@@ -31,14 +31,15 @@ from ..programs import ExternalProgram, NonExistingExternalProgram
 if T.TYPE_CHECKING:
     from . import ModuleState
     from .. import cargo
-    from ..build import BuildTargetTypes, ExecutableKeywordArguments, IncludeDirs, LibTypes
+    from ..build import BuildTargetTypes, ExecutableKeywordArguments, GeneratedTypes, IncludeDirs, LibTypes
     from ..cargo.interpreter import RUST_ABI
     from ..compilers.compilers import Language
     from ..compilers.rust import RustCompiler
     from ..dependencies import ExternalLibrary
     from ..interpreter import Interpreter
     from ..interpreter import kwargs as _kwargs
-    from ..interpreter.interpreter import SourceInputs, SourceOutputs
+    from ..interpreter.kwargs import TargetDepends
+    from ..interpreter.interpreter import SourceOutputs
     from ..interpreter.interpreterobjects import Test
     from ..interpreterbase import TYPE_kwargs
     from ..programs import Program
@@ -64,7 +65,7 @@ if T.TYPE_CHECKING:
         args: T.List[str]
         c_args: T.List[str]
         include_directories: T.List[IncludeDirs]
-        input: T.List[SourceInputs]
+        input: T.List[T.Union[File, str, GeneratedTypes, BuildTarget, BothLibraries, ExtractedObjects]]
         output: str
         output_inline_wrapper: str
         dependencies: T.List[T.Union[Dependency, ExternalLibrary]]
@@ -778,14 +779,23 @@ class RustModule(ExtensionModule):
         The main thing this simplifies is the use of `include_directory`
         objects, instead of having to pass a plethora of `-I` arguments.
         """
-        header, *_deps = self.interpreter.source_strings_to_files(kwargs['input'])
+        _header, *_deps = kwargs['input']
+
+        if isinstance(_header, (BuildTarget, BothLibraries, ExtractedObjects)):
+            raise InterpreterException('bindgen source file must be a C header, not an object or build target')
+        header = self.interpreter.source_strings_to_files([_header])[0]
 
         # Split File and Target dependencies to add pass to CustomTarget
-        depends: T.List[SourceOutputs] = []
+        depends: T.List[TargetDepends] = []
         depend_files: T.List[File] = []
-        for d in _deps:
+        for d in self.interpreter.source_strings_to_files(_deps):
             if isinstance(d, File):
                 depend_files.append(d)
+            elif isinstance(d, BothLibraries):
+                depends.append(d.shared)
+                depends.append(d.static)
+            elif isinstance(d, ExtractedObjects):
+                depends.append(d.target)
             else:
                 depends.append(d)
 
@@ -855,8 +865,6 @@ class RustModule(ExtensionModule):
         name: str
         if isinstance(header, File):
             name = header.fname
-        elif isinstance(header, (BuildTarget, BothLibraries, ExtractedObjects, StructuredSources)):
-            raise InterpreterException('bindgen source file must be a C header, not an object or build target')
         else:
             name = header.get_outputs()[0]
 

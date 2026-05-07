@@ -9,7 +9,7 @@ import typing as T
 
 from .. import compilers
 from ..build import (CustomTarget, BuildTarget,
-                     CustomTargetIndex, ExtractedObjects, GeneratedList, IncludeDirs,
+                     CustomTargetIndex, ExtractedObjects, GeneratedList, IncludeDirs, LocalProgram,
                      BothLibraries, SharedLibrary, StaticLibrary, Jar, Executable, StructuredSources)
 from ..options import OptionKey
 from ..dependencies import Dependency, DependencyMethods, InternalDependency
@@ -25,6 +25,7 @@ NoneType: T.Type[None] = type(None)
 if T.TYPE_CHECKING:
     from typing_extensions import Literal
 
+    from .kwargs import CustomTargetInputs
     from ..build import ObjectTypes, GeneratedTypes, BuildTargetTypes
     from ..interpreterbase import TYPE_var
     from ..options import ElementaryOptionValues
@@ -271,12 +272,12 @@ DEPFILE_KW: KwargInfo[T.Optional[str]] = KwargInfo(
     validator=lambda x: 'Depfile must be a plain filename with a subdirectory' if has_path_sep(x) else None
 )
 
-DEPENDS_KW: KwargInfo[T.List[BuildTargetTypes]] = KwargInfo(
+DEPENDS_KW: KwargInfo[T.List[T.Union[BuildTarget, CustomTarget, CustomTargetIndex, Program]]] = KwargInfo(
     'depends',
-    ContainerTypeInfo(list, (BuildTarget, CustomTarget, CustomTargetIndex)),
+    ContainerTypeInfo(list, (BuildTarget, CustomTarget, CustomTargetIndex, Program)),
     listify=True,
     default=[],
-    since_values={CustomTargetIndex: '1.5.0'},
+    since_values={CustomTargetIndex: '1.5.0', ExternalProgram: '1.11.2'},
 )
 
 DEPEND_FILES_KW: KwargInfo[T.List[T.Union[str, File]]] = KwargInfo(
@@ -351,11 +352,22 @@ OUTPUT_KW: KwargInfo[str] = KwargInfo(
     validator=lambda x: _output_validator([x])
 )
 
-CT_INPUT_KW: KwargInfo[T.List[T.Union[str, File, ExternalProgram, BuildTarget, GeneratedTypes, ExtractedObjects]]] = KwargInfo(
+def _local_program_convertor(raw: T.List[T.Union[str, File, BuildTarget, GeneratedTypes, ExtractedObjects, LocalProgram]]) -> T.List[CustomTargetInputs]:
+    result: T.List[CustomTargetInputs] = []
+    for i in raw:
+        if isinstance(i, LocalProgram):
+            result.append(i.get_target())
+        else:
+            result.append(i)
+    return result
+
+CT_INPUT_KW: KwargInfo[T.List[T.Union[str, File, BuildTarget, GeneratedTypes, ExtractedObjects, LocalProgram]]] = KwargInfo(
     'input',
-    ContainerTypeInfo(list, (str, File, ExternalProgram, BuildTarget, CustomTarget, CustomTargetIndex, ExtractedObjects, GeneratedList)),
+    ContainerTypeInfo(list, (str, File, BuildTarget, CustomTarget, CustomTargetIndex, ExtractedObjects, GeneratedList, Program)),
     listify=True,
     default=[],
+    convertor=_local_program_convertor,
+    since_values={ExternalProgram: '1.11.2'},
 )
 
 CT_INSTALL_TAG_KW: KwargInfo[T.List[T.Union[str, bool]]] = KwargInfo(

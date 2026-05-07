@@ -1181,11 +1181,12 @@ class Backend:
             exe = t.get_exe()
             if isinstance(exe, build.LocalProgram):
                 exe = exe.program
-            if isinstance(exe, programs.Program):
-                cmd = exe.get_command()
-            else:
+            if isinstance(exe, (build.BuildTarget, build.CustomTarget, build.CustomTargetIndex)):
                 cmd = [os.path.join(self.environment.get_build_dir(), self.get_target_filename(exe))]
-            if isinstance(exe, (build.BuildTarget, programs.Program)):
+            else:
+                cmd = exe.get_command()
+
+            if isinstance(exe, (build.BuildTarget, programs.ExternalProgram)):
                 test_for_machine = exe.for_machine
             else:
                 # E.g. an external verifier or simulator program run on a generated executable.
@@ -1217,16 +1218,14 @@ class Backend:
                 extra_paths = []
 
             cmd_args: T.List[str] = []
-            depends: T.Set[build.Target] = set(t.depends)
-            if isinstance(exe, build.Target):
+            depends: T.Set[build.BuildTargetTypes] = set(t.depends)
+            if isinstance(exe, (build.BuildTarget, build.CustomTarget, build.CustomTargetIndex)):
                 depends.add(exe)
             for a in t.cmd_args:
                 if isinstance(a, build.LocalProgram):
                     a = a.program
-                if isinstance(a, build.Target):
+                if isinstance(a, (build.BuildTarget, build.CustomTarget, build.CustomTargetIndex)):
                     depends.add(a)
-                elif isinstance(a, build.CustomTargetIndex):
-                    depends.add(a.target)
 
                 if isinstance(a, mesonlib.File):
                     a = os.path.join(self.environment.get_build_dir(), a.rel_to_builddir(self.build_to_src))
@@ -1469,7 +1468,7 @@ class Backend:
             srcs += fname
         return srcs
 
-    def get_target_depend_files(self, target: T.Union[build.CustomTarget, build.BuildTarget], absolute_paths: bool = False) -> T.List[str]:
+    def get_target_depend_files(self, target: T.Union[build.CustomTarget, build.BuildTarget, build.GeneratedList], absolute_paths: bool = False) -> T.List[str]:
         deps: T.List[str] = []
         for i in target.depend_files:
             if isinstance(i, mesonlib.File):

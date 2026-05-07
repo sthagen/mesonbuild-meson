@@ -1068,7 +1068,7 @@ class Interpreter(InterpreterBase, HoldableObject):
 
             return self._do_subproject_meson(
                 subp_name, subdir, default_options, kwargs, ast,
-                relaxations={InterpreterRuleRelaxation.CARGO_SUBDIR},
+                relaxations={InterpreterRuleRelaxation.CARGO_SUBDIR} if ast is not None else None,
                 cargo=cargo_int)
 
     @typed_pos_args('get_option', str)
@@ -2252,7 +2252,7 @@ class Interpreter(InterpreterBase, HoldableObject):
     @typed_pos_args('benchmark', str, (build.Executable, build.Jar, Program, mesonlib.File, build.CustomTarget, build.CustomTargetIndex))
     @typed_kwargs('benchmark', *TEST_KWS)
     def func_benchmark(self, node: mparser.BaseNode,
-                       args: T.Tuple[str, T.Union[build.Executable, build.Jar, Program, mesonlib.File]],
+                       args: T.Tuple[str, T.Union[build.Executable, build.Jar, Program, mesonlib.File, build.CustomTarget, build.CustomTargetIndex]],
                        kwargs: 'kwtypes.FuncBenchmark') -> None:
         self.add_test(node, args, kwargs, False)
 
@@ -2282,12 +2282,8 @@ class Interpreter(InterpreterBase, HoldableObject):
                              location=node)
             name = name.replace(':', '_')
         exe = args[1]
-        if isinstance(exe, Program):
-            if not exe.found():
-                raise InvalidArguments('Tried to use not-found external program as test exe')
-            if isinstance(exe, build.LocalProgram):
-                # This will add exe to 'depends' below
-                exe = exe.program
+        if isinstance(exe, Program) and not exe.found():
+            raise InvalidArguments('Tried to use not-found external program as test exe')
         elif isinstance(exe, mesonlib.File):
             exe = self.find_program_impl([exe])
         if isinstance(exe, (build.Executable, build.CustomTarget)):
@@ -3228,6 +3224,10 @@ class Interpreter(InterpreterBase, HoldableObject):
     def source_strings_to_files(self, sources: T.List[kwtypes.CustomTargetInputs]) -> T.List['CustomTargetSources']: ... # noqa: F811
 
     @T.overload
+    def source_strings_to_files(self, sources: T.List[T.Union[mesonlib.FileOrString, build.BuildTargetTypes, build.BothLibraries, build.ExtractedObjects, build.GeneratedTypes]]
+                                ) -> T.List[T.Union[mesonlib.File, build.BuildTargetTypes, build.BothLibraries, build.ExtractedObjects, build.GeneratedTypes]]: ... # noqa: F811
+
+    @T.overload
     def source_strings_to_files(self, sources: T.List[T.Union[mesonlib.FileOrString, build.GeneratedTypes, build.StructuredSources]]
                                 ) -> T.List[T.Union[mesonlib.File, build.GeneratedTypes, build.StructuredSources]]: ... # noqa: F811
 
@@ -3260,9 +3260,8 @@ class Interpreter(InterpreterBase, HoldableObject):
                 else:
                     self.validate_within_subproject(self.subdir, s)
                     results.append(mesonlib.File.from_source_file(self.environment.source_dir, self.subdir, s))
-            elif isinstance(s, mesonlib.File):
-                results.append(s)
-            elif isinstance(s, (build.GeneratedList, build.BuildTarget,
+            elif isinstance(s, (mesonlib.File, ExternalProgram,
+                                build.GeneratedList, build.BuildTarget,
                                 build.CustomTargetIndex, build.CustomTarget,
                                 build.ExtractedObjects, build.StructuredSources)):
                 results.append(s)
