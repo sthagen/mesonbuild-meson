@@ -23,7 +23,7 @@ from ..interpreter.type_checking import (
     OUTPUT_KW, INCLUDE_DIRECTORIES, SOURCES_VARARGS, NATIVE_KW, NoneType, in_set_validator,
     EXECUTABLE_KWS, LIBRARY_KWS, SHARED_MOD_KWS, _BASE_LANG_KW
 )
-from ..interpreterbase import ContainerTypeInfo, InterpreterException, KwargInfo, typed_kwargs, typed_pos_args, noKwargs, noPosargs, permittedKwargs
+from ..interpreterbase import ContainerTypeInfo, InterpreterException, KwargInfo, typed_kwargs, typed_pos_args, noKwargs, noPosargs
 from ..interpreter.interpreterobjects import Doctest
 from ..mesonlib import (is_parent_path, File, MachineChoice, MesonException, PerMachine)
 from ..programs import ExternalProgram, NonExistingExternalProgram
@@ -31,7 +31,7 @@ from ..programs import ExternalProgram, NonExistingExternalProgram
 if T.TYPE_CHECKING:
     from . import ModuleState
     from .. import cargo
-    from ..build import BuildTargetTypes, ExecutableKeywordArguments, GeneratedTypes, IncludeDirs, LibTypes
+    from ..build import ExecutableKeywordArguments, GeneratedTypes, IncludeDirs, LinkableTargetTypes
     from ..cargo.interpreter import RUST_ABI
     from ..compilers.compilers import Language
     from ..compilers.rust import RustCompiler
@@ -53,7 +53,7 @@ if T.TYPE_CHECKING:
         args: T.List[ArgsType]
         dependencies: T.List[T.Union[Dependency, ExternalLibrary]]
         is_parallel: bool
-        link_with: T.List[LibTypes]
+        link_with: T.List[LinkableTargetTypes]
         link_whole: T.List[T.Union[StaticLibrary, CustomTarget, CustomTargetIndex]]
         rust_args: T.List[str]
 
@@ -106,6 +106,12 @@ EXECUTABLE_KWS_NO_NATIVE = [kwi for kwi in EXECUTABLE_KWS if kwi.name != 'native
 LIBRARY_KWS_NO_NATIVE = [kwi for kwi in LIBRARY_KWS if kwi.name != 'native']
 SHARED_LIB_KWS_NO_NATIVE = [kwi for kwi in SHARED_LIB_KWS if kwi.name != 'native']
 SHARED_MOD_KWS_NO_NATIVE = [kwi for kwi in SHARED_MOD_KWS if kwi.name != 'native']
+
+_ALLOWED_PROC_MACRO_KWS = {
+    'rust_args', 'rust_dependency_map', 'sources', 'dependencies',
+    'extra_files', 'link_args', 'link_depends', 'link_with', 'override_options',
+}
+_PROC_MACRO_KWS = [s for s in SHARED_LIB_KWS if s.name in _ALLOWED_PROC_MACRO_KWS]
 
 
 def no_spaces_validator(arg: T.Optional[T.Union[str, T.List]]) -> T.Optional[str]:
@@ -643,7 +649,7 @@ class RustModule(ExtensionModule):
 
         new_target_kwargs['install'] = False
         new_target_kwargs['dependencies'] = new_target_kwargs.get('dependencies', []) + kwargs['dependencies']
-        new_target_kwargs['link_with'] = new_target_kwargs.get('link_with', []) + T.cast('T.List[BuildTargetTypes]', kwargs['link_with'])
+        new_target_kwargs['link_with'] = new_target_kwargs.get('link_with', []) + kwargs['link_with']
         new_target_kwargs['link_whole'] = new_target_kwargs.get('link_whole', []) + kwargs['link_whole']
 
         lang_args = base_target.extra_args.copy()
@@ -972,17 +978,20 @@ class RustModule(ExtensionModule):
         else:
             raise MesonException(f'No Rust compiler was requested for the {for_machine} machine')
 
-    # Allow a limited set of kwargs, but still use the full set of typed_kwargs()
-    # because it could be setting required default values.
     @FeatureNew('rust.proc_macro', '1.3.0')
-    @permittedKwargs({'rust_args', 'rust_dependency_map', 'sources', 'dependencies', 'extra_files',
-                      'link_args', 'link_depends', 'link_with', 'override_options'})
     @typed_pos_args('rust.proc_macro', str, varargs=SOURCES_VARARGS)
-    @typed_kwargs('rust.proc_macro', *SHARED_LIB_KWS)
+    @typed_kwargs('rust.proc_macro', *_PROC_MACRO_KWS)
     def proc_macro(self, state: ModuleState, args: T.Tuple[str, SourcesVarargsType], kwargs: _kwargs.SharedLibrary) -> SharedLibrary:
         kwargs['native'] = MachineChoice.BUILD
         kwargs['rust_crate_type'] = 'proc-macro'
         kwargs['rust_args'] = kwargs['rust_args'] + ['--extern', 'proc_macro']
+
+        # Set any kwargs to default that haven't already been set
+        for s in SHARED_LIB_KWS:
+            if s.name in kwargs:
+                continue
+            kwargs[s.name] = s.default  # type: ignore[literal-required]
+
         target = state._interpreter.build_target(state.current_node, args, kwargs, SharedLibrary)
         return target
 
