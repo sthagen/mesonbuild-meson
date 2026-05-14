@@ -62,7 +62,7 @@ if T.TYPE_CHECKING:
 # Languages that can mix with C or C++ but don't support unity builds yet
 # because the syntax we use for unity builds is specific to C/++/ObjC/++.
 # Assembly files cannot be unitified and neither can LLVM IR files
-LANGS_CANT_UNITY = ('d', 'fortran', 'vala', 'rust')
+LANGS_CANT_UNITY: T.FrozenSet[Language] = frozenset({'d', 'fortran', 'vala', 'rust'})
 
 @dataclass(eq=False)
 class RegenInfo:
@@ -435,7 +435,7 @@ class Backend:
         osrc = f'{target.name}-unity{number}.{suffix}'
         return mesonlib.File.from_built_file(self.get_target_private_dir(target), osrc)
 
-    def generate_unity_files(self, target: build.BuildTarget, unity_src: str) -> T.List[mesonlib.File]:
+    def generate_unity_files(self, target: build.BuildTarget, unity_src: T.List[str]) -> T.List[mesonlib.File]:
         abs_files: T.List[str] = []
         result: T.List[mesonlib.File] = []
         compsrcs = classify_unity_sources(target.compilers.values(), unity_src)
@@ -542,7 +542,7 @@ class Backend:
     def get_executable_serialisation(
             self, cmd: T.Sequence[T.Union[programs.Program, build.BuildTargetTypes, File, str]],
             workdir: T.Optional[str] = None,
-            extra_bdeps: T.Optional[T.List[build.BuildTarget]] = None,
+            extra_bdeps: T.Optional[T.Sequence[build.BuildTargetTypes]] = None,
             capture: T.Optional[str] = None,
             feed: T.Optional[str] = None,
             env: T.Optional[mesonlib.EnvironmentVariables] = None,
@@ -632,7 +632,7 @@ class Backend:
     def as_meson_exe_cmdline(self, exe: T.Union[str, mesonlib.File, build.BuildTargetTypes, programs.Program],
                              cmd_args: T.Sequence[T.Union[str, mesonlib.File, build.BuildTargetTypes, programs.Program]],
                              workdir: T.Optional[str] = None,
-                             extra_bdeps: T.Optional[T.List[build.BuildTarget]] = None,
+                             extra_bdeps: T.Optional[T.Sequence[build.BuildTargetTypes]] = None,
                              capture: T.Optional[str] = None,
                              feed: T.Optional[str] = None,
                              force_serialize: bool = False,
@@ -783,7 +783,7 @@ class Backend:
                     rel_src = rel_src[len(build_dir) + 1:]
                 rel_src = os.path.relpath(rel_src, self.get_target_private_dir(target))
             else:
-                rel_src = os.path.basename(rel_src)
+                rel_src = os.path.relpath(rel_src, os.path.join(self.build_to_src, target.get_subdir()))
             # A meson- prefixed directory is reserved; hopefully no-one creates a file name with such a weird prefix.
             gen_source = 'meson-generated_' + rel_src[:-5] + '.c'
         elif source.is_built:

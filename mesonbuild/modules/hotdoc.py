@@ -28,11 +28,17 @@ if T.TYPE_CHECKING:
     from . import ModuleState
     from ..environment import Environment
     from ..interpreter import Interpreter
-    from ..interpreterbase import TYPE_kwargs, TYPE_var
+    from ..interpreter.kwargs import TargetDepends
+    from ..interpreterbase import TYPE_kwargs, TYPE_var, SubProject
 
     _T = T.TypeVar('_T')
 
-    class GenerateDocKwargs(TypedDict):
+    # there is currently no way to represent the arbitrary key/value paris that
+    # the hotdoc module allows.
+    #
+    # PEP-728, which is due in Python 3.15, will fix this, we can then add a new
+    # extra_items=str keyword argument.
+    class GenerateDocKwargs(TypedDict, total=False):
         sitemap: T.Union[str, File, CustomTarget, CustomTargetIndex]
         index: T.Union[str, File, CustomTarget, CustomTargetIndex]
         project_version: str
@@ -45,6 +51,8 @@ if T.TYPE_CHECKING:
         extra_extension_paths: T.List[str]
         subprojects: T.List['HotdocTarget']
         install: bool
+        build_by_default: bool
+
 
 def ensure_list(value: T.Union[_T, T.List[_T]]) -> T.List[_T]:
     if not isinstance(value, list):
@@ -64,7 +72,7 @@ class HotdocExternalProgram(ExternalProgram):
 
 class HotdocTargetBuilder:
 
-    def __init__(self, name: str, state: ModuleState, hotdoc: HotdocExternalProgram, interpreter: Interpreter, kwargs):
+    def __init__(self, name: str, state: ModuleState, hotdoc: HotdocExternalProgram, interpreter: Interpreter, kwargs: GenerateDocKwargs):
         self.hotdoc = hotdoc
         self.build_by_default = kwargs.pop('build_by_default', False)
         self.kwargs = kwargs
@@ -81,16 +89,15 @@ class HotdocTargetBuilder:
         self.cmd: T.List[TYPE_var] = ['conf', '--project-name', name, "--disable-incremental-build",
                                       '--output', os.path.join(self.builddir, self.subdir, self.name + '-doc')]
 
-        self._extra_extension_paths = set()
-        self.extra_assets = set()
-        self.extra_depends = []
-        self._subprojects = []
+        self._extra_extension_paths: set[str] = set()
+        self.extra_depends: list[build.BuildTargetTypes] = []
+        self._subprojects: list[HotdocTarget] = []
 
     def process_known_arg(self, option: str, argname: T.Optional[str] = None, value_processor: T.Optional[T.Callable] = None) -> None:
         if not argname:
             argname = option.strip("-").replace("-", "_")
 
-        value = self.kwargs.pop(argname)
+        value = self.kwargs.pop(argname)  # type: ignore[misc]
         if value is not None and value_processor:
             value = value_processor(value)
 
@@ -143,8 +150,8 @@ class HotdocTargetBuilder:
     def process_extra_args(self) -> None:
         for arg, value in self.kwargs.items():
             option = "--" + arg.replace("_", "-")
-            self.check_extra_arg_type(arg, value)
-            self.set_arg_value(option, value)
+            self.check_extra_arg_type(arg, value)  # type: ignore[arg-type]
+            self.set_arg_value(option, value)  # type: ignore[arg-type]
 
     def add_extension_paths(self, paths: T.Union[T.List[str], T.Set[str]]) -> None:
         for path in paths:
@@ -169,7 +176,9 @@ class HotdocTargetBuilder:
 
         self.cmd += ['--gi-c-source-roots'] + value
 
-    def process_dependencies(self, deps: T.List[T.Union[Dependency, build.StaticLibrary, build.SharedLibrary, CustomTarget, CustomTargetIndex]]) -> T.List[str]:
+    def process_dependencies(self, deps: T.Sequence[TargetDepends | Dependency | File | build.ExtractedObjects | build.StructuredSources]) -> T.List[str]:
+        # build.StructuredSources and build.ExtractedObjects shouldn't actually
+        # happen here, but we get them from Dependency.
         cflags = set()
         for dep in mesonlib.listify(ensure_list(deps)):
             if isinstance(dep, InternalDependency):
@@ -241,9 +250,18 @@ class HotdocTargetBuilder:
             raise MesonException('hotdoc failed to configure')
         os.chdir(cwd)
 
-    def ensure_file(self, value: T.Union[str, File, CustomTarget, CustomTargetIndex]) -> T.Union[File, CustomTarget, CustomTargetIndex]:
+    @T.overload
+    def ensure_file(self, value: list[str | File | CustomTarget | CustomTargetIndex]
+                    ) -> list[File | CustomTarget | CustomTargetIndex]: ...
+
+    @T.overload
+    def ensure_file(self, value: str | File | CustomTarget | CustomTargetIndex
+                    ) -> File | CustomTarget | CustomTargetIndex: ...
+
+    def ensure_file(self, value: str | File | CustomTarget | CustomTargetIndex | list[str | File | CustomTarget | CustomTargetIndex]
+                    ) -> File | CustomTarget | CustomTargetIndex | list[File | CustomTarget | CustomTargetIndex]:
         if isinstance(value, list):
-            res = []
+            res: list[File | CustomTarget | CustomTargetIndex] = []
             for val in value:
                 res.append(self.ensure_file(val))
             return res
@@ -329,7 +347,11 @@ class HotdocTargetBuilder:
 
         install_script = None
         if install:
-            datadir = os.path.join(self.state.get_option('prefix'), self.state.get_option('datadir'))
+            prefix = self.state.get_option('prefix')
+            assert isinstance(prefix, str), 'for mypy'
+            datadir = self.state.get_option('datadir')
+            assert isinstance(datadir, str), 'for mypy'
+            datadir = os.path.join(prefix, datadir)
             devhelp = self.kwargs.get('devhelp_activate', False)
             if not isinstance(devhelp, bool):
                 FeatureDeprecated.single_use('hotdoc.generate_doc() devhelp_activate must be boolean', '1.1.0', self.state.subproject)
@@ -365,7 +387,7 @@ class HotdocTargetHolder(_CustomTargetHolder['HotdocTarget']):
 
 
 class HotdocTarget(CustomTarget):
-    def __init__(self, name: str, subdir: str, subproject: str, hotdoc_conf: File,
+    def __init__(self, name: str, subdir: str, subproject: SubProject, hotdoc_conf: File,
                  extra_extension_paths: T.Set[str], extra_assets: T.List[str],
                  subprojects: T.List['HotdocTarget'], environment: Environment, **kwargs: T.Any):
         super().__init__(name, subdir, subproject, environment, **kwargs, absolute_paths=True)
@@ -433,6 +455,7 @@ class HotDocModule(ExtensionModule):
         KwargInfo('extra_extension_paths', ContainerTypeInfo(list, str), listify=True, default=[]),
         KwargInfo('subprojects', ContainerTypeInfo(list, HotdocTarget), listify=True, default=[]),
         KwargInfo('install', bool, default=False),
+        KwargInfo('build_by_default', bool, default=False),
         allow_unknown=True
     )
     def generate_doc(self, state: ModuleState, args: T.Tuple[str], kwargs: GenerateDocKwargs) -> ModuleReturnValue:
