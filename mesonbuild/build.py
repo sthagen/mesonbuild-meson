@@ -20,9 +20,9 @@ from . import dependencies
 from . import mlog
 from . import programs
 from .mesonlib import (
-    HoldableObject, SecondLevelHolder, SimpleABC,
+    HoldableObject, SecondLevelHolder, SimpleABC, SubProject,
     File, MesonException, MachineChoice, PerMachine, OrderedSet,
-    classify_unity_sources,
+    classify_unity_sources, ROOT_SUBPROJECT,
     get_filenames_templates_dict, substitute_values, has_path_sep,
     is_parent_path, relpath, PerMachineDefaultable,
     MesonBugException, EnvironmentVariables, pickle_load, lazy_property,
@@ -34,7 +34,7 @@ from .compilers import (
     is_known_suffix, detect_static_linker, LANGUAGES_USING_LDFLAGS,
     get_base_compile_args
 )
-from .interpreterbase import FeatureNew, FeatureDeprecated, SubProject
+from .interpreterbase import FeatureNew, FeatureDeprecated
 
 if T.TYPE_CHECKING:
     from typing_extensions import Literal, Self, TypeAlias, TypedDict
@@ -453,7 +453,7 @@ class Build:
                 self.static_linker[MachineChoice.BUILD] = self.static_linker[MachineChoice.HOST]
 
     def get_project(self) -> str:
-        return self.projects[SubProject('')].name
+        return self.projects[ROOT_SUBPROJECT].name
 
     def get_subproject_dir(self) -> str:
         return self.subproject_dir
@@ -3594,6 +3594,9 @@ class LocalProgram(programs.Program):
 
     def runnable(self) -> bool:
         return isinstance(self.program, programs.ExternalProgram)
+
+    def get_name(self) -> str:
+        return self.name
 
 # A bit poorly named, but this represents plain data files to copy
 # during install.

@@ -12,9 +12,9 @@ import typing as T
 from .. import compilers, environment, mesonlib
 from ..build import Executable, Jar, SharedLibrary, SharedModule, StaticLibrary
 from ..compilers import detect_compiler_for
-from ..interpreterbase import InvalidArguments, SubProject, UnknownValue, Feature
+from ..interpreterbase import InvalidArguments, UnknownValue, Feature
 from ..interpreter import type_checking
-from ..mesonlib import MachineChoice
+from ..mesonlib import MachineChoice, SubProject
 from ..options import OptionKey
 from ..mparser import BaseNode, ArrayNode, ElementaryNode, IdNode, FunctionNode, StringNode
 from .interpreter import AstInterpreter, IntrospectionBuildTarget, IntrospectionDependency
@@ -67,7 +67,7 @@ class IntrospectionInterpreter(AstInterpreter):
                  backend: str,
                  visitors: T.Optional[T.List[AstVisitor]] = None,
                  cross_file: T.Optional[str] = None,
-                 subproject: SubProject = SubProject(''),
+                 subproject: SubProject = mesonlib.ROOT_SUBPROJECT,
                  subproject_dir: str = 'subprojects',
                  env: T.Optional[environment.Environment] = None):
         options = IntrospectionHelper(cross_file)

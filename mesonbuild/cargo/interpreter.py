@@ -24,10 +24,10 @@ from . import builder, version
 from .cfg import eval_cfg
 from .toml import load_toml
 from .manifest import Manifest, CargoLock, CargoLockPackage, Workspace, fixup_meson_varname
-from ..interpreterbase import SubProject
 from ..mesonlib import (
     is_parent_path, lazy_property, MesonException, MachineChoice,
-    unique_list, version_compare)
+    unique_list, version_compare, SubProject,
+)
 from .. import coredata, mlog
 from ..wrap.wrap import PackageDefinition
 
@@ -155,8 +155,8 @@ class PackageState:
             args.extend(lint.to_arguments(has_check_cfg))
 
         if has_check_cfg:
-            args.append('--check-cfg')
-            args.append('cfg(test)')
+            args.extend(['--check-cfg', 'cfg(docsrs)',
+                         '--check-cfg', 'cfg(test)'])
             for feature in self.manifest.features:
                 if feature != 'default':
                     args.append('--check-cfg')
@@ -913,7 +913,7 @@ def load_cargo_lock(filename: str, subproject_dir: str) -> T.Optional[CargoLock]
                     checksum = cargolock.metadata[f'checksum {package.name} {package.version} ({package.source})']
                 url = f'https://crates.io/api/v1/crates/{package.name}/{package.version}/download'
                 directory = f'{package.name}-{package.version}'
-                name = meson_depname
+                name = SubProject(meson_depname)
                 wrap_type = 'file'
                 cfg = {
                     'directory': directory,
@@ -924,7 +924,7 @@ def load_cargo_lock(filename: str, subproject_dir: str) -> T.Optional[CargoLock]
                 }
             elif package.source.startswith('git+'):
                 url, revision, directory = _parse_git_url(package.source)
-                name = directory
+                name = SubProject(directory)
                 wrap_type = 'git'
                 cfg = {
                     'url': url,

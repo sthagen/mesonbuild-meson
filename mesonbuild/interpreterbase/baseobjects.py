@@ -7,7 +7,7 @@ from .. import mparser
 from .exceptions import InvalidCode, InvalidArguments
 from .helpers import flatten, resolve_second_level_holders
 from .operator import MesonOperator
-from ..mesonlib import HoldableObject, MesonBugException, SimpleABC
+from ..mesonlib import HoldableObject, MesonBugException, SimpleABC, SubProject, ROOT_SUBPROJECT
 import textwrap
 
 import typing as T
@@ -31,9 +31,6 @@ TYPE_key_resolver = T.Callable[[mparser.BaseNode], str]
 TYPE_op_arg = T.TypeVar('TYPE_op_arg', bound='TYPE_var', contravariant=True)
 TYPE_op_func = T.Callable[[TYPE_op_arg, TYPE_op_arg], TYPE_var]
 TYPE_method_func = T.Callable[['InterpreterObject', T.List[TYPE_var], TYPE_kwargs], TYPE_var]
-
-
-SubProject = T.NewType('SubProject', str)
 
 class InterpreterObject:
     TRIVIAL_OPERATORS: T.Dict[
@@ -105,7 +102,7 @@ class InterpreterObject:
         # Current node set during a method call. This can be used as location
         # when printing a warning message during a method call.
         self.current_node:  mparser.BaseNode = None
-        self.subproject = subproject or SubProject('')
+        self.subproject = subproject or ROOT_SUBPROJECT
 
     # The type of the object that can be printed to the user
     def display_name(self) -> str:
