@@ -483,7 +483,7 @@ class Backend:
                                os.path.join('dummyprefixdir', fromdir))
 
     def flatten_object_list(self, target: build.BuildTarget, proj_dir_to_build_root: str = ''
-                            ) -> T.Tuple[T.List[str], T.List[build.BuildTargetTypes]]:
+                            ) -> T.Tuple[T.List[str], T.List[build.BuildTarget]]:
         obj_list, deps = self._flatten_object_list(target, target.get_objects(), proj_dir_to_build_root)
         return unique_list(obj_list), deps
 
@@ -493,9 +493,9 @@ class Backend:
 
     def _flatten_object_list(self, target: build.BuildTarget,
                              objects: T.Sequence[build.ObjectTypes],
-                             proj_dir_to_build_root: str) -> T.Tuple[T.List[str], T.List[build.BuildTargetTypes]]:
+                             proj_dir_to_build_root: str) -> T.Tuple[T.List[str], T.List[build.BuildTarget]]:
         obj_list: T.List[str] = []
-        deps: T.List[build.BuildTargetTypes] = []
+        deps: T.List[build.BuildTarget] = []
         for obj in objects:
             if isinstance(obj, str):
                 o = os.path.join(proj_dir_to_build_root,
@@ -527,8 +527,10 @@ class Backend:
         return obj_list, deps
 
     @staticmethod
-    def is_swift_target(target: build.BuildTarget) -> bool:
-        for s in target.sources:
+    def is_swift_target(target: build.BuildTargetTypes) -> bool:
+        if not isinstance(target, build.BuildTarget):
+            return False
+        for s in target.get_sources():
             if s.endswith('swift'):
                 return True
         return False
@@ -542,7 +544,7 @@ class Backend:
     def get_executable_serialisation(
             self, cmd: T.Sequence[T.Union[programs.Program, build.BuildTargetTypes, File, str]],
             workdir: T.Optional[str] = None,
-            extra_bdeps: T.Optional[T.Sequence[build.BuildTargetTypes]] = None,
+            extra_bdeps: T.Optional[T.Iterable[build.BuildTargetTypes]] = None,
             capture: T.Optional[str] = None,
             feed: T.Optional[str] = None,
             env: T.Optional[mesonlib.EnvironmentVariables] = None,
@@ -632,7 +634,7 @@ class Backend:
     def as_meson_exe_cmdline(self, exe: T.Union[str, mesonlib.File, build.BuildTargetTypes, programs.Program],
                              cmd_args: T.Sequence[T.Union[str, mesonlib.File, build.BuildTargetTypes, programs.Program]],
                              workdir: T.Optional[str] = None,
-                             extra_bdeps: T.Optional[T.Sequence[build.BuildTargetTypes]] = None,
+                             extra_bdeps: T.Optional[T.Iterable[build.BuildTargetTypes]] = None,
                              capture: T.Optional[str] = None,
                              feed: T.Optional[str] = None,
                              force_serialize: bool = False,
@@ -1037,7 +1039,7 @@ class Backend:
                 commands += compiler.get_include_args(priv_dir, False)
         return commands
 
-    def build_target_link_arguments(self, compiler: 'Compiler', deps: T.List[build.Target]) -> T.List[str]:
+    def build_target_link_arguments(self, compiler: Compiler, deps: T.Iterable[build.BuildTargetTypes]) -> T.List[str]:
         args: T.List[str] = []
         for d in deps:
             if not d.is_linkable_target():
@@ -1136,7 +1138,7 @@ class Backend:
 
     def determine_windows_extra_paths(
             self, target: T.Union[build.BuildTargetTypes, programs.Program, mesonlib.File, str],
-            extra_bdeps: T.Sequence[build.BuildTargetTypes]) -> T.List[str]:
+            extra_bdeps: T.Iterable[build.BuildTargetTypes]) -> T.List[str]:
         """On Windows there is no such thing as an rpath.
 
         We must determine all locations of DLLs that this exe
@@ -1437,7 +1439,7 @@ class Backend:
             libs.extend(self.get_custom_target_provided_by_generated_source(t))
         return libs
 
-    def get_custom_target_sources(self, target: build.CustomTarget) -> T.List[str]:
+    def get_custom_target_sources(self, target: build.RunTarget | build.CustomTarget) -> T.List[str]:
         '''
         Custom target sources can be of various object types; strings, File,
         BuildTarget, even other CustomTargets.
@@ -1454,6 +1456,7 @@ class Backend:
             elif isinstance(i, (build.CustomTarget, build.CustomTargetIndex)):
                 fname = [os.path.join(self.get_custom_target_output_dir(i), p) for p in i.get_outputs()]
             elif isinstance(i, build.GeneratedList):
+                assert not isinstance(target, build.RunTarget)
                 fname = [os.path.join(self.get_target_private_dir(target), p) for p in i.get_outputs()]
             elif isinstance(i, build.ExtractedObjects):
                 fname = self.determine_ext_objs(i)
@@ -1468,7 +1471,7 @@ class Backend:
             srcs += fname
         return srcs
 
-    def get_target_depend_files(self, target: T.Union[build.CustomTarget, build.BuildTarget, build.GeneratedList], absolute_paths: bool = False) -> T.List[str]:
+    def get_target_depend_files(self, target: T.Union[build.CustomTarget, build.BuildTarget, build.GeneratedList, build.RunTarget], absolute_paths: bool = False) -> T.List[str]:
         deps: T.List[str] = []
         for i in target.depend_files:
             if isinstance(i, mesonlib.File):
@@ -1498,7 +1501,7 @@ class Backend:
     def get_normpath_target(self, source: str) -> str:
         return os.path.normpath(source)
 
-    def get_custom_target_dirs(self, target: build.CustomTarget, compiler: 'Compiler', *,
+    def get_custom_target_dirs(self, target: build.BuildTarget | build.CustomTarget, compiler: 'Compiler', *,
                                absolute_path: bool = False) -> T.List[str]:
         custom_target_include_dirs: T.List[str] = []
         for i in target.get_generated_sources():
@@ -1517,7 +1520,7 @@ class Backend:
         return custom_target_include_dirs
 
     def get_custom_target_dir_include_args(
-            self, target: build.CustomTarget, compiler: 'Compiler', *,
+            self, target: build.BuildTarget | build.CustomTarget, compiler: 'Compiler', *,
             absolute_path: bool = False) -> T.List[str]:
         incs: T.List[str] = []
         for i in self.get_custom_target_dirs(target, compiler, absolute_path=absolute_path):
@@ -1525,7 +1528,7 @@ class Backend:
         return incs
 
     def eval_custom_target_command(
-            self, target: build.CustomTarget, absolute_outputs: bool = False) -> \
+            self, target: build.RunTarget | build.CustomTarget, absolute_outputs: bool = False) -> \
             T.Tuple[T.List[str], T.List[str], T.List[str | programs.Program]]:
         # We want the outputs to be absolute only when using the VS backend
         # XXX: Maybe allow the vs backend to use relative paths too?
@@ -1563,6 +1566,7 @@ class Backend:
                 if '@CURRENT_SOURCE_DIR@' in i:
                     i = i.replace('@CURRENT_SOURCE_DIR@', os.path.join(source_root, target.get_subdir()))
                 if '@DEPFILE@' in i:
+                    assert not isinstance(target, build.RunTarget)
                     if target.depfile is None:
                         msg = f'Custom target {target.name!r} has @DEPFILE@ but no depfile ' \
                               'keyword argument.'
@@ -1570,6 +1574,7 @@ class Backend:
                     dfilename = os.path.join(outdir, target.depfile)
                     i = i.replace('@DEPFILE@', dfilename)
                 if '@PRIVATE_DIR@' in i:
+                    assert not isinstance(target, build.RunTarget)
                     pdir = self.get_target_private_dir_abs(target)
                     os.makedirs(pdir, exist_ok=True)
                     if not target.absolute_paths:

@@ -52,6 +52,7 @@ if T.TYPE_CHECKING:
 
     CommandArgTypes = T.TypeVar('CommandArgTypes', 'NinjaCommandArg', str, 'NinjaCommandArg | str')
     CommandArgs = T.List[CommandArgTypes]
+    FileList = T.List[File] | T.List[str] | T.List[File | str]
     ListifiedStr = str | T.List[str]
     RUST_EDITIONS = Literal['2015', '2018', '2021', '2024']
 
@@ -834,9 +835,9 @@ class NinjaBackend(backends.Backend):
 
     def create_target_source_introspection(self, target: build.Target, comp: compilers.Compiler,
                                            parameters: CompilerArgs | T.List[str],
-                                           sources: T.List[FileOrString],
-                                           generated_sources: T.List[FileOrString],
-                                           unity_sources: T.Optional[T.List[FileOrString]] = None) -> None:
+                                           sources: FileList,
+                                           generated_sources: FileList,
+                                           unity_sources: T.Optional[T.List[str]] = None) -> None:
         '''
         Adds the source file introspection information for a language of a target
 
@@ -1142,8 +1143,10 @@ class NinjaBackend(backends.Backend):
                 elem = NinjaBuildElement(self.all_outputs, linker.get_archive_name(outname), 'AIX_LINKER', [outname])
                 self.add_build(elem)
 
-    def should_use_dyndeps_for_target(self, target: 'build.BuildTarget') -> bool:
+    def should_use_dyndeps_for_target(self, target: build.BuildTargetTypes) -> bool:
         if not self.ninja_has_dyndeps:
+            return False
+        if not isinstance(target, build.BuildTarget):
             return False
         if 'fortran' in target.compilers:
             return True
@@ -1170,7 +1173,7 @@ class NinjaBackend(backends.Backend):
     def generate_dependency_scan_target(self, target: build.BuildTarget,
                                         compiled_sources: T.List[str],
                                         source2object: T.Dict[str, str],
-                                        object_deps: T.List[FileOrString]) -> None:
+                                        object_deps: T.List[File]) -> None:
         if not self.should_use_dyndeps_for_target(target):
             return
         self._uses_dyndeps = True
@@ -1200,13 +1203,14 @@ class NinjaBackend(backends.Backend):
         # they use or export.
         for s in scan_sources:
             elem.deps.add(s[0])
-        elem.orderdeps.update(object_deps)
+        elem.add_orderdep(self.order_deps_to_strings(target, object_deps))
         elem.add_item('name', target.name)
         self.add_build(elem)
 
         infiles: T.Set[str] = set()
         for t in target.get_all_linked_targets():
             if self.should_use_dyndeps_for_target(t):
+                assert isinstance(t, build.BuildTarget)
                 infiles.add(self.get_dep_scan_file_for(t)[0])
         _, od = self.flatten_object_list(target)
         infiles.update({self.get_dep_scan_file_for(t)[0] for t in od if t.uses_fortran()})
@@ -1765,7 +1769,7 @@ class NinjaBackend(backends.Backend):
             # If the Vala file is outside the build directory, the paths from
             # the --basedir till the subdir will be duplicated inside the
             # private builddir.
-            if isinstance(gensrc, (build.CustomTarget, build.GeneratedList)) or gensrc.is_built:
+            if isinstance(gensrc, (build.CustomTarget, build.CustomTargetIndex, build.GeneratedList)) or gensrc.is_built:
                 vala_c_file = os.path.splitext(os.path.basename(vala_file))[0] + '.c'
                 # Check if the vala file is in a subdir of --basedir
                 abs_srcbasedir = os.path.join(self.environment.get_source_dir(), target.get_subdir())
@@ -2142,7 +2146,7 @@ class NinjaBackend(backends.Backend):
             if isinstance(d, build.StaticLibrary):
                 external_deps.extend(d.external_deps)
             if d.uses_rust_abi():
-                if d not in itertools.chain(target.link_targets, target.link_whole_targets):
+                if d not in target.link_targets and d not in target.link_whole_targets:
                     # Indirect Rust ABI dependency, we only need its path in linkdirs.
                     continue
                 assert isinstance(d, build.BuildTarget)
@@ -2246,7 +2250,7 @@ class NinjaBackend(backends.Backend):
         return deps, project_deps, args
 
     def generate_rust_target(self, target: build.BuildTarget, target_name: str, obj_list: T.List[str],
-                             fortran_order_deps: T.List[str]) -> None:
+                             fortran_order_deps: T.List[File]) -> None:
         orderdeps, main_rust_file = self.generate_rust_sources(target)
         if main_rust_file is None:
             raise RuntimeError('A Rust target has no Rust sources. This is weird. Also a bug. Please report')
@@ -2275,8 +2279,7 @@ class NinjaBackend(backends.Backend):
         element = NinjaBuildElement(self.all_outputs, target_name, compiler_name, main_rust_file)
         if orderdeps:
             element.add_orderdep(orderdeps)
-        if fortran_order_deps:
-            element.add_orderdep(fortran_order_deps)
+        element.add_orderdep(self.order_deps_to_strings(target, fortran_order_deps))
         if deps:
             # dependencies need to cause a relink, they're not just for ordering
             element.add_dep(deps)
@@ -2322,6 +2325,7 @@ class NinjaBackend(backends.Backend):
         result = []
         for l in target.link_targets:
             if self.is_swift_target(l):
+                assert isinstance(l, build.BuildTarget) # for mypy
                 result.append(self.swift_module_file_name(l))
         return result
 
@@ -2817,7 +2821,7 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
                 continue
             self.generate_genlist_for_target(genlist, target)
 
-    def replace_paths(self, target: build.BuildTarget, args: T.List[str], override_subdir: T.Optional[str] = None) -> T.List[str]:
+    def replace_paths(self, target: build.BuildTarget | build.CustomTarget, args: T.List[str], override_subdir: T.Optional[str] = None) -> T.List[str]:
         if override_subdir:
             source_target_dir = os.path.join(self.build_to_src, override_subdir)
         else:
@@ -2831,7 +2835,7 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
         args = [x.replace('\\', '/') for x in args]
         return args
 
-    def generate_genlist_for_target(self, genlist: build.GeneratedList, target: build.BuildTarget) -> None:
+    def generate_genlist_for_target(self, genlist: build.GeneratedList, target: build.BuildTarget | build.CustomTarget) -> None:
         for x in genlist.depends:
             if isinstance(x, build.GeneratedList):
                 self.generate_genlist_for_target(x, target)
@@ -3196,12 +3200,22 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
             src_type_to_args[src_type_str] = commands.to_native()
         return src_type_to_args
 
+    def order_deps_to_strings(self, target: build.BuildTarget, order_deps: T.List[File] | T.List[FileOrString]) -> T.List[str]:
+        result: T.List[str] = []
+        for d in order_deps:
+            if isinstance(d, File):
+                d = d.rel_to_builddir(self.build_to_src)
+            elif not self.has_dir_part(d):
+                d = os.path.join(self.get_target_private_dir(target), d)
+            result.append(d)
+        return result
+
     def generate_single_compile(self, target: build.BuildTarget, src: FileOrString,
                                 is_generated: bool = False,
                                 header_deps: T.Optional[T.List[FileOrString]] = None,
-                                order_deps: T.Optional[T.List[FileOrString]] = None,
+                                order_deps: T.Optional[T.List[File] | T.List[FileOrString]] = None,
                                 extra_args: T.Optional[T.List[str]] = None,
-                                unity_sources: T.Optional[T.List[FileOrString]] = None,
+                                unity_sources: T.Optional[T.List[str]] = None,
                                 ) -> T.Tuple[str, str]:
         """
         Compiles C/C++, ObjC/ObjC++, Fortran, and D sources
@@ -3318,12 +3332,7 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
         self.add_header_deps(target, element, header_deps)
         for d in extra_deps:
             element.add_dep(d)
-        for d in order_deps:
-            if isinstance(d, File):
-                d = d.rel_to_builddir(self.build_to_src)
-            elif not self.has_dir_part(d):
-                d = os.path.join(self.get_target_private_dir(target), d)
-            element.add_orderdep(d)
+        element.add_orderdep(self.order_deps_to_strings(target, order_deps))
         element.add_dep(pch_dep)
         if not self.use_dyndeps_for_fortran():
             for i in self.get_fortran_module_deps(target, compiler):
@@ -3464,6 +3473,8 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
         ]
 
     def generate_msvc_pch_command(self, target: build.BuildTarget, compiler: Compiler, pch: T.Tuple[str, T.Optional[str]]) -> T.Tuple[T.List[str], str, str, T.List[str], str]:
+        from ..compilers.mixins.visualstudio import VisualStudioLikeCompiler
+        assert isinstance(compiler, VisualStudioLikeCompiler) # for mypy
         header = pch[0]
         pchname = compiler.get_pch_name(header)
         dst = os.path.join(self.get_target_private_dir(target), pchname)
@@ -3570,7 +3581,7 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
             elem.add_item('CROSS', '--cross-host=' + self.environment.machines[target.for_machine].system)
         self.add_build(elem)
 
-    def get_import_filename(self, target: build.BuildTarget) -> str:
+    def get_import_filename(self, target: build.Executable | build.SharedLibrary) -> str:
         return os.path.join(self.get_target_dir(target), target.import_filename)
 
     def get_target_type_link_args(self, target: build.BuildTarget, linker: T.Union[StaticLinker, Compiler]) -> T.List[str]:
@@ -3710,14 +3721,14 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
         try:
             static_patterns = linker.get_library_naming(LibType.STATIC, strict=True)
             shared_patterns = linker.get_library_naming(LibType.SHARED, strict=True)
-            search_dirs = tuple(search_dirs) + tuple(linker.get_library_dirs())
+            search_dirs_tuple = tuple(search_dirs) + tuple(linker.get_library_dirs())
             for libname in libs:
                 # be conservative and record most likely shared and static resolution, because we don't know exactly
                 # which one the linker will prefer
                 staticlibs = self.guess_library_absolute_path(linker, libname,
-                                                              search_dirs, static_patterns)
+                                                              search_dirs_tuple, static_patterns)
                 sharedlibs = self.guess_library_absolute_path(linker, libname,
-                                                              search_dirs, shared_patterns)
+                                                              search_dirs_tuple, shared_patterns)
                 if staticlibs:
                     guessed_dependencies.append(staticlibs.resolve().as_posix())
                 if sharedlibs:
@@ -3837,7 +3848,7 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
         # Add link args to link to all internal libraries (link_with:) and
         # internal dependencies needed by this target.
         dep_targets: T.List[str] = []
-        dependencies: T.List[build.BuildTargetTypes]
+        dependencies: T.Iterable[build.BuildTargetTypes]
         if isinstance(target, build.StaticLibrary):
             # Link arguments of static libraries are not put in the command
             # line of the library. They are instead appended to the command

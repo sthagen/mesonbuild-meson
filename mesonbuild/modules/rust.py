@@ -75,6 +75,7 @@ if T.TYPE_CHECKING:
     class FuncWorkspace(TypedDict):
         default_features: T.Optional[bool]
         features: T.List[str]
+        extra_members: T.List[str]
 
     class FuncDependency(TypedDict):
         rust_abi: T.Optional[RUST_ABI]
@@ -152,7 +153,9 @@ class RustWorkspace(ModuleObject):
     @noKwargs
     def packages_method(self, state: ModuleState, args: T.List, kwargs: TYPE_kwargs) -> T.List[str]:
         """Returns list of package names in workspace."""
-        package_names = [pkg.manifest.package.name for pkg in self.ws.packages.values()]
+        package_names = [pkg.manifest.package.name
+                         for pkg in self.ws.packages.values()
+                         if pkg.cfg]
         return sorted(package_names)
 
     @typed_pos_args('workspace.package', optargs=[str])
@@ -260,6 +263,8 @@ class RustPackage(RustCrate):
 
     def __init__(self, rust_ws: RustWorkspace, package: cargo.PackageState) -> None:
         super().__init__(rust_ws, package)
+        if not package.cfg:
+            raise MesonException(f"package {self.package.manifest.package.name}-{self.package.manifest.package.version} not configured")
         self.methods.update({
             'dependencies': self.dependencies_method,
             'library': self.library_method,
@@ -1013,6 +1018,12 @@ class RustModule(ExtensionModule):
             default=None,
             listify=True,
         ),
+        KwargInfo(
+            'extra_members',
+            (ContainerTypeInfo(list, str), NoneType),
+            default=None,
+            listify=True,
+        ),
     )
     def workspace(self, state: ModuleState, args: T.List, kwargs: FuncWorkspace) -> RustWorkspace:
         """Creates a Rust workspace object, controlling the build of
@@ -1035,7 +1046,7 @@ class RustModule(ExtensionModule):
                 cargo_features.extend(features)
             self.interpreter.cargo.features = cargo_features
 
-        ws = self.interpreter.cargo.load_workspace(state.root_subdir)
+        ws = self.interpreter.cargo.load_workspace(state.root_subdir, kwargs['extra_members'])
 
         # Cargo projects may not have a subprojects directory, because
         # dependencies are declared in Cargo.toml rather than .wrap files.

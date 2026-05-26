@@ -228,6 +228,8 @@ workspace.
 Keyword arguments:
 - `default_features`: (`bool`, optional) Whether to enable default features.
 - `features`: (`array[str]`, optional) List of additional features to enable globally.
+- `extra_members`: (`array[str]`, optional) *Since 1.12.0* list of non-default
+  workspace members to configure.
 
 A project that wishes to use Cargo subprojects should have `Cargo.lock` and `Cargo.toml`
 files in the root source directory, and should call this function before using
@@ -271,7 +273,9 @@ say "require this specific configuration," which may conflict with the parent pr
 packages = ws.packages()
 ```
 
-Returns a list of package names in the workspace.
+Returns a list of configured package names in the workspace.  Non-default
+workspace members are not included unless they were passed as `extra_members`
+when the workspace was created.
 
 ### workspace.package()
 
