@@ -196,11 +196,11 @@ class FuncIncludeDirectories(TypedDict):
 
 class FuncAddLanguages(ExtractRequired):
 
-    native: T.Optional[bool]
+    native: MachineChoice | None
 
 class RunTarget(TypedDict):
 
-    command: T.List[T.Union[str, build.BuildTargetTypes, ExternalProgram, File]]
+    command: T.List[T.Union[str, build.BuildTargetTypes, Program, File]]
     depends: T.List[TargetDepends]
     env: EnvironmentVariables
 
@@ -240,7 +240,7 @@ class Project(TypedDict):
 
     version: T.Optional[FileOrString]
     meson_version: T.Optional[str]
-    default_options: T.List[str]
+    default_options: options.OptionDict
     license: T.List[str]
     license_files: T.List[str]
     subproject_dir: str
@@ -312,7 +312,7 @@ class ConfigurationDataSet(TypedDict):
 
 class VcsTag(TypedDict):
 
-    command: T.List[T.Union[str, build.GeneratedTypes, Program, File]]
+    command: T.List[T.Union[str, build.BuildTargetTypes, Program, File]]
     fallback: T.Optional[str]
     input: T.List[T.Union[str, build.BuildTarget, build.GeneratedTypes,
                           build.ExtractedObjects, Program, File]]
@@ -358,7 +358,7 @@ class DoSubproject(ExtractRequired):
     options: T.Optional[CMakeSubprojectOptions]
 
 
-class _BaseBuildTarget(TypedDict):
+class BaseBuildTarget(TypedDict):
 
     """Arguments used by all BuildTarget like functions.
 
@@ -381,7 +381,7 @@ class _BaseBuildTarget(TypedDict):
     link_depends: T.List[T.Union[str, File, build.BuildTargetTypes]]
     link_language: T.Optional[Language]
     link_whole: T.List[build.StaticTargetTypes]
-    link_with: T.List[build.BuildTargetTypes]
+    link_with: T.List[build.LinkableTargetTypes]
     name_prefix: T.Optional[str]
     name_suffix: T.Optional[str]
     native: MachineChoice
@@ -394,7 +394,7 @@ class _BaseBuildTarget(TypedDict):
     vala_gir: T.Optional[str]
 
 
-class BuildTarget(_BaseBuildTarget):
+class BuildTarget(BaseBuildTarget):
 
     """Arguments shared by non-JAR functions"""
 
@@ -436,7 +436,7 @@ class _LibraryMixin(TypedDict):
     rust_abi: T.Optional[RustAbi]
 
 
-class Executable(BuildTarget):
+class _ExecutableMixin(TypedDict):
 
     export_dynamic: T.Optional[bool]
     gui_app: T.Optional[bool]
@@ -445,6 +445,10 @@ class Executable(BuildTarget):
     vs_module_defs: T.Optional[T.Union[str, File, build.CustomTarget, build.CustomTargetIndex]]
     win_subsystem: T.Optional[str]
     android_exe_type: T.Optional[Literal['application', 'executable']]
+
+
+class Executable(BuildTarget, _ExecutableMixin):
+    pass
 
 
 class _StaticLibMixin(TypedDict):
@@ -462,12 +466,12 @@ class _SharedLibMixin(TypedDict):
     darwin_versions: T.Optional[T.Tuple[str, str]]
     soversion: T.Optional[str]
     version: T.Optional[str]
-    vs_module_defs: T.Optional[T.Union[str, File, build.CustomTarget, build.CustomTargetIndex]]
     shortname: str
 
 
 class SharedLibrary(BuildTarget, _SharedLibMixin, _LibraryMixin):
-    pass
+
+    vs_module_defs: T.Optional[T.Union[str, File, build.CustomTarget, build.CustomTargetIndex]]
 
 
 class SharedModule(BuildTarget, _LibraryMixin):
@@ -509,18 +513,22 @@ class Library(BuildTarget, _SharedLibMixin, _StaticLibMixin, _LibraryMixin):
     masm_shared_args: NotRequired[T.List[str]]
 
 
-class BuildTargetFunc(Library):
-
-    target_type: Literal['executable', 'shared_library', 'static_library',
-                         'shared_module', 'both_libraries', 'library', 'jar']
-
-
-class Jar(_BaseBuildTarget):
+class _JarMixin(TypedDict):
 
     main_class: str
     java_resources: T.Optional[build.StructuredSources]
-    sources: T.Union[str, File, build.GeneratedTypes, build.ExtractedObjects, build.BuildTarget]
     java_args: T.List[str]
+
+
+class Jar(BaseBuildTarget, _JarMixin):
+
+    sources: T.Union[str, File, build.GeneratedTypes, build.ExtractedObjects, build.BuildTarget]
+
+
+class BuildTargetFunc(Library, _ExecutableMixin, _JarMixin):
+
+    target_type: Literal['executable', 'shared_library', 'static_library',
+                         'shared_module', 'both_libraries', 'library', 'jar']
 
 
 class FuncDeclareDependency(TypedDict):
@@ -560,3 +568,8 @@ class FuncDependency(ExtractRequired):
     private_headers: bool
     static: T.Optional[bool]
     version: T.List[str]
+
+
+class FuncExpectError(TypedDict):
+
+    how: str

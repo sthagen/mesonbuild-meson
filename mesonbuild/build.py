@@ -363,7 +363,7 @@ class Build:
         self.project_version: T.Optional[str] = None
         self.environment = environment
         self.projects: T.Dict[SubProject, BuildProject] = {}
-        self.targets: 'T.OrderedDict[str, T.Union[CustomTarget, BuildTarget]]' = OrderedDict()
+        self.targets: dict[str, CustomTarget | BuildTarget | RunTarget | AliasTarget] = {}
         self.targetnames: T.Set[T.Tuple[str, str]] = set() # Set of executable names and their subdir
         self.global_args: PerMachine[T.Dict[str, T.List[str]]] = PerMachine({}, {})
         self.global_link_args: PerMachine[T.Dict[str, T.List[str]]] = PerMachine({}, {})
@@ -458,7 +458,7 @@ class Build:
     def get_subproject_dir(self) -> str:
         return self.subproject_dir
 
-    def get_targets(self) -> 'T.OrderedDict[str, T.Union[CustomTarget, BuildTarget]]':
+    def get_targets(self) -> dict[str, CustomTarget | BuildTarget | RunTarget | AliasTarget]:
         return self.targets
 
     def get_tests(self) -> T.List['Test']:
@@ -3206,9 +3206,6 @@ class CustomTarget(Target, CustomTargetBase):
             return False
         return CustomTargetIndex(self, self.outputs[0]).is_internal()
 
-    def extract_all_objects(self) -> T.List[T.Union[str, 'ExtractedObjects']]:
-        return T.cast('list[str | ExtractedObjects]', self.get_outputs())
-
     def type_suffix(self) -> str:
         return "@cus"
 
@@ -3297,7 +3294,7 @@ class RunTarget(Target):
     def __init__(self, name: str,
                  command: T.Sequence[T.Union[str, File, BuildTargetTypes, programs.Program]],
                  # the RunTarget case is used by gnome.yelp()
-                 dependencies: T.Sequence[T.Union[RunTarget, TargetDepends]],
+                 dependencies: T.Sequence[Target | CustomTargetIndex | GeneratedList | programs.Program],
                  subdir: str,
                  subproject: SubProject,
                  environment: Environment,
@@ -3316,7 +3313,7 @@ class RunTarget(Target):
         repr_str = "<{0} {1}: {2}>"
         return repr_str.format(self.__class__.__name__, self.get_id(), self.command[0])
 
-    def get_dependencies(self) -> T.List[T.Union[RunTarget, TargetDepends]]:
+    def get_dependencies(self) -> T.List[Target | CustomTargetIndex | GeneratedList | programs.Program]:
         return self.dependencies
 
     def get_generated_sources(self) -> T.List[GeneratedTypes]:
@@ -3346,7 +3343,7 @@ class AliasTarget(RunTarget):
 
     typename = 'alias'
 
-    def __init__(self, name: str, dependencies: T.Sequence[TargetDepends | RunTarget],
+    def __init__(self, name: str, dependencies: T.Sequence[Target],
                  subdir: str, subproject: SubProject, environment: Environment):
         super().__init__(name, [], dependencies, subdir, subproject, environment)
 
@@ -3505,9 +3502,6 @@ class CustomTargetIndex(CustomTargetBase, HoldableObject):
         '''
         suf = os.path.splitext(self.output)[-1]
         return suf in {'.a', '.lib'} and not self.should_install()
-
-    def extract_all_objects(self) -> T.Union[str, 'ExtractedObjects']:
-        return self.output
 
     def get_custom_install_dir(self) -> T.List[T.Union[str, Literal[False]]]:
         return self.target.get_custom_install_dir()
