@@ -44,11 +44,11 @@ if T.TYPE_CHECKING:
     from ..mesonlib import FileMode, FileOrString
     from ..options import ElementaryOptionValues
 
-    from typing_extensions import Literal, TypedDict, NotRequired
+    from typing_extensions import Literal, TypedDict, NotRequired, TypeAlias
 
     _ALL_SOURCES_TYPE = T.List[T.Union[File, build.GeneratedTypes]]
 
-    class TargetIntrospectionData(TypedDict):
+    class CompilerIntrospectionData(TypedDict):
 
         language: T.Union[Language, Literal['unknown']]
         machine: NotRequired[str]
@@ -56,7 +56,14 @@ if T.TYPE_CHECKING:
         parameters: T.List[str]
         sources: T.List[str]
         generated_sources: T.List[str]
+        unity_sources: NotRequired[T.List[str]]
 
+    class LinkerIntrospectionData(TypedDict):
+
+        linker: T.List[str]
+        parameters: T.List[str]
+
+    TargetIntrospectionData: TypeAlias = T.Union['CompilerIntrospectionData', 'LinkerIntrospectionData']
 
 # Languages that can mix with C or C++ but don't support unity builds yet
 # because the syntax we use for unity builds is specific to C/++/ObjC/++.
@@ -1393,7 +1400,7 @@ class Backend:
             newargs.append(arg)
         return newargs
 
-    def get_build_by_default_targets(self) -> dict[str, build.BuildTarget | build.CustomTarget | build.RunTarget]:
+    def get_build_by_default_targets(self) -> dict[str, build.Target]:
         return {k: v for k, v in self.build.targets.items() if v.build_by_default}
 
     def get_testlike_targets(self, benchmark: bool = False) -> T.Iterable[T.Union[build.BuildTarget, build.CustomTarget]]:
@@ -1465,7 +1472,7 @@ class Backend:
             srcs += fname
         return srcs
 
-    def get_target_depend_files(self, target: T.Union[build.CustomTarget, build.BuildTarget, build.GeneratedList, build.RunTarget], absolute_paths: bool = False) -> T.List[str]:
+    def get_target_depend_files(self, target: T.Union[build.Target, build.GeneratedList], absolute_paths: bool = False) -> T.List[str]:
         deps: T.List[str] = []
         for i in target.depend_files:
             if isinstance(i, mesonlib.File):
@@ -1944,7 +1951,7 @@ class Backend:
                                   follow_symlinks=sd.follow_symlinks)
             d.install_subdirs.append(i)
 
-    def get_introspection_data(self, target_id: str, target: build.Target) -> T.List['TargetIntrospectionData']:
+    def get_introspection_data(self, target_id: str, target: build.Target) -> T.List[TargetIntrospectionData]:
         '''
         Returns a list of source dicts with the following format for a given target:
         [

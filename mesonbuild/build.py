@@ -37,7 +37,7 @@ from .compilers import (
 from .interpreterbase import FeatureNew, FeatureDeprecated
 
 if T.TYPE_CHECKING:
-    from typing_extensions import Literal, Self, TypeAlias, TypedDict
+    from typing_extensions import Literal, TypeAlias, TypedDict
 
     from .arglist import CompilerArgs
     from .environment import Environment
@@ -363,7 +363,7 @@ class Build:
         self.project_version: T.Optional[str] = None
         self.environment = environment
         self.projects: T.Dict[SubProject, BuildProject] = {}
-        self.targets: dict[str, CustomTarget | BuildTarget | RunTarget | AliasTarget] = {}
+        self.targets: dict[str, Target] = {}
         self.targetnames: T.Set[T.Tuple[str, str]] = set() # Set of executable names and their subdir
         self.global_args: PerMachine[T.Dict[str, T.List[str]]] = PerMachine({}, {})
         self.global_link_args: PerMachine[T.Dict[str, T.List[str]]] = PerMachine({}, {})
@@ -458,7 +458,7 @@ class Build:
     def get_subproject_dir(self) -> str:
         return self.subproject_dir
 
-    def get_targets(self) -> dict[str, CustomTarget | BuildTarget | RunTarget | AliasTarget]:
+    def get_targets(self) -> dict[str, Target]:
         return self.targets
 
     def get_tests(self) -> T.List['Test']:
@@ -670,6 +670,7 @@ class Target(HoldableObject, metaclass=SimpleABC):
     build_always_stale: bool = False
     extra_files: T.List[File] = field(default_factory=list)
     build_subdir: str = ''
+    depend_files: T.List[File] = field(default_factory=list)
 
     @abc.abstractmethod
     def type_suffix(self) -> str:
@@ -1994,6 +1995,13 @@ class BuildTarget(Target):
             return 'unix'
 
 
+class LinkableTarget(metaclass=SimpleABC):
+    @abc.abstractmethod
+    def get(self, lib_type: _LibraryType) -> LinkableTargetTypes:
+        """If applicable, return the shared or static "part" of this target.
+           Otherwise, just return self."""
+
+
 class FileInTargetPrivateDir:
     """Represents a file with the path '/path/to/build/target_private_dir/fname'.
        target_private_dir is the return value of get_target_private_dir which is e.g. 'subdir/target.p'.
@@ -2199,7 +2207,7 @@ class GeneratedList(HoldableObject):
         return self.generator.name
 
 
-class Executable(BuildTarget):
+class Executable(BuildTarget, LinkableTarget):
     typename = 'executable'
 
     def __init__(
@@ -2332,7 +2340,7 @@ class Executable(BuildTarget):
         return self.is_linkwithable
 
 
-class StaticLibrary(BuildTarget):
+class StaticLibrary(BuildTarget, LinkableTarget):
     typename = 'static library'
 
     def __init__(
@@ -2511,7 +2519,7 @@ class StaticLibrary(BuildTarget):
         else:
             self.objects.append(t.extract_all_objects())
 
-class SharedLibrary(BuildTarget):
+class SharedLibrary(BuildTarget, LinkableTarget):
     typename = 'shared library'
 
     # Used by AIX to decide whether to archive shared library or not.
@@ -2876,7 +2884,7 @@ class SharedModule(SharedLibrary):
     def get_default_install_dir(self) -> T.Tuple[str, str]:
         return self.environment.get_shared_module_dir(), '{moduledir_shared}'
 
-class BothLibraries(SecondLevelHolder):
+class BothLibraries(SecondLevelHolder, LinkableTarget):
     typename: T.ClassVar[str] = 'both libraries'
 
     def __init__(self, shared: SharedLibrary, static: StaticLibrary, preferred_library: Literal['shared', 'static']) -> None:
@@ -2957,7 +2965,7 @@ def flatten_command(cmd: T.Sequence[str | File | programs.Program | BuildTargetT
     return final_cmd, depend_files, dependencies
 
 
-class CustomTargetBase(metaclass=SimpleABC):
+class CustomTargetBase(LinkableTarget, metaclass=SimpleABC):
     ''' Base class for CustomTarget and CustomTargetIndex
 
     This base class can be used to provide a dummy implementation of some
@@ -2982,8 +2990,9 @@ class CustomTargetBase(metaclass=SimpleABC):
     def get_all_linked_targets(self) -> ImmutableListProtocol[BuildTargetTypes]:
         return []
 
-    def get(self, lib_type: _LibraryType, recursive: bool = False) -> Self:
+    def get(self, lib_type: _LibraryType, recursive: bool = False) -> LinkableTargetTypes:
         """Base case used by BothLibraries"""
+        assert isinstance(self, (CustomTarget, CustomTargetIndex))
         return self
 
     def uses_rust_abi(self) -> bool:
@@ -3329,12 +3338,7 @@ class RunTarget(Target):
         return self.name
 
     def get_outputs(self) -> T.List[str]:
-        if isinstance(self.name, str):
-            return [self.name]
-        elif isinstance(self.name, list):
-            return self.name
-        else:
-            raise RuntimeError('RunTarget: self.name is neither a list nor a string. This is a bug')
+        return [self.name]
 
     def type_suffix(self) -> str:
         return "@run"

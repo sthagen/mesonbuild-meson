@@ -24,6 +24,7 @@ from .. import mesonlib
 from .. import build
 from .. import mlog
 from .. import compilers
+from .. import programs
 from .. import tooldetect
 from ..arglist import CompilerArgs
 from ..compilers import Compiler, is_library
@@ -47,7 +48,7 @@ if T.TYPE_CHECKING:
     from ..compilers.rust import RustCompiler
     from ..compilers.swift import SwiftCompiler
     from ..mesonlib import FileOrString
-    from .backends import TargetIntrospectionData
+    from .backends import TargetIntrospectionData, CompilerIntrospectionData, LinkerIntrospectionData
 
     CommandArgTypes = T.TypeVar('CommandArgTypes', 'NinjaCommandArg', str, 'NinjaCommandArg | str')
     CommandArgs = T.List[CommandArgTypes]
@@ -510,7 +511,9 @@ class NinjaBackend(backends.Backend):
         self.all_outputs: T.Set[str] = set()
         self.all_pch: T.Dict[str, T.Set[str]] = defaultdict(set)
         self.all_structured_sources: T.Set[str] = set()
-        self.introspection_data = {}
+        # 1st level: target; 2nd: compiler or linker; 3rd: individual keys
+        self.introspection_data: dict[str, dict[tuple[str, tuple[str, ...]] | tuple[str, ...],
+                                                TargetIntrospectionData]] = {}
         self.created_llvm_ir_rule = PerMachine(False, False)
         self.rust_crates: T.Dict[str, RustCrate] = {}
         self.implicit_meson_outs: T.List[str] = []
@@ -614,7 +617,7 @@ class NinjaBackend(backends.Backend):
         if result:
             return result
 
-        raise MesonException(f'Could not determine vs dep dependency prefix string. output: {stderr} {stdout}')
+        raise MesonException(f'Could not determine vs dep dependency prefix string. output: {stderr!r} {stdout!r}')
 
     def generate(self, capture: bool = False, vslite_ctx: T.Optional[T.Dict] = None) -> T.Optional[T.Dict[str, T.Dict[Language, T.List[str]]]]:
         captured_compile_args_per_target: T.Dict[str, T.Dict[Language, T.List[str]]] = {}
@@ -793,13 +796,13 @@ class NinjaBackend(backends.Backend):
         self._generated_header_cache[tid] = header_deps
         return header_deps
 
-    def get_target_generated_sources(self, target: build.BuildTarget) -> T.MutableMapping[str, File]:
+    def get_target_generated_sources(self, target: build.BuildTarget) -> T.MutableMapping[str, File | build.GeneratedTypes]:
         """
         Returns a dictionary with the keys being the path to the file
         (relative to the build directory) and the value being the File object
         representing the same path.
         """
-        srcs: T.MutableMapping[str, File] = OrderedDict()
+        srcs: T.MutableMapping[str, File | build.GeneratedTypes] = {}
         for gensrc in target.get_generated_sources():
             for s in gensrc.get_outputs():
                 rel_src = self.get_target_generated_dir(target, gensrc, s)
@@ -857,8 +860,10 @@ class NinjaBackend(backends.Backend):
         lang = comp.get_language()
         tgt = self.introspection_data[tid]
         # Find an existing entry or create a new one
-        id_hash = (lang, tuple(parameters))
-        src_block = tgt.get(id_hash, None)
+        id_hash: tuple[str, tuple] = (lang, tuple(parameters))
+
+        src_block: T.Optional[CompilerIntrospectionData]
+        src_block = T.cast('T.Optional[CompilerIntrospectionData]', tgt.get(id_hash, None))
         if src_block is None:
             # Convert parameters
             if isinstance(parameters, CompilerArgs):
@@ -890,8 +895,9 @@ class NinjaBackend(backends.Backend):
     def create_target_linker_introspection(self, target: build.Target, linker: T.Union[Compiler, StaticLinker], parameters: CompilerArgs) -> None:
         tid = target.get_id()
         tgt = self.introspection_data[tid]
-        lnk_hash = tuple(parameters)
-        lnk_block = tgt.get(lnk_hash, None)
+        lnk_hash: tuple[str, ...] = tuple(parameters)
+        lnk_block: T.Optional[LinkerIntrospectionData]
+        lnk_block = T.cast('T.Optional[LinkerIntrospectionData]', tgt.get(lnk_hash, None))
         if lnk_block is None:
             paramlist = parameters.to_native(copy=True)
 
@@ -906,15 +912,15 @@ class NinjaBackend(backends.Backend):
             }
             tgt[lnk_hash] = lnk_block
 
-    def generate_target(self, target: T.Union[build.BuildTarget, build.CustomTarget, build.RunTarget]) -> None:
-        if isinstance(target, build.BuildTarget):
-            os.makedirs(self.get_target_private_dir_abs(target), exist_ok=True)
+    def generate_target(self, target: T.Union[build.Target]) -> None:
         if isinstance(target, build.CustomTarget):
             self.generate_custom_target(target)
             return
         if isinstance(target, build.RunTarget):
             self.generate_run_target(target)
             return
+        assert isinstance(target, build.BuildTarget)
+        os.makedirs(self.get_target_private_dir_abs(target), exist_ok=True)
         compiled_sources: T.List[str] = []
         source2object: T.Dict[str, str] = {}
         name = target.get_id()
@@ -953,7 +959,7 @@ class NinjaBackend(backends.Backend):
 
         # GeneratedList and CustomTarget sources to be built; dict of the full
         # path to source relative to build root and the generating target/list
-        generated_sources: T.MutableMapping[str, File]
+        generated_sources: T.MutableMapping[str, File | build.GeneratedTypes]
 
         # List of sources that have been transpiled from a DSL (like Vala) into
         # a language that is handled below, such as C or C++
@@ -1232,9 +1238,11 @@ class NinjaBackend(backends.Backend):
             elif ext.lower() in compilers.lang_suffixes['fortran']:
                 yield source, 'fortran'
 
-    def process_target_dependencies(self, target: build.Target) -> None:
+    def process_target_dependencies(self, target: build.BuildTarget) -> None:
         for t in target.get_dependencies():
             if t.get_id() not in self.processed_targets:
+                if isinstance(t, build.CustomTargetIndex):
+                    t = t.target
                 self.generate_target(t)
 
     def custom_target_generator_inputs(self, target: build.CustomTarget) -> None:
@@ -1242,21 +1250,26 @@ class NinjaBackend(backends.Backend):
             if isinstance(s, build.GeneratedList):
                 self.generate_genlist_for_target(s, target)
 
-    def unwrap_dep_list(self, target: T.Union[build.CustomTarget, build.RunTarget]) -> T.List[str]:
+    def unwrap_dep_list(self, target: build.Target, dep_targets: T.Iterable[build.Target | build.GeneratedList | build.CustomTargetIndex | programs.Program]) -> T.List[str]:
         deps = []
-        for i in target.get_dependencies():
-            # FIXME, should not grab element at zero but rather expand all.
-            if isinstance(i, list):
-                i = i[0]
+        for i in dep_targets:
             # Add a dependency on all the outputs of this target
+            if isinstance(i, build.LocalProgram):
+                i = i.program
+            if isinstance(i, programs.Program):
+                continue
             for output in i.get_outputs():
-                deps.append(os.path.join(self.get_target_dir(i), output))
+                if isinstance(i, GeneratedList):
+                    assert isinstance(target, (build.BuildTarget, build.CustomTarget, build.CustomTargetIndex))
+                    deps.append(os.path.join(self.get_target_private_dir(target), output))
+                else:
+                    deps.append(os.path.join(self.get_target_dir(i), output))
         return deps
 
     def generate_custom_target(self, target: build.CustomTarget) -> None:
         self.custom_target_generator_inputs(target)
         (srcs, ofilenames, cmd) = self.eval_custom_target_command(target)
-        deps = self.unwrap_dep_list(target)
+        deps = self.unwrap_dep_list(target, target.get_dependencies())
         deps += self.get_target_depend_files(target)
         if target.build_always_stale:
             deps.append('PHONY')
@@ -1322,7 +1335,7 @@ class NinjaBackend(backends.Backend):
             elem.add_item('COMMAND', meson_exe_cmd)
             elem.add_item('description', f'Running external command {target.name}{cmd_type}')
             elem.add_item('pool', 'console')
-        deps = self.unwrap_dep_list(target)
+        deps = self.unwrap_dep_list(target, target.get_dependencies())
         deps += self.get_target_depend_files(target)
         elem.add_dep(deps)
         self.add_build(elem)
@@ -1514,7 +1527,7 @@ class NinjaBackend(backends.Backend):
         # Add possible java generated files to src list
         generated_sources = self.get_target_generated_sources(target)
         gen_src_list = []
-        for rel_src in generated_sources.keys():
+        for rel_src in generated_sources:
             raw_src = File.from_built_relative(rel_src)
             if rel_src.endswith('.java'):
                 gen_src_list.append(raw_src)
@@ -1601,7 +1614,7 @@ class NinjaBackend(backends.Backend):
             outputs = [outname_rel]
         generated_sources = self.get_target_generated_sources(target)
         generated_rel_srcs = []
-        for rel_src in generated_sources.keys():
+        for rel_src in generated_sources:
             if rel_src.lower().endswith('.cs'):
                 generated_rel_srcs.append(os.path.normpath(rel_src))
             deps.append(os.path.normpath(rel_src))
@@ -1632,7 +1645,7 @@ class NinjaBackend(backends.Backend):
     def generate_java_compile(self, srcs: T.List[File], target: build.BuildTarget, compiler: Compiler, args: T.List[str]) -> T.List[str]:
         deps = [os.path.join(self.get_target_dir(l), l.get_filename()) for l in target.link_targets]
         generated_sources = self.get_target_generated_sources(target)
-        for rel_src in generated_sources.keys():
+        for rel_src in generated_sources:
             if rel_src.endswith('.java'):
                 deps.append(rel_src)
 
@@ -1684,7 +1697,7 @@ class NinjaBackend(backends.Backend):
 
     def split_vala_sources(self, t: build.BuildTarget) -> \
             T.Tuple[T.MutableMapping[str, File | build.GeneratedTypes], T.MutableMapping[str, File | build.GeneratedTypes],
-                    T.Tuple[T.MutableMapping[str, File | build.GeneratedTypes], T.MutableMapping[str, File | build.GeneratedTypes]]]:
+                    T.MutableMapping[str, File], T.MutableMapping[str, File | build.GeneratedTypes]]:
         """
         Splits the target's sources into .vala, .gs, .vapi, and other sources.
         Handles both preexisting and generated sources.
@@ -1695,7 +1708,7 @@ class NinjaBackend(backends.Backend):
         """
         vala: T.MutableMapping[str, File | build.GeneratedTypes] = OrderedDict()
         vapi: T.MutableMapping[str, File | build.GeneratedTypes] = OrderedDict()
-        others: T.MutableMapping[str, File | build.GeneratedTypes] = OrderedDict()
+        others: T.MutableMapping[str, File] = OrderedDict()
         othersgen: T.MutableMapping[str, File | build.GeneratedTypes] = OrderedDict()
         # Split preexisting sources
         for s in t.get_sources():
@@ -1706,39 +1719,38 @@ class NinjaBackend(backends.Backend):
                 raise InvalidArguments(f'All sources in target {t!r} must be of type mesonlib.File, not {s!r}')
             f = s.rel_to_builddir(self.build_to_src)
             if s.endswith(('.vala', '.gs')):
-                srctype = vala
+                vala[f] = s
             elif s.endswith('.vapi'):
-                srctype = vapi
+                vapi[f] = s
             else:
-                srctype = others
-            srctype[f] = s
+                others[f] = s
         # Split generated sources
         for gensrc in t.get_generated_sources():
             for s in gensrc.get_outputs():
                 f = self.get_target_generated_dir(t, gensrc, s)
                 if s.endswith(('.vala', '.gs')):
-                    srctype = vala
+                    gensrctype = vala
                 elif s.endswith('.vapi'):
-                    srctype = vapi
+                    gensrctype = vapi
                 # Generated non-Vala (C/C++) sources. Won't be used for
                 # generating the Vala compile rule below.
                 else:
-                    srctype = othersgen
+                    gensrctype = othersgen
                 # Duplicate outputs are disastrous
-                if f in srctype and srctype[f] != gensrc:
+                if f in gensrctype and gensrctype[f] != gensrc:
                     msg = 'Duplicate output {0!r} from {1!r} {2!r}; ' \
                           'conflicts with {0!r} from {4!r} {3!r}' \
                           ''.format(f, type(gensrc).__name__, gensrc.name,
-                                    srctype[f], type(srctype[f]).__name__)
+                                    gensrctype[f], type(gensrctype[f]).__name__)
                     raise InvalidArguments(msg)
                 # Store 'somefile.vala': GeneratedList (or CustomTarget)
-                srctype[f] = gensrc
-        return vala, vapi, (others, othersgen)
+                gensrctype[f] = gensrc
+        return vala, vapi, others, othersgen
 
     def generate_vala_compile(self, target: build.BuildTarget) -> \
-            T.Tuple[T.MutableMapping[str, File], T.MutableMapping[str, File], T.List[str]]:
+            T.Tuple[T.MutableMapping[str, File], T.MutableMapping[str, File | build.GeneratedTypes], T.List[str]]:
         """Vala is compiled into C. Set up all necessary build steps here."""
-        (vala_src, vapi_src, other_src) = self.split_vala_sources(target)
+        (vala_src, vapi_src, others, othersgen) = self.split_vala_sources(target)
         extra_dep_files = []
         if not vala_src:
             raise InvalidArguments(f'Vala library {target.name!r} has no Vala or Genie source files.')
@@ -1797,6 +1809,7 @@ class NinjaBackend(backends.Backend):
         args += ['--directory', c_out_dir]
         args += ['--basedir', srcbasedir]
         if target.is_linkable_target():
+            assert isinstance(target, build.LinkableTarget)
             # Library name
             args += ['--library', target.name]
             # Outputted header
@@ -1827,7 +1840,7 @@ class NinjaBackend(backends.Backend):
                     args += ['--shared-library', shared_target.get_filename()]
         # Detect gresources and add --gresources/--gresourcesdir arguments for each
         gres_dirs = []
-        for gensrc in other_src[1].values():
+        for gensrc in othersgen.values():
             if isinstance(gensrc, modules.GResourceTarget):
                 gres_xml, = self.get_custom_target_sources(gensrc)
                 args += ['--gresources=' + gres_xml]
@@ -1853,14 +1866,14 @@ class NinjaBackend(backends.Backend):
         element.add_dep(extra_dep_files)
         self.add_build(element)
         self.create_target_source_introspection(target, valac, args, all_files, [])
-        return other_src[0], other_src[1], vala_c_src
+        return others, othersgen, vala_c_src
 
     def generate_cython_transpile(self, target: build.BuildTarget) -> \
-            T.Tuple[T.MutableMapping[str, File], T.MutableMapping[str, File], T.List[str]]:
+            T.Tuple[T.MutableMapping[str, File], T.MutableMapping[str, File | build.GeneratedTypes], T.List[str]]:
         """Generate rules for transpiling Cython files to C or C++"""
 
         static_sources: T.MutableMapping[str, File] = OrderedDict()
-        generated_sources: T.MutableMapping[str, File] = OrderedDict()
+        generated_sources: T.MutableMapping[str, File | build.GeneratedTypes] = OrderedDict()
         cython_sources: T.List[str] = []
 
         cython = target.compilers['cython']
@@ -1900,11 +1913,12 @@ class NinjaBackend(backends.Backend):
 
         header_deps = []  # Keep track of generated headers for those sources
         for gen in target.get_generated_sources():
+            if isinstance(gen, GeneratedList):
+                builddir = self.get_target_private_dir(target)
+            else:
+                builddir = self.get_target_dir(gen)
             for ssrc in gen.get_outputs():
-                if isinstance(gen, GeneratedList):
-                    ssrc = os.path.join(self.get_target_private_dir(target), ssrc)
-                else:
-                    ssrc = os.path.join(gen.get_builddir(), ssrc)
+                ssrc = os.path.join(builddir, ssrc)
                 if ssrc.endswith('.pyx'):
                     output = os.path.join(self.get_target_private_dir(target), f'{ssrc}.{ext}')
                     element = NinjaBuildElement(
@@ -1917,7 +1931,7 @@ class NinjaBackend(backends.Backend):
                     # TODO: introspection?
                     cython_sources.append(output)
                 else:
-                    generated_sources[ssrc] = mesonlib.File.from_built_file(gen.get_builddir(), ssrc)
+                    generated_sources[ssrc] = mesonlib.File.from_built_file(builddir, ssrc)
                     # Following logic in L883-900 where we determine whether to add generated source
                     # as a header(order-only) dep to the .so compilation rule
                     if not compilers.is_source(ssrc) and \
@@ -2842,11 +2856,9 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
         subdir = genlist.subdir
         exe = generator.get_exe()
         infilelist = genlist.get_inputs()
-        extra_dependencies = self.get_target_depend_files(genlist)
-        for d in genlist.extra_depends:
-            # Add a dependency on all the outputs of this target
-            for output in d.get_outputs():
-                extra_dependencies.append(os.path.join(self.get_target_dir(d), output))
+        dependencies = self.get_target_depend_files(genlist)
+        dependencies += self.unwrap_dep_list(target, generator.depends)
+        dependencies += self.unwrap_dep_list(target, genlist.extra_depends)
         for curfile in infilelist:
             infilename = curfile.rel_to_builddir(self.build_to_src, self.get_target_private_dir(target))
             base_args = generator.get_arglist(infilename)
@@ -2881,11 +2893,9 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
             os.makedirs(abs_pdir, exist_ok=True)
 
             elem = NinjaBuildElement(self.all_outputs, outfilespriv, rulename, infilename)
-            elem.add_dep([self.get_target_filename(x) for x in generator.depends])
+            elem.add_dep(dependencies)
             if generator.depfile is not None:
                 elem.add_item('DEPFILE', depfile)
-            if len(extra_dependencies) > 0:
-                elem.add_dep(extra_dependencies)
 
             if len(generator.outputs) == 1:
                 what = f'{sole_output!r}'

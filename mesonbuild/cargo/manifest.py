@@ -15,7 +15,7 @@ from pathlib import PurePath
 
 
 from . import version
-from ..mesonlib import MesonException, lazy_property, Version
+from ..mesonlib import MesonException, lazy_property
 from .. import mlog
 
 if T.TYPE_CHECKING:
@@ -307,24 +307,14 @@ class Dependency:
     features: T.List[str] = dataclasses.field(default_factory=list)
 
     @lazy_property
-    def meson_version(self) -> T.List[str]:
-        return version.convert(self.version)
+    def accepts_version(self) -> T.Callable[[str], bool]:
+        # The value of the property is the function that checks the validity
+        # of a given package version, so dep.accepts_version(v) works.
+        return version.cargo_parse(self.version)
 
     @lazy_property
     def api(self) -> str:
-        # Extract wanted API version from version constraints.
-        api = set()
-        for v in self.meson_version:
-            if v.startswith(('>=', '==')):
-                api.add(version.api(v[2:].strip()))
-            elif v.startswith('='):
-                api.add(version.api(v[1:].strip()))
-        if not api:
-            return ''
-        elif len(api) == 1:
-            return api.pop()
-        else:
-            raise MesonException(f'Cannot determine minimum API version from {self.version}.')
+        return version.api(self.version)
 
     def update_version(self, v: str) -> None:
         self.version = v
@@ -333,7 +323,7 @@ class Dependency:
         except AttributeError:
             pass
         try:
-            delattr(self, 'meson_version')
+            delattr(self, 'accepts_version')
         except AttributeError:
             pass
 
@@ -706,7 +696,7 @@ class CargoLock:
         for pkg in self.package:
             versions[pkg.name].append(pkg)
         for pkg_versions in versions.values():
-            pkg_versions.sort(reverse=True, key=lambda pkg: Version(pkg.version))
+            pkg_versions.sort(reverse=True, key=lambda pkg: version.SemVer(pkg.version))
         return versions
 
     @classmethod
