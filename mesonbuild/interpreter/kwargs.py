@@ -24,7 +24,7 @@ from .type_checking import PkgConfigDefineType, SourcesVarargsType
 TestArgs = T.Union[str, File, build.Target, Program]
 TargetDepends = T.Union[build.CustomTarget, build.CustomTargetIndex, build.BuildTarget, build.GeneratedList, Program]
 CustomTargetInputs = T.Union[str, build.BuildTarget, build.GeneratedTypes,
-                             build.ExtractedObjects, ExternalProgram, File]
+                             build.ExtractedObjects, Program, File]
 RustAbi = Literal['rust', 'c']
 
 class NativeKW(TypedDict):
@@ -314,8 +314,7 @@ class VcsTag(TypedDict):
 
     command: T.List[T.Union[str, build.BuildTargetTypes, Program, File]]
     fallback: T.Optional[str]
-    input: T.List[T.Union[str, build.BuildTarget, build.GeneratedTypes,
-                          build.ExtractedObjects, Program, File]]
+    input: list[CustomTargetInputs]
     output: T.List[str]
     replace_string: str
     install: bool
@@ -336,7 +335,7 @@ class ConfigureFile(TypedDict):
     install_mode: FileMode
     install_tag: T.Optional[str]
     encoding: str
-    command: T.Optional[T.List[T.Union[build.Executable, ExternalProgram, Compiler, File, str]]]
+    command: T.Optional[T.List[T.Union[build.Executable, Program, Compiler, File, str]]]
     input: T.List[FileOrString]
     configuration: T.Optional[T.Union[T.Dict[str, T.Union[str, int, bool]], build.ConfigurationData]]
     macro_name: T.Optional[str]
@@ -436,18 +435,22 @@ class _LibraryMixin(TypedDict):
     rust_abi: T.Optional[RustAbi]
 
 
+class _VsModuleDefsMixin(TypedDict):
+
+    vs_module_defs: T.Optional[T.Union[str, File, build.CustomTarget, build.CustomTargetIndex]]
+
+
 class _ExecutableMixin(TypedDict):
 
     export_dynamic: T.Optional[bool]
     gui_app: T.Optional[bool]
     implib: T.Optional[T.Union[str, bool]]
     pie: T.Optional[bool]
-    vs_module_defs: T.Optional[T.Union[str, File, build.CustomTarget, build.CustomTargetIndex]]
     win_subsystem: T.Optional[str]
     android_exe_type: T.Optional[Literal['application', 'executable']]
 
 
-class Executable(BuildTarget, _ExecutableMixin):
+class Executable(BuildTarget, _ExecutableMixin, _VsModuleDefsMixin):
     pass
 
 
@@ -469,17 +472,15 @@ class _SharedLibMixin(TypedDict):
     shortname: str
 
 
-class SharedLibrary(BuildTarget, _SharedLibMixin, _LibraryMixin):
-
-    vs_module_defs: T.Optional[T.Union[str, File, build.CustomTarget, build.CustomTargetIndex]]
-
-
-class SharedModule(BuildTarget, _LibraryMixin):
-
-    vs_module_defs: T.Optional[T.Union[str, File, build.CustomTarget, build.CustomTargetIndex]]
+class SharedLibrary(BuildTarget, _SharedLibMixin, _LibraryMixin, _VsModuleDefsMixin):
+    pass
 
 
-class Library(BuildTarget, _SharedLibMixin, _StaticLibMixin, _LibraryMixin):
+class SharedModule(BuildTarget, _LibraryMixin, _VsModuleDefsMixin):
+    pass
+
+
+class Library(BuildTarget, _SharedLibMixin, _StaticLibMixin, _LibraryMixin, _VsModuleDefsMixin):
 
     """For library, both_library, and as a base for build_target"""
 
@@ -573,3 +574,9 @@ class FuncDependency(ExtractRequired):
 class FuncExpectError(TypedDict):
 
     how: str
+
+
+class FuncEnvironment(TypedDict):
+
+    method: Literal['set', 'prepend', 'append']
+    separator: str

@@ -32,7 +32,7 @@ if T.TYPE_CHECKING:
     from ..mesonlib import EnvInitValueType
     from ..interpreterbase.decorators import FeatureCheckBase
 
-    _FullEnvInitValueType = T.Union[EnvironmentVariables, T.List[str], T.List[T.List[str]], EnvInitValueType, str, None]
+    FullEnvInitValueType = T.Union[EnvironmentVariables, T.List[str], T.List[T.List[str]], EnvInitValueType, str, None]
     PkgConfigDefineType = T.Optional[T.Tuple[T.Tuple[str, str], ...]]
     SourcesVarargsType = T.List[T.Union[str, File, GeneratedTypes, StructuredSources, ExtractedObjects, BuildTarget]]
 
@@ -243,7 +243,7 @@ def split_equal_string(input: str) -> T.Tuple[str, str]:
 
 # Split _env_convertor() and env_convertor_with_method() to make mypy happy.
 # It does not want extra arguments in KwargInfo convertor callable.
-def env_convertor_with_method(value: _FullEnvInitValueType,
+def env_convertor_with_method(value: FullEnvInitValueType,
                               init_method: Literal['set', 'prepend', 'append'] = 'set',
                               separator: str = os.pathsep) -> EnvironmentVariables:
     if isinstance(value, str):
@@ -256,7 +256,7 @@ def env_convertor_with_method(value: _FullEnvInitValueType,
         return EnvironmentVariables()
     return value
 
-def _env_convertor(value: _FullEnvInitValueType) -> EnvironmentVariables:
+def _env_convertor(value: FullEnvInitValueType) -> EnvironmentVariables:
     return env_convertor_with_method(value)
 
 ENV_KW: KwargInfo[T.Union[EnvironmentVariables, T.List, T.Dict, str, None]] = KwargInfo(
@@ -352,7 +352,7 @@ OUTPUT_KW: KwargInfo[str] = KwargInfo(
     validator=lambda x: _output_validator([x])
 )
 
-def _local_program_convertor(raw: T.List[T.Union[str, File, BuildTarget, GeneratedTypes, ExtractedObjects, LocalProgram]]) -> T.List[CustomTargetInputs]:
+def _local_program_convertor(raw: T.List[T.Union[str, File, BuildTarget, GeneratedTypes, ExtractedObjects, Program]]) -> T.List[CustomTargetInputs]:
     result: T.List[CustomTargetInputs] = []
     for i in raw:
         if isinstance(i, LocalProgram):
@@ -361,7 +361,7 @@ def _local_program_convertor(raw: T.List[T.Union[str, File, BuildTarget, Generat
             result.append(i)
     return result
 
-CT_INPUT_KW: KwargInfo[T.List[T.Union[str, File, BuildTarget, GeneratedTypes, ExtractedObjects, LocalProgram]]] = KwargInfo(
+CT_INPUT_KW: KwargInfo[T.List[T.Union[str, File, BuildTarget, GeneratedTypes, ExtractedObjects, Program]]] = KwargInfo(
     'input',
     ContainerTypeInfo(list, (str, File, BuildTarget, CustomTarget, CustomTargetIndex, ExtractedObjects, GeneratedList, Program)),
     listify=True,

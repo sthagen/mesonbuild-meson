@@ -124,7 +124,7 @@ if T.TYPE_CHECKING:
     from ..options import OptionDict
     from ..mesonlib import SubProject
     from ..cmdline import SharedCMDOptions
-    from .type_checking import SourcesVarargsType
+    from .type_checking import SourcesVarargsType, FullEnvInitValueType
 
     # Input source types passed to Targets
     SourceInputs = T.Union[mesonlib.FileOrString, build.GeneratedTypes, build.BuildTarget,
@@ -134,7 +134,7 @@ if T.TYPE_CHECKING:
                             build.ExtractedObjects, build.StructuredSources]
     # Sources for custom targets, which can also include ExternalProgram
     CustomTargetSources = T.Union[mesonlib.File, build.GeneratedTypes, build.BuildTarget,
-                                  build.ExtractedObjects, ExternalProgram]
+                                  build.ExtractedObjects, Program]
 
     BuildTargetSource = T.Union[mesonlib.FileOrString, build.GeneratedTypes, build.StructuredSources]
 
@@ -489,8 +489,7 @@ class Interpreter(InterpreterBase, HoldableObject):
             held_type: holder_type
         })
 
-    def process_new_values(self, invalues: T.List[T.Union[TYPE_var, ExecutableSerialisation]]) -> None:
-        invalues = listify(invalues)
+    def process_new_values(self, invalues: list[TYPE_var | ExecutableSerialisation] | list[build.GeneratedTypes | mesonlib.File | build.StructuredSources]) -> None:
         for v in invalues:
             if isinstance(v, ObjectHolder):
                 raise InterpreterException('Modules must not return ObjectHolders')
@@ -508,7 +507,7 @@ class Interpreter(InterpreterBase, HoldableObject):
             elif isinstance(v, dependencies.InternalDependency):
                 # FIXME: This is special cased and not ideal:
                 # The first source is our new VapiTarget, the rest are deps
-                self.process_new_values(v.sources[0])
+                self.process_new_values([v.sources[0]])
             elif isinstance(v, build.InstallDir):
                 self.build.install_dirs.append(v)
             elif isinstance(v, Test):
@@ -1800,7 +1799,7 @@ class Interpreter(InterpreterBase, HoldableObject):
                               required: bool, extra_info: T.List[mlog.TV_Loggable]
                               ) -> T.Optional[Program]:
         mlog.log('Fallback to subproject', mlog.bold(fallback), 'which provides program',
-                 mlog.bold(' '.join(args)))
+                 mlog.bold(' '.join(str(a) for a in args)))
         sp_kwargs: kwtypes.DoSubproject = {
             'required': required,
             'default_options': default_options or {},
@@ -1828,7 +1827,7 @@ class Interpreter(InterpreterBase, HoldableObject):
                           ) -> Program:
         disabled, required, feature = extract_required_kwarg(kwargs, self.subproject)
         if disabled:
-            mlog.log('Program', mlog.bold(' '.join(args[0])), 'skipped: feature', mlog.bold(feature), 'disabled')
+            mlog.log('Program', mlog.bold(' '.join(str(a) for a in args[0])), 'skipped: feature', mlog.bold(feature), 'disabled')
             return self.notfound_program(args[0])
 
         search_dirs = extract_search_dirs(kwargs)
@@ -2003,7 +2002,7 @@ class Interpreter(InterpreterBase, HoldableObject):
             if isinstance(vcs_cmd[0], (str, mesonlib.File)):
                 if isinstance(vcs_cmd[0], mesonlib.File):
                     FeatureNew.single_use('vcs_tag with file as the first argument', '0.62.0', self.subproject, location=node)
-                maincmd = self.find_program_impl(vcs_cmd[0], required=False)
+                maincmd = self.find_program_impl([vcs_cmd[0]], required=False)
                 if maincmd.found():
                     vcs_cmd[0] = maincmd
             else:
@@ -2287,7 +2286,7 @@ class Interpreter(InterpreterBase, HoldableObject):
     def make_test(self, node: mparser.BaseNode,
                   args: T.Tuple[str, T.Union[build.Executable, build.Jar, Program, mesonlib.File, build.CustomTarget, build.CustomTargetIndex]],
                   kwargs: kwtypes.FuncTest | kwtypes.FuncBenchmark,
-                  klass: T.Type[TestClass] = Test) -> TestClass:
+                  klass: T.Type[TestClass] = Test) -> TestClass:  # type: ignore[assignment]
         name = args[0]
         if ':' in name:
             mlog.deprecation(f'":" is not allowed in test name "{name}", it has been replaced with "_"',
@@ -2327,7 +2326,7 @@ class Interpreter(InterpreterBase, HoldableObject):
                      suite,
                      exe,
                      kwargs['depends'],
-                     kwargs.get('is_parallel', False),
+                     T.cast('bool', kwargs.get('is_parallel', False)),
                      kwargs['args'],
                      kwargs['env'],
                      expected_fail,
@@ -2346,7 +2345,7 @@ class Interpreter(InterpreterBase, HoldableObject):
         if any(isinstance(i, ExternalProgram) for i in kwargs['args']):
             FeatureNew.single_use('test with program in args', '1.6.0', self.subproject)
 
-        t = self.make_test(node, args, kwargs)
+        t: Test = self.make_test(node, args, kwargs)
         if is_base_test:
             self.build.tests.append(t)
             mlog.debug('Adding test', mlog.bold(t.name, True))
@@ -2556,7 +2555,7 @@ class Interpreter(InterpreterBase, HoldableObject):
     )
     def func_install_data(self, node: mparser.BaseNode,
                           args: T.Tuple[T.List['mesonlib.FileOrString']],
-                          kwargs: 'kwtypes.FuncInstallData') -> build.Data:
+                          kwargs: 'kwtypes.FuncInstallData') -> list[build.Data]:
         sources = self.source_strings_to_files(args[0] + kwargs['sources'])
         rename = kwargs['rename'] or None
         if rename:
@@ -2699,8 +2698,8 @@ class Interpreter(InterpreterBase, HoldableObject):
     )
     def func_configure_file(self, node: mparser.BaseNode, args: T.List[TYPE_var],
                             kwargs: kwtypes.ConfigureFile) -> mesonlib.File:
-        actions = sorted(x for x in ['configuration', 'command', 'copy']
-                         if kwargs[x] not in [None, False])
+        actions = sorted(x for x in ('configuration', 'command', 'copy')
+                         if kwargs[x] not in [None, False])  # type: ignore[literal-required]
         num_actions = len(actions)
         if num_actions == 0:
             raise InterpreterException('Must specify an action with one of these '
@@ -2809,8 +2808,8 @@ class Interpreter(InterpreterBase, HoldableObject):
             # Substitute @INPUT@, @OUTPUT@, etc here.
             _cmd = mesonlib.substitute_values(kwargs['command'], values)
             mlog.log('Configuring', mlog.bold(output), 'with command')
-            cmd, *args = _cmd
-            res = self.run_command_impl((cmd, args),
+            cmd, *_args = _cmd
+            res = self.run_command_impl((cmd, _args),
                                         {'capture': True,
                                          'console': False,
                                          'check': True,
@@ -3097,7 +3096,7 @@ class Interpreter(InterpreterBase, HoldableObject):
     @typed_pos_args('environment', optargs=[(str, list, dict)])
     @typed_kwargs('environment', ENV_METHOD_KW, ENV_SEPARATOR_KW.evolve(since='0.62.0'))
     def func_environment(self, node: mparser.FunctionNode, args: T.Tuple[T.Union[None, str, T.List['TYPE_var'], T.Dict[str, 'TYPE_var']]],
-                         kwargs: 'TYPE_kwargs') -> EnvironmentVariables:
+                         kwargs: kwtypes.FuncEnvironment) -> EnvironmentVariables:
         init = args[0]
         if init is not None:
             FeatureNew.single_use('environment positional arguments', '0.52.0', self.subproject, location=node)
@@ -3106,7 +3105,8 @@ class Interpreter(InterpreterBase, HoldableObject):
                 raise InvalidArguments(f'"environment": {msg}')
             if isinstance(init, dict) and any(i for i in init.values() if isinstance(i, list)):
                 FeatureNew.single_use('List of string in dictionary value', '0.62.0', self.subproject, location=node)
-            return env_convertor_with_method(init, kwargs['method'], kwargs['separator'])
+            # the validator call above ensured that we have the correct type
+            return env_convertor_with_method(T.cast('FullEnvInitValueType', init), kwargs['method'], kwargs['separator'])
         return EnvironmentVariables()
 
     @typed_pos_args('join_paths', varargs=str, min_varargs=1)
@@ -3222,34 +3222,53 @@ class Interpreter(InterpreterBase, HoldableObject):
         self.validated_cache.add(fname)
 
     @T.overload
-    def source_strings_to_files(self, sources: T.List['mesonlib.FileOrString']) -> T.List['mesonlib.File']: ...
+    def source_strings_to_files(self, sources: list[str]) -> list[mesonlib.File]: ...
 
     @T.overload
-    def source_strings_to_files(self, sources: T.List[T.Union[mesonlib.FileOrString, build.BuildTargetTypes]]) -> T.List[T.Union[mesonlib.File, build.BuildTargetTypes]]: ...
+    def source_strings_to_files(self, sources: list['mesonlib.FileOrString']) -> list['mesonlib.File']: ...
 
     @T.overload
-    def source_strings_to_files(self, sources: T.List[T.Union[mesonlib.FileOrString, build.GeneratedTypes]]) -> T.List[T.Union[mesonlib.File, build.GeneratedTypes]]: ... # noqa: F811
+    def source_strings_to_files(self, sources: list[T.Union[mesonlib.FileOrString, build.BuildTargetTypes]]) -> list[T.Union[mesonlib.File, build.BuildTargetTypes]]: ...  # type: ignore[overload-overlap]
 
     @T.overload
-    def source_strings_to_files(self, sources: T.List[kwtypes.CustomTargetInputs]) -> T.List['CustomTargetSources']: ... # noqa: F811
+    def source_strings_to_files(self, sources: list[T.Union[mesonlib.FileOrString, build.GeneratedTypes]]) -> list[T.Union[mesonlib.File, build.GeneratedTypes]]: ...
 
     @T.overload
-    def source_strings_to_files(self, sources: T.List[T.Union[mesonlib.FileOrString, build.BuildTargetTypes, build.BothLibraries, build.ExtractedObjects, build.GeneratedTypes]],
-                                strict: bool = True
-                                ) -> T.List[T.Union[mesonlib.File, build.BuildTargetTypes, build.BothLibraries, build.ExtractedObjects, build.GeneratedTypes]]: ... # noqa: F811
+    def source_strings_to_files(self, sources: list[kwtypes.CustomTargetInputs]) -> list['CustomTargetSources']: ...  # type: ignore[overload-overlap]
 
     @T.overload
-    def source_strings_to_files(self, sources: T.List[T.Union[mesonlib.FileOrString, build.GeneratedTypes, build.StructuredSources]],
-                                strict: bool = True,
-                                ) -> T.List[T.Union[mesonlib.File, build.GeneratedTypes, build.StructuredSources]]: ... # noqa: F811
+    def source_strings_to_files(self, sources: list[T.Union[mesonlib.FileOrString, build.BuildTargetTypes, build.BothLibraries, build.ExtractedObjects, build.GeneratedTypes]],  # type: ignore[overload-overlap]
+                                ) -> list[T.Union[mesonlib.File, build.BuildTargetTypes, build.BothLibraries, build.ExtractedObjects, build.GeneratedTypes]]: ...
 
     @T.overload
-    def source_strings_to_files(self, sources: T.List['SourceInputs']) -> T.List['SourceOutputs']: ... # noqa: F811
+    def source_strings_to_files(self, sources: list[T.Union[mesonlib.FileOrString, build.GeneratedTypes, build.StructuredSources]],
+                                ) -> list[T.Union[mesonlib.File, build.GeneratedTypes, build.StructuredSources]]: ... # noqa: F811
 
     @T.overload
-    def source_strings_to_files(self, sources: T.List[SourcesVarargsType]) -> T.List['SourceOutputs']: ... # noqa: F811
+    def source_strings_to_files(self, sources: list[SourcesVarargsType]) -> list['SourceOutputs']: ...
 
-    def source_strings_to_files(self, sources: T.List['SourceInputs']) -> T.List['SourceOutputs']: # noqa: F811
+    @T.overload
+    def source_strings_to_files(self, sources: list['SourceInputs']) -> list['SourceOutputs']: ...  # type: ignore[overload-cannot-match]
+
+    def source_strings_to_files(self,
+                                sources: T.Union[
+                                    list[str],
+                                    list[mesonlib.File | str],
+                                    list[mesonlib.File | str | build.BuildTargetTypes],
+                                    list[mesonlib.File | str | build.GeneratedTypes],
+                                    list[kwtypes.CustomTargetInputs],
+                                    list[mesonlib.File | str | build.BuildTargetTypes | build.BothLibraries | build.ExtractedObjects | build.GeneratedTypes],
+                                    list[mesonlib.File | str | build.GeneratedTypes | build.StructuredSources],
+                                    list[SourceInputs],
+                                    list[SourcesVarargsType],
+                                ]
+                                ) -> T.Union[list[mesonlib.File],
+                                             list[mesonlib.File | build.BuildTargetTypes],
+                                             list[mesonlib.File | build.GeneratedTypes],
+                                             list[mesonlib.File | build.BuildTargetTypes | build.BothLibraries | build.ExtractedObjects | build.GeneratedTypes],
+                                             list[mesonlib.File | build.GeneratedTypes | build.StructuredSources],
+                                             list[CustomTargetSources],
+                                             list[SourceOutputs]]:
         """Lower inputs to a list of Targets and Files, replacing any strings.
 
         :param sources: A raw (Meson DSL) list of inputs (targets, files, and
@@ -3258,9 +3277,7 @@ class Interpreter(InterpreterBase, HoldableObject):
         :return: A list of Targets and Files
         """
         mesonlib.check_direntry_issues(sources)
-        if not isinstance(sources, list):
-            sources = [sources]
-        results: T.List['SourceOutputs'] = []
+        results: list[mesonlib.File | build.GeneratedTypes | build.BuildTarget | build.ExtractedObjects | build.StructuredSources | Program] = []
 
         # In Meson 2.0 this shoul not add ALLOW_BUILD_DIR_FILE_REFERENCES
         # universally, and we should just use self.relaxations
@@ -3279,15 +3296,14 @@ class Interpreter(InterpreterBase, HoldableObject):
                     results.append(mesonlib.File.from_built_file(self.subdir, s))
                 else:
                     results.append(mesonlib.File.from_source_file(self.environment.source_dir, self.subdir, s))
-            elif isinstance(s, (mesonlib.File, ExternalProgram,
-                                build.GeneratedList, build.BuildTarget,
-                                build.CustomTargetIndex, build.CustomTarget,
+            elif isinstance(s, (mesonlib.File, build.GeneratedList, Program,
+                                build.BuildTarget, build.CustomTargetIndex, build.CustomTarget,
                                 build.ExtractedObjects, build.StructuredSources)):
                 results.append(s)
             else:
                 raise InterpreterException(f'Source item is {s!r} instead of '
                                            'string or File-type object')
-        return results
+        return results  # type: ignore[return-value]
 
     def validate_forbidden_targets(self, name: str, in_root: bool) -> None:
         if name.startswith('meson-internal__'):
@@ -3904,7 +3920,7 @@ class Interpreter(InterpreterBase, HoldableObject):
     @noKwargs
     @noArgsFlattening
     @noSecondLevelHolderResolving
-    def func_set_variable(self, node: mparser.BaseNode, args: T.Tuple[str, object], kwargs: 'TYPE_kwargs') -> None:
+    def func_set_variable(self, node: mparser.BaseNode, args: T.Tuple[str, TYPE_var | InterpreterObject], kwargs: 'TYPE_kwargs') -> None:
         varname, value = args
         if mparser.IDENT_RE.fullmatch(varname) is None:
             raise InvalidCode('Invalid variable name: ' + varname)
@@ -3914,8 +3930,8 @@ class Interpreter(InterpreterBase, HoldableObject):
     @noKwargs
     @noArgsFlattening
     @unholder_return
-    def func_get_variable(self, node: mparser.BaseNode, args: T.Tuple[T.Union[str, Disabler], T.Optional[object]],
-                          kwargs: 'TYPE_kwargs') -> 'TYPE_var':
+    def func_get_variable(self, node: mparser.BaseNode, args: T.Tuple[T.Union[str, Disabler], T.Optional[TYPE_var | InterpreterObject]],
+                          kwargs: 'TYPE_kwargs') -> TYPE_var | InterpreterObject:
         varname, fallback = args
         if isinstance(varname, Disabler):
             return varname

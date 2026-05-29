@@ -38,7 +38,6 @@ if T.TYPE_CHECKING:
     from ..cmdline import StrOrBytesPath
     from ..environment import Environment
     from ..compilers.compilers import Compiler
-    from .. import programs
 
     class _EnvPickleLoadable(Protocol):
 
@@ -269,7 +268,7 @@ def is_ascii_string(astring: T.Union[str, bytes]) -> bool:
     return True
 
 
-def check_direntry_issues(direntry_array: T.Union[T.Iterable[T.Union[str, bytes]], str, bytes]) -> None:
+def check_direntry_issues(direntry_array: T.Iterable[object]) -> None:
     import locale
     # Warn if the locale is not UTF-8. This can cause various unfixable issues
     # such as os.stat not being able to decode filenames with unicode in them.
@@ -280,13 +279,13 @@ def check_direntry_issues(direntry_array: T.Union[T.Iterable[T.Union[str, bytes]
         if isinstance(direntry_array, (str, bytes)):
             direntry_array = [direntry_array]
         for de in direntry_array:
-            if is_ascii_string(de):
-                continue
-            mlog.warning(textwrap.dedent(f'''
-                You are using {e!r} which is not a Unicode-compatible
-                locale but you are trying to access a file system entry called {de!r} which is
-                not pure ASCII. This may cause problems.
-                '''))
+            if isinstance(de, (str, bytes)) and not is_ascii_string(de):
+                mlog.warning(textwrap.dedent(f'''
+                    You are using {e!r} which is not a Unicode-compatible
+                    locale but you are trying to access a file system entry called {de!r} which is
+                    not pure ASCII. This may cause problems.
+                    '''))
+
 
 class SimpleABC(type):
     '''Lightweight replacement for ``abc.ABCMeta``.
@@ -1876,7 +1875,7 @@ def Popen_safe_logged(args: T.List[str], msg: str = 'Called', **kwargs: T.Any) -
     return p, o, e
 
 
-def iter_regexin_iter(regexiter: T.Iterable[str], initer: T.Iterable[str | programs.Program]) -> T.Optional[str]:
+def iter_regexin_iter(regexiter: T.Iterable[str], initer: T.Iterable[object]) -> T.Optional[str]:
     '''
     Takes each regular expression in @regexiter and tries to search for it in
     every item in @initer. If there is a match, returns that match.
@@ -1892,7 +1891,7 @@ def iter_regexin_iter(regexiter: T.Iterable[str], initer: T.Iterable[str | progr
     return None
 
 
-def _substitute_values_check_errors(command: T.Sequence[str | programs.Program], values: T.Dict[str, T.Union[str, T.List[str]]]) -> None:
+def _substitute_values_check_errors(command: T.Sequence[object], values: T.Dict[str, T.Union[str, T.List[str]]]) -> None:
     # Error checking
     inregex: T.List[str] = ['@INPUT([0-9]+)?@', '@PLAINNAME@', '@BASENAME@']
     outregex: T.List[str] = ['@OUTPUT([0-9]+)?@', '@OUTDIR@']
@@ -1932,19 +1931,9 @@ def _substitute_values_check_errors(command: T.Sequence[str | programs.Program],
                 raise MesonException(m.format(match2.group(), len(values['@OUTPUT@'])))
 
 
-@T.overload
-def substitute_values(command: T.List[str],
+def substitute_values(command: T.List[_T],
                       values: T.Dict[str, T.Union[str, T.List[str]]]
-                      ) -> T.List[str]: ...
-
-@T.overload
-def substitute_values(command: T.List[str | programs.Program],
-                      values: T.Dict[str, T.Union[str, T.List[str]]]
-                      ) -> T.List[str | programs.Program]: ...
-
-def substitute_values(command: T.List[str | programs.Program] | T.List[str],
-                      values: T.Dict[str, T.Union[str, T.List[str]]]
-                      ) -> T.List[str | programs.Program] | T.List[str]:
+                      ) -> T.List[_T]:
     '''
     Substitute the template strings in the @values dict into the list of
     strings @command and return a new list. For a full list of the templates,
@@ -1983,7 +1972,7 @@ def substitute_values(command: T.List[str | programs.Program] | T.List[str],
             return v[0]
         return v
 
-    outcmd: T.List[str | programs.Program] = []
+    outcmd: T.List[_T] = []
     for vv in command:
         if not isinstance(vv, str):
             outcmd.append(vv)
@@ -1991,22 +1980,27 @@ def substitute_values(command: T.List[str | programs.Program] | T.List[str],
             # Append values that are exactly a template string.
             # This is faster than a string replace, and makes it
             # possible to special case @INPUT@ and @OUTPUT@ too
+
+            # We have to do a bunch of casting here because mypy doesn't realize
+            # that if we're adding str to this list then we got string inputs,
+            # and attempting to set the return type to `_T | str` causes
+            # problems elswhere, so let's contain the pain here.
             if vv == '@INPUT@':
                 inputs = values['@INPUT@']
                 assert isinstance(inputs, list)
-                outcmd += inputs
+                outcmd += T.cast('list[_T]', inputs)
             elif vv == '@OUTPUT@':
                 outputs = values['@OUTPUT@']
                 assert isinstance(outputs, list)
-                outcmd += outputs
+                outcmd += T.cast('list[_T]', outputs)
             else:
                 o = values[vv]
                 assert isinstance(o, str), 'for mypy'
-                outcmd.append(o)
+                outcmd.append(T.cast('_T', o))
         else:
             # Substitute everything else with replacement
             assert values
-            outcmd.append(value_rx.sub(replace, vv))
+            outcmd.append(T.cast('_T', value_rx.sub(replace, vv)))
 
     return outcmd
 
