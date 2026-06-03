@@ -24,7 +24,6 @@ from .. import mesonlib
 from .. import build
 from .. import mlog
 from .. import compilers
-from .. import programs
 from .. import tooldetect
 from ..arglist import CompilerArgs
 from ..compilers import Compiler, is_library
@@ -255,6 +254,8 @@ class NinjaRule:
             if rsp == '_RSP':
                 if self.rspfile_quote_style is RSPFileSyntax.TASKING:
                     outfile.write(' command = {} --option-file=$out.rsp\n'.format(' '.join([self._quoter(x) for x in self.command])))
+                elif self.rspfile_quote_style is RSPFileSyntax.NASM:
+                    outfile.write(' command = {} -@$out.rsp\n'.format(' '.join([self._quoter(x) for x in self.command])))
                 else:
                     outfile.write(' command = {} @$out.rsp\n'.format(' '.join([self._quoter(x) for x in self.command])))
                 outfile.write(' rspfile = $out.rsp\n')
@@ -839,7 +840,7 @@ class NinjaBackend(backends.Backend):
                                            parameters: CompilerArgs | T.List[str],
                                            sources: FileList,
                                            generated_sources: FileList,
-                                           unity_sources: T.Optional[T.List[str]] = None) -> None:
+                                           unity_sources: list[File] | None = None) -> None:
         '''
         Adds the source file introspection information for a language of a target
 
@@ -984,7 +985,7 @@ class NinjaBackend(backends.Backend):
         obj_list = []
         is_unity = self.is_unity(target)
         header_deps = []
-        unity_src = []
+        unity_src: list[File] = []
         unity_deps = [] # Generated sources that must be built before compiling a Unity target.
         header_deps += self.get_generated_headers(target)
 
@@ -1004,13 +1005,12 @@ class NinjaBackend(backends.Backend):
         # This will be set as dependencies of all the target's sources. At the
         # same time, also deal with generated sources that need to be compiled.
         generated_source_files: T.List[File] = []
-        for rel_src in generated_sources.keys():
+        for rel_src in generated_sources:
             raw_src = File.from_built_relative(rel_src)
             if compilers.is_source(rel_src):
                 if is_unity and self.get_target_source_can_unity(target, rel_src):
                     unity_deps.append(raw_src)
-                    abs_src = os.path.join(self.environment.get_build_dir(), rel_src)
-                    unity_src.append(abs_src)
+                    unity_src.append(raw_src)
                 else:
                     generated_source_files.append(raw_src)
             elif compilers.is_object(rel_src):
@@ -1101,9 +1101,7 @@ class NinjaBackend(backends.Backend):
                 o, s = self.generate_llvm_ir_compile(target, src)
                 obj_list.append(o)
             elif is_unity and self.get_target_source_can_unity(target, src):
-                abs_src = os.path.join(self.environment.get_build_dir(),
-                                       src.rel_to_builddir(self.build_to_src))
-                unity_src.append(abs_src)
+                unity_src.append(src)
             else:
                 o, s = self.generate_single_compile(target, src, False, [],
                                                     [*header_deps, *d_generated_deps, *fortran_order_deps],
@@ -1250,27 +1248,12 @@ class NinjaBackend(backends.Backend):
             if isinstance(s, build.GeneratedList):
                 self.generate_genlist_for_target(s, target)
 
-    def unwrap_dep_list(self, target: build.Target, dep_targets: T.Iterable[build.Target | build.GeneratedList | build.CustomTargetIndex | programs.Program]) -> T.List[str]:
-        deps = []
-        for i in dep_targets:
-            # Add a dependency on all the outputs of this target
-            if isinstance(i, build.LocalProgram):
-                i = i.program
-            if isinstance(i, programs.Program):
-                continue
-            for output in i.get_outputs():
-                if isinstance(i, GeneratedList):
-                    assert isinstance(target, (build.BuildTarget, build.CustomTarget, build.CustomTargetIndex))
-                    deps.append(os.path.join(self.get_target_private_dir(target), output))
-                else:
-                    deps.append(os.path.join(self.get_target_dir(i), output))
-        return deps
-
     def generate_custom_target(self, target: build.CustomTarget) -> None:
         self.custom_target_generator_inputs(target)
         (srcs, ofilenames, cmd) = self.eval_custom_target_command(target)
-        deps = self.unwrap_dep_list(target, target.get_dependencies())
+        deps = self.get_paths_for_dep_outputs(target, target.get_dependencies())
         deps += self.get_target_depend_files(target)
+        deps += self.get_paths_for_dep_outputs(target, target.extra_depends)
         if target.build_always_stale:
             deps.append('PHONY')
         if target.depfile_type == 'gcc':
@@ -1281,10 +1264,6 @@ class NinjaBackend(backends.Backend):
             rulename = 'CUSTOM_COMMAND'
         elem = NinjaBuildElement(self.all_outputs, ofilenames, rulename, srcs)
         elem.add_dep(deps)
-        for d in target.extra_depends:
-            # Add a dependency on all the outputs of this target
-            for output in d.get_outputs():
-                elem.add_dep(os.path.join(self.get_target_dir(d), output))
 
         cmd, reason = self.as_meson_exe_cmdline(target.command[0], cmd[1:],
                                                 extra_bdeps=target.get_transitive_build_target_deps(),
@@ -1335,7 +1314,7 @@ class NinjaBackend(backends.Backend):
             elem.add_item('COMMAND', meson_exe_cmd)
             elem.add_item('description', f'Running external command {target.name}{cmd_type}')
             elem.add_item('pool', 'console')
-        deps = self.unwrap_dep_list(target, target.get_dependencies())
+        deps = self.get_paths_for_dep_outputs(target, target.get_dependencies())
         deps += self.get_target_depend_files(target)
         elem.add_dep(deps)
         self.add_build(elem)
@@ -2857,8 +2836,8 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
         exe = generator.get_exe()
         infilelist = genlist.get_inputs()
         dependencies = self.get_target_depend_files(genlist)
-        dependencies += self.unwrap_dep_list(target, generator.depends)
-        dependencies += self.unwrap_dep_list(target, genlist.extra_depends)
+        dependencies += self.get_paths_for_dep_outputs(target, generator.depends)
+        dependencies += self.get_paths_for_dep_outputs(target, genlist.extra_depends)
         for curfile in infilelist:
             infilename = curfile.rel_to_builddir(self.build_to_src, self.get_target_private_dir(target))
             base_args = generator.get_arglist(infilename)
@@ -3224,7 +3203,7 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
                                 header_deps: T.Optional[T.List[FileOrString]] = None,
                                 order_deps: T.Optional[T.List[File] | T.List[FileOrString]] = None,
                                 extra_args: T.Optional[T.List[str]] = None,
-                                unity_sources: T.Optional[T.List[str]] = None,
+                                unity_sources: list[File] | None = None,
                                 ) -> T.Tuple[str, str]:
         """
         Compiles C/C++, ObjC/ObjC++, Fortran, and D sources

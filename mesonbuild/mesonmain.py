@@ -20,6 +20,14 @@ import typing as T
 from .utils.core import MesonException, MesonBugException
 from . import mlog
 
+if T.TYPE_CHECKING:
+
+    class MesonMainCMDOptions(T.Protocol):
+
+        command: str
+        run_func: T.Callable[['MesonMainCMDOptions'], int]
+
+
 def errorhandler(e: Exception, command: str) -> int:
     import traceback
     if isinstance(e, MesonException):
@@ -178,7 +186,7 @@ class CommandLineParser:
 
         from . import mesonlib
         args = mesonlib.expand_arguments(args)
-        options = parser.parse_args(args)
+        options = T.cast('MesonMainCMDOptions', parser.parse_args(args))
 
         if command is None:
             command = options.command
@@ -213,38 +221,38 @@ def run_script_command(script_name: str, script_args: T.List[str]) -> int:
     module_name = script_map.get(script_name, script_name)
 
     try:
-        module = importlib.import_module('mesonbuild.scripts.' + module_name)
-    except ModuleNotFoundError as e:
+        func = T.cast('T.Callable[[list[str]], int]',
+                      importlib.import_module('mesonbuild.scripts.' + module_name).run)
+    except (ModuleNotFoundError, AttributeError) as e:
         mlog.exception(e)
         return 1
 
     try:
-        return module.run(script_args)
+        return func(script_args)
     except MesonException as e:
         mlog.error(f'Error in {script_name} helper script:')
         mlog.exception(e)
         return 1
 
 def ensure_stdout_accepts_unicode() -> None:
-    if sys.stdout.encoding and not sys.stdout.encoding.upper().startswith('UTF-'):
-        sys.stdout.reconfigure(errors='surrogateescape') # type: ignore[attr-defined]
+    if sys.stdout.encoding and isinstance(sys.stdout.encoding, str) and not sys.stdout.encoding.upper().startswith('UTF-'):
+        sys.stdout.reconfigure(errors='surrogateescape')  # type: ignore[union-attr]
 
 def set_meson_command(mainfile: str) -> None:
     # Set the meson command that will be used to run scripts and so on
     from . import mesonlib
     mesonlib.set_meson_command(mainfile)
 
-def validate_original_args(args):
+def validate_original_args(args: list[str]) -> None:
     import mesonbuild.options
     import itertools
 
-    def has_startswith(coll, target):
+    def has_startswith(coll: list[str], target: str) -> bool:
         for entry in coll:
             if entry.startswith(target + '=') or entry == target:
                 return True
         return False
-    #ds = [x for x in args if x.startswith('-D')]
-    #longs = [x for x in args if x.startswith('--')]
+
     for optionkey in itertools.chain(mesonbuild.options.BUILTIN_DIR_OPTIONS, mesonbuild.options.BUILTIN_CORE_OPTIONS):
         longarg = mesonbuild.options.argparse_name_to_arg(optionkey.name)
         shortarg = f'-D{optionkey.name}'

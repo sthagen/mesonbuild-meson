@@ -411,7 +411,7 @@ class Backend:
             return os.path.join(self.build_to_src, target_dir)
         return self.build_to_src
 
-    def get_target_private_dir(self, target: build.BuildTargetTypes) -> str:
+    def get_target_private_dir(self, target: build.AnyTargetType) -> str:
         return os.path.join(self.get_target_filename(target, warn_multi_output=False) + '.p')
 
     def get_target_private_dir_abs(self, target: build.BuildTargetTypes) -> str:
@@ -441,7 +441,7 @@ class Backend:
         osrc = f'{target.name}-unity{number}.{suffix}'
         return mesonlib.File.from_built_file(self.get_target_private_dir(target), osrc)
 
-    def generate_unity_files(self, target: build.BuildTarget, unity_src: T.List[str]) -> T.List[mesonlib.File]:
+    def generate_unity_files(self, target: build.BuildTarget, unity_src: list[File]) -> list[mesonlib.File]:
         abs_files: T.List[str] = []
         result: T.List[mesonlib.File] = []
         compsrcs = classify_unity_sources(target.compilers.values(), unity_src)
@@ -474,7 +474,7 @@ class Backend:
                     ofile = init_language_file(comp.get_default_suffix(), unity_file_number)
                     unity_file_number += 1
                     files_in_current = 0
-                ofile.write(f'#include<{src}>\n')
+                ofile.write(f'#include<{src.absolute_path(self.source_dir, self.build_dir)}>\n')
                 files_in_current += 1
             if ofile:
                 ofile.close()
@@ -484,7 +484,7 @@ class Backend:
         return result
 
     @staticmethod
-    def relpath(todir: str, fromdir: str) -> str:
+    def relpath(todir: str | os.PathLike[str], fromdir: str | os.PathLike[str]) -> str:
         return os.path.relpath(os.path.join('dummyprefixdir', todir),
                                os.path.join('dummyprefixdir', fromdir))
 
@@ -1472,20 +1472,31 @@ class Backend:
             srcs += fname
         return srcs
 
+    def get_paths_for_dep_outputs(self, target: build.Target, dep_targets: T.Iterable[build.Target | build.GeneratedList | build.CustomTargetIndex | programs.Program]) -> T.List[str]:
+        """Return a list of strings with the paths to all the outputs of all targets in
+           dep_targets."""
+        deps = []
+        for i in dep_targets:
+            if isinstance(i, build.LocalProgram):
+                i = i.program
+            if isinstance(i, programs.Program):
+                continue
+            for output in i.get_outputs():
+                if isinstance(i, build.GeneratedList):
+                    assert isinstance(target, (build.BuildTarget, build.CustomTarget, build.CustomTargetIndex))
+                    deps.append(os.path.join(self.get_target_private_dir(target), output))
+                else:
+                    deps.append(os.path.join(self.get_target_dir(i), output))
+        return deps
+
     def get_target_depend_files(self, target: T.Union[build.Target, build.GeneratedList], absolute_paths: bool = False) -> T.List[str]:
         deps: T.List[str] = []
         for i in target.depend_files:
-            if isinstance(i, mesonlib.File):
-                if absolute_paths:
-                    deps.append(i.absolute_path(self.environment.get_source_dir(),
-                                                self.environment.get_build_dir()))
-                else:
-                    deps.append(i.rel_to_builddir(self.build_to_src))
+            if absolute_paths:
+                deps.append(i.absolute_path(self.environment.get_source_dir(),
+                                            self.environment.get_build_dir()))
             else:
-                if absolute_paths:
-                    deps.append(os.path.join(self.environment.get_source_dir(), target.get_subdir(), i))
-                else:
-                    deps.append(os.path.join(self.build_to_src, target.get_subdir(), i))
+                deps.append(i.rel_to_builddir(self.build_to_src))
         return deps
 
     def get_custom_target_output_dir(self, target: build.AnyTargetType) -> str:

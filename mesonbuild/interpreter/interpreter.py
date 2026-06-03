@@ -521,7 +521,7 @@ class Interpreter(InterpreterBase, HoldableObject):
     def handle_meson_version(self, pv: str, location: mparser.BaseNode) -> None:
         if not mesonlib.version_compare(coredata.stable_version, pv):
             raise InterpreterException.from_node(f'Meson version is {coredata.version} but project requires {pv}', node=location)
-        mesonlib.project_meson_versions[self.subproject] = pv
+        mesonlib.project_meson_versions[self.subproject] = mesonlib.version_check_to_range([pv])
 
     def handle_meson_version_from_ast(self) -> None:
         if not self.ast.lines:
@@ -1361,7 +1361,7 @@ class Interpreter(InterpreterBase, HoldableObject):
         else:
             # absent 'native' means 'both' for backwards compatibility
             tv = FeatureNew.get_target_version(self.subproject)
-            if FeatureNew.check_version(tv, '0.54.0'):
+            if FeatureNew.check_version(tv, '0.54'):
                 mlog.warning('add_languages is missing native:, assuming languages are wanted for both host and build.',
                              location=node)
 
@@ -2786,7 +2786,7 @@ class Interpreter(InterpreterBase, HoldableObject):
                 if confdata_useless:
                     ifbase = os.path.basename(inputs_abs[0])
                     tv = FeatureNew.get_target_version(self.subproject)
-                    if FeatureNew.check_version(tv, '0.47.0'):
+                    if FeatureNew.check_version(tv, '0.47'):
                         mlog.warning('Got an empty configuration_data() object and found no '
                                      f'substitutions in the input file {ifbase!r}. If you want to '
                                      'copy a file to the build dir, use the \'copy:\' keyword '
@@ -3063,7 +3063,7 @@ class Interpreter(InterpreterBase, HoldableObject):
                 mlog.warning(f'Consider using the built-in option for language standard version instead of using "{arg}".',
                              location=self.current_node)
 
-    def _add_global_arguments(self, node: mparser.FunctionNode, argsdict: T.Dict[str, T.List[str]],
+    def _add_global_arguments(self, node: mparser.FunctionNode, argsdict: T.Dict[Language, T.List[str]],
                               args: T.List[str], kwargs: 'kwtypes.FuncAddProjectArgs') -> None:
         if self.is_subproject():
             msg = f'Function \'{node.func_name.value}\' cannot be used in subprojects because ' \
@@ -3076,11 +3076,11 @@ class Interpreter(InterpreterBase, HoldableObject):
         frozen = self.project_args_frozen or self.global_args_frozen
         self._add_arguments(node, argsdict, frozen, args, kwargs)
 
-    def _add_project_arguments(self, node: mparser.FunctionNode, argsdict: T.Dict[str, T.List[str]],
+    def _add_project_arguments(self, node: mparser.FunctionNode, argsdict: T.Dict[Language, T.List[str]],
                                args: T.List[str], kwargs: 'kwtypes.FuncAddProjectArgs') -> None:
         self._add_arguments(node, argsdict, self.project_args_frozen, args, kwargs)
 
-    def _add_arguments(self, node: mparser.FunctionNode, argsdict: T.Dict[str, T.List[str]],
+    def _add_arguments(self, node: mparser.FunctionNode, argsdict: T.Dict[Language, T.List[str]],
                        args_frozen: bool, args: T.List[str], kwargs: 'kwtypes.FuncAddProjectArgs') -> None:
         if args_frozen:
             msg = f'Tried to use \'{node.func_name.value}\' after a build target has been declared.\n' \

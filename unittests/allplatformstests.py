@@ -41,6 +41,7 @@ from mesonbuild.options import OptionKey
 from mesonbuild.programs import ExternalProgram
 
 from mesonbuild.compilers.mixins.clang import ClangCompiler
+from mesonbuild.compilers.mixins.elbrus import ElbrusCompiler
 from mesonbuild.compilers.mixins.gnu import GnuCompiler
 from mesonbuild.compilers.mixins.intel import IntelGnuLikeCompiler
 from mesonbuild.compilers.c import VisualStudioCCompiler, ClangClCCompiler
@@ -1164,7 +1165,11 @@ class AllPlatformTests(BasePlatformTests):
                     # Very rough/strict heuristics. Would never work for actual
                     # compiler detection, but should be ok for the tests.
                     ebase = os.path.basename(evalue)
-                    if ebase.startswith('g') or ebase.endswith(('-gcc', '-g++')):
+                    if ecc.id == 'lcc':
+                        # lcc ships the gcc symlink, but it isn't a GnuCompiler,
+                        # but a GnuLikeCompiler
+                        self.assertIsInstance(ecc, ElbrusCompiler)
+                    elif ebase.startswith('g') or ebase.endswith(('-gcc', '-g++')):
                         self.assertIsInstance(ecc, gnu)
                         self.assertIsInstance(elinker, ar)
                     elif 'clang-cl' in ebase:
@@ -2959,16 +2964,16 @@ class AllPlatformTests(BasePlatformTests):
         testdir = os.path.join(self.unit_test_dir, '40 featurenew subprojects')
         out = self.init(testdir)
         # Parent project warns correctly
-        self.assertRegex(out, "WARNING: Project targets '>=0.45'.*'0.47.0': dict")
+        self.assertRegex(out, "WARNING: Project targets '>= 0.45'.*'0.47.0': dict")
         # Subprojects warn correctly
-        self.assertRegex(out, r"foo\| .*WARNING: Project targets '>=0.40'.*'0.44.0': disabler")
-        self.assertRegex(out, r"baz\| .*WARNING: Project targets '!=0.40'.*'0.44.0': disabler")
+        self.assertRegex(out, r"foo\| .*WARNING: Project targets '>= 0.40'.*'0.44.0': disabler")
+        self.assertRegex(out, r"baz\| .*WARNING: Project does not target a minimum version.*'0.44.0': disabler")
         # Subproject has a new-enough meson_version, no warning
         self.assertNotRegex(out, "WARNING: Project targets.*Python")
         # Ensure a summary is printed in the subproject and the outer project
-        self.assertRegex(out, r"\| WARNING: Project specifies a minimum meson_version '>=0.40'")
+        self.assertRegex(out, r"\| WARNING: Project specifies a minimum meson_version '>= 0.40'")
         self.assertRegex(out, r"\| \* 0.44.0: {'disabler'}")
-        self.assertRegex(out, "WARNING: Project specifies a minimum meson_version '>=0.45'")
+        self.assertRegex(out, "WARNING: Project specifies a minimum meson_version '>= 0.45'")
         self.assertRegex(out, " * 0.47.0: {'dict'}")
 
     def test_configure_file_warnings(self):

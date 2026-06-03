@@ -31,7 +31,7 @@ from mesonbuild import mlog
 from .core import MesonException, HoldableObject
 
 if T.TYPE_CHECKING:
-    from typing_extensions import Literal, Protocol
+    from typing_extensions import Literal, Protocol, Self
 
     from .._typing import ImmutableListProtocol
     from ..build import ConfigurationData
@@ -47,9 +47,20 @@ if T.TYPE_CHECKING:
 
         version: str
 
+    class Comparable(Protocol):
+        """Protocol for annotating comparable types."""
+        def __eq__(self, other: object) -> bool: ...
+        def __ne__(self, other: object) -> bool: ...
+        def __lt__(self, other: Self) -> bool: ...
+        def __le__(self, other: Self) -> bool: ...
+        def __ge__(self, other: Self) -> bool: ...
+        def __gt__(self, other: Self) -> bool: ...
+
     # A generic type for pickle_load. This allows any type that has either a
     # .version or a .environment to be passed.
     _PL = T.TypeVar('_PL', bound=T.Union[_EnvPickleLoadable, _VerPickleLoadable])
+
+    FileLike = T.TypeVar('FileLike', bound='File' | str)
 
 FileOrString = T.Union['File', str]
 
@@ -80,6 +91,7 @@ __all__ = [
     'PerThreeMachine',
     'PerThreeMachineDefaultable',
     'ProgressBar',
+    'Range',
     'RealPathAction',
     'TemporaryDirectoryWinProof',
     'Version',
@@ -164,6 +176,7 @@ __all__ = [
     'typeslistify',
     'unique_list',
     'verbose_git',
+    'version_check_to_range',
     'version_compare',
     'version_compare_condition_with_min',
     'version_compare_many',
@@ -183,7 +196,7 @@ class NoProjectVersion:
 # TODO: this is such a hack, this really should be either in coredata or in the
 # interpreter
 # {subproject: project_meson_version}
-project_meson_versions: T.Dict[str, T.Union[str, NoProjectVersion]] = {}
+project_meson_versions: T.Dict[str, T.Union[Range[Version], NoProjectVersion]] = {}
 
 
 from glob import glob
@@ -514,8 +527,8 @@ def get_compiler_for_source(compilers: T.Iterable['Compiler'], src: 'FileOrStrin
     raise MesonException(f'No specified compiler can handle file {src!s}')
 
 
-def classify_unity_sources(compilers: T.Iterable['Compiler'], sources: T.Sequence['FileOrString']) -> T.Dict['Compiler', T.List['FileOrString']]:
-    compsrclist: T.Dict['Compiler', T.List['FileOrString']] = {}
+def classify_unity_sources(compilers: T.Iterable['Compiler'], sources: T.Sequence[FileLike]) -> T.Dict['Compiler', T.List[FileLike]]:
+    compsrclist: T.Dict['Compiler', T.List[FileLike]] = {}
     for src in sources:
         comp = get_compiler_for_source(compilers, src)
         if comp not in compsrclist:
@@ -916,10 +929,10 @@ class Version:
                 for m in _VERSION_TOK_RE.finditer(s)]
 
     def __str__(self) -> str:
-        return '{} (V={})'.format(self._s, str(self._v))
+        return self._s
 
     def __repr__(self) -> str:
-        return f'<Version: {self._s}>'
+        return f'<Version: {self._s!r} V={self._v!r}>'
 
     def __lt__(self, other: object) -> bool:
         if isinstance(other, Version):
@@ -993,7 +1006,7 @@ def _version_extract_cmpop(vstr2: str) -> T.Tuple[T.Callable[[T.Any, T.Any], boo
     else:
         cmpop = operator.eq
 
-    return (cmpop, vstr2)
+    return (cmpop, vstr2.strip())
 
 
 def version_compare(vstr1: str, vstr2: str) -> bool:
@@ -1014,45 +1027,126 @@ def version_compare_many(vstr1: str, conditions: T.Union[str, T.Iterable[str]]) 
     return not not_found, not_found, found
 
 
+_V = T.TypeVar('_V', bound='Comparable')
+
+@dataclasses.dataclass(order=False)
+class Range(T.Generic[_V]):
+    min: T.Optional[_V] = None
+    min_eq: bool = False
+    max: T.Optional[_V] = None
+    max_eq: bool = False
+    is_empty: bool = False
+
+    def __str__(self) -> str:
+        if self.is_empty:
+            return '(empty)'
+        if self.min is not None and self.max is not None and self.min == self.max:
+            return f'== {self.min}'
+        parts = []
+        if self.min is not None:
+            parts.append(f'>{"=" if self.min_eq else ""} {self.min}')
+        if self.max is not None:
+            parts.append(f'<{"=" if self.max_eq else ""} {self.max}')
+        return ', '.join(parts) if parts else '(any)'
+
+    def __contains__(self, x: _V) -> bool:
+        if self.is_empty:
+            return False
+        if self.min is not None and (x < self.min if self.min_eq else x <= self.min):
+            return False
+        if self.max is not None and (x > self.max if self.max_eq else x >= self.max):
+            return False
+        return True
+
+    def __post_init__(self) -> None:
+        if self.min is None or self.max is None:
+            return
+        self.is_empty = False
+        if self.min < self.max:
+            return
+        if self.min == self.max and self.min_eq and self.max_eq:
+            return
+        self.min = None
+        self.max = None
+        self.is_empty = True
+
+    def _intersect_min(self, v: _V, eq: bool) -> None:
+        if self.min is None or v > self.min:
+            self.min, self.min_eq = v, eq
+        elif v == self.min:
+            self.min_eq = eq and self.min_eq
+
+    def _intersect_max(self, v: _V, eq: bool) -> None:
+        if self.max is None or v < self.max:
+            self.max, self.max_eq = v, eq
+        elif v == self.max:
+            self.max_eq = eq and self.max_eq
+
+    def intersect(self, x: Range[_V]) -> Range[_V]:
+        if x.is_empty:
+            return copy.copy(x)
+        result = copy.copy(self)
+        if self.is_empty:
+            return result
+        if x.min is not None:
+            result._intersect_min(x.min, x.min_eq)
+        if x.max is not None:
+            result._intersect_max(x.max, x.max_eq)
+        result.__post_init__()
+        return result
+
+    def always(self, inner: Range[_V]) -> T.Optional[bool]:
+        """Check if inner is always true or always false given self.
+
+        Returns True if inner is always satisfied by any value in self,
+        False if no value in self satisfies inner, None if indeterminate."""
+        narrowed = self.intersect(inner)
+        if narrowed.is_empty:
+            return False
+        if narrowed == self:
+            return True
+        return None
+
+
+# note that Range is immutable, so no need to have Range() | None
+def version_check_to_range(checks: T.List[str], start: Range[Version] = Range()) -> Range[Version]:
+    for x in checks:
+        op, v = _version_extract_cmpop(x)
+        if op is operator.ge:
+            r = Range(min=Version(v), min_eq=True)
+        elif op is operator.gt:
+            r = Range(min=Version(v), min_eq=False)
+        elif op is operator.le:
+            r = Range(max=Version(v), max_eq=True)
+        elif op is operator.lt:
+            r = Range(max=Version(v), max_eq=False)
+        elif op is operator.eq:
+            r = Range(min=Version(v), max=Version(v), min_eq=True, max_eq=True)
+        elif op is operator.ne:
+            v_ = Version(v)
+            # Do the best that we can, remove the extrema
+            r = Range()
+            if v_ == start.min:
+                r = Range(min=v_, min_eq=False)
+            if v_ == start.max:
+                r = r.intersect(Range(max=v_, max_eq=False))
+        start = start.intersect(r)
+    return start
+
+
 # determine if the minimum version satisfying the condition |condition| exceeds
 # the minimum version for a feature |minimum|
-def version_compare_condition_with_min(condition: str, minimum: str) -> bool:
-    if condition.startswith('>='):
-        cmpop = operator.le
-        condition = condition[2:]
-    elif condition.startswith('<='):
-        return False
-    elif condition.startswith('!='):
-        return False
-    elif condition.startswith('=='):
-        cmpop = operator.le
-        condition = condition[2:]
-    elif condition.startswith('='):
-        cmpop = operator.le
-        condition = condition[1:]
-    elif condition.startswith('>'):
-        cmpop = operator.lt
-        condition = condition[1:]
-    elif condition.startswith('<'):
-        return False
+def version_compare_condition_with_min(condition: T.Union[str, Range[Version]], minimum: str) -> bool:
+    if isinstance(condition, str):
+        condition = version_check_to_range([condition])
+
+    if condition.min is None:
+        # A < constraint on the project version (max is not None) or a full
+        # range should always include versions older than minimum, return False.
+        # is_empty=True instead behaves like an absurdly high min and returns True.
+        return condition.is_empty
     else:
-        cmpop = operator.le
-
-    # Declaring a project(meson_version: '>=0.46') and then using features in
-    # 0.46.0 is valid, because (knowing the meson versioning scheme) '0.46.0' is
-    # the lowest version which satisfies the constraint '>=0.46'.
-    #
-    # But this will fail here, because the minimum version required by the
-    # version constraint ('0.46') is strictly less (in our version comparison)
-    # than the minimum version needed for the feature ('0.46.0').
-    #
-    # Map versions in the constraint of the form '0.46' to '0.46.0', to embed
-    # this knowledge of the meson versioning scheme.
-    condition = condition.strip()
-    if re.match(r'^\d+.\d+$', condition):
-        condition += '.0'
-
-    return T.cast('bool', cmpop(Version(minimum), Version(condition)))
+        return Version(minimum) <= condition.min
 
 def search_version(text: str) -> str:
     # Usually of the type 4.1.4 but compiler output may contain

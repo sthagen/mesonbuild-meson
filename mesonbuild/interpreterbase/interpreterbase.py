@@ -96,7 +96,7 @@ class InterpreterBase:
         # meson.version().compare_version(version_string)
         # If it was part of a if-clause, it is used to temporally override the
         # current meson version target within that if-block.
-        self.tmp_meson_version: T.Optional[str] = None
+        self.tmp_meson_version: T.Optional[mesonlib.Range[mesonlib.Version]] = None
 
     def handle_meson_version_from_ast(self) -> None:
         # do nothing in an AST interpreter
@@ -311,15 +311,19 @@ class InterpreterBase:
             res = result.operator_call(MesonOperator.BOOL, None)
             if not isinstance(res, bool):
                 raise InvalidCode(f'If clause {result!r} does not evaluate to true or false.')
-            if res:
-                prev_meson_version = mesonlib.project_meson_versions[self.subproject]
-                if self.tmp_meson_version:
-                    mesonlib.project_meson_versions[self.subproject] = self.tmp_meson_version
-                try:
+            prev_meson_version = mesonlib.project_meson_versions[self.subproject]
+            if self.tmp_meson_version and isinstance(prev_meson_version, mesonlib.Range):
+                always = prev_meson_version.always(self.tmp_meson_version)
+                if always is not None:
+                    mlog.warning(f"Conditional on version '{self.tmp_meson_version}' always evaluates to {str(always).lower()}",
+                                 location=self.current_node)
+                mesonlib.project_meson_versions[self.subproject] = prev_meson_version.intersect(self.tmp_meson_version)
+            try:
+                if res:
                     self.evaluate_codeblock(i.block)
-                finally:
-                    mesonlib.project_meson_versions[self.subproject] = prev_meson_version
-                return None
+                    return None
+            finally:
+                mesonlib.project_meson_versions[self.subproject] = prev_meson_version
         if not isinstance(node.elseblock, mparser.EmptyNode):
             self.evaluate_codeblock(node.elseblock.block)
         return None
