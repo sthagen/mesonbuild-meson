@@ -6,7 +6,6 @@ import typing as T
 from ..mesonlib import EnvironmentException, get_meson_command
 from ..options import OptionKey
 from .compilers import Compiler
-from ..linkers import RSPFileSyntax
 from ..linkers.linkers import VisualStudioLikeLinkerMixin
 from .mixins.metrowerks import MetrowerksCompiler, mwasmarm_instruction_set_args, mwasmeppc_instruction_set_args
 from .mixins.ti import TICompiler
@@ -160,9 +159,11 @@ class NasmCompiler(ASMCompiler):
             return []
         return self.crt_args[self.get_crt_val(crt_val)]
 
-    # It uses '-@' instead of the normal '@' for denoting response files.
-    def rsp_file_syntax(self) -> RSPFileSyntax:
-        return RSPFileSyntax.NASM
+    def can_linker_accept_rsp(self) -> bool:
+        """
+        Determines whether the linker can accept arguments using the @rsp syntax.
+        """
+        return False
 
 class YasmCompiler(NasmCompiler):
     id = 'yasm'
