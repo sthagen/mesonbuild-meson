@@ -352,7 +352,7 @@ class CLikeCompiler(Compiler):
         if mode is CompileCheckMode.LINK:
             ld_value = self.environment.lookup_binary_entry(self.for_machine, self.language + '_ld')
             if ld_value is not None:
-                largs += self.use_linker_args(ld_value[0], self.version)
+                cargs += self.use_linker_args(ld_value[0], self.version)
 
             # Add LDFLAGS from the env
             sys_ld_args = self.environment.coredata.get_external_link_args(self.for_machine, self.language)
@@ -643,7 +643,12 @@ class CLikeCompiler(Compiler):
             raise mesonlib.MesonBugException('Delimiters not found in preprocessor output.')
         define_value = p.stdout[star_idx + len(delim_start):end_idx]
 
-        if define_value == sentinel_undef:
+        # Due to https://developercommunity.visualstudio.com/t/Inconsistent-whitespace-with-standard-pr/11023343,
+        # MSVC can end up producing an unexpected space after the sentinel_undef
+        # string (if building with -std:c11, and if the test source is written
+        # with unix newlines). To avoid treating this as an actual predefined
+        # macro, look for the buggy value as well.
+        if define_value in {sentinel_undef, sentinel_undef + ' '}:
             define_value = None
         else:
             # Merge string literals
