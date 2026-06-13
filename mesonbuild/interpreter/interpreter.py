@@ -32,7 +32,7 @@ from ..interpreterbase import Disabler, disablerIfNotFound
 from ..interpreterbase import FeatureNew, FeatureDeprecated, FeatureBroken, FeatureNewKwargs
 from ..interpreterbase import ObjectHolder, ContextManagerObject
 from ..interpreterbase import stringifyUserArguments, Feature, FeatureValue
-from ..modules import ExtensionModule, ModuleObject, MutableModuleObject, NewExtensionModule, NotFoundExtensionModule
+from ..modules import ExtensionModule, ModuleObject, MutableModuleObject, NewExtensionModule, NotFoundExtensionModule, __path__ as modules_path
 from ..optinterpreter import optname_regex
 
 from . import interpreterobjects as OBJ
@@ -179,7 +179,7 @@ class BuiltFileByNameError(InterpreterException):
     name: str
 
     def __str__(self) -> str:
-        return (f'{self.name} is a generated file, and should be passed by reference instead of string name. '
+        return (f'{self.name!r} is a generated file, and should be passed by reference instead of string name. '
                 'This will become a hard error in Meson 2.0')
 
 
@@ -648,7 +648,14 @@ class Interpreter(InterpreterBase, HoldableObject):
                     mlog.debug(line)
 
             if required:
-                raise InvalidArguments(f'Module "{modname}" does not exist')
+                ustr = f'Module "{modname}" does not exist.'
+                from difflib import get_close_matches
+                from pkgutil import iter_modules
+                modnames = [mod.name for mod in iter_modules(modules_path) if not mod.name.startswith('_')]
+                close_matches = get_close_matches(modname, modnames)
+                if close_matches:
+                    ustr += f' Did you mean "{close_matches[0]}"?'
+                raise InvalidArguments(ustr)
             ext_module = NotFoundExtensionModule(real_modname)
         else:
             ext_module = module.initialize(self)
@@ -3283,10 +3290,6 @@ class Interpreter(InterpreterBase, HoldableObject):
         mesonlib.check_direntry_issues(sources)
         results: list[mesonlib.File | build.GeneratedTypes | build.BuildTarget | build.ExtractedObjects | build.StructuredSources | Program] = []
 
-        # In Meson 2.0 this shoul not add ALLOW_BUILD_DIR_FILE_REFERENCES
-        # universally, and we should just use self.relaxations
-        relaxations: set[InterpreterRuleRelaxation] = self.relaxations | {InterpreterRuleRelaxation.ALLOW_BUILD_DIR_FILE_REFERENCES}
-
         for s in sources:
             if isinstance(s, str):
                 if s.endswith(' '):
@@ -3294,10 +3297,21 @@ class Interpreter(InterpreterBase, HoldableObject):
                 try:
                     self.validate_within_subproject(self.subdir, s)
                 except BuiltFileByNameError as e:
-                    if InterpreterRuleRelaxation.ALLOW_BUILD_DIR_FILE_REFERENCES not in relaxations:
-                        raise
-                    mlog.warning(str(e), location=self.current_node)
-                    results.append(mesonlib.File.from_built_file(self.subdir, s))
+                    # In Meson 2.0 this should just raise
+                    if InterpreterRuleRelaxation.ALLOW_BUILD_DIR_FILE_REFERENCES not in self.relaxations:
+                        #raise
+                        mlog.warning(str(e), location=self.current_node)
+                    if path_has_root(s):
+                        # A built File's name must be relative to the build
+                        # root, otherwise the absolute fname leaks through
+                        # File.relative_name() and breaks the backend.
+                        # Use join and relpath together to handle paths without
+                        # the drive part.
+                        rel = os.path.relpath(os.path.join(self.environment.build_dir, s),
+                                              self.environment.build_dir)
+                        results.append(mesonlib.File.from_built_relative(rel))
+                    else:
+                        results.append(mesonlib.File.from_built_file(self.subdir, s))
                 else:
                     results.append(mesonlib.File.from_source_file(self.environment.source_dir, self.subdir, s))
             elif isinstance(s, (mesonlib.File, build.GeneratedList, Program,
@@ -3945,7 +3959,12 @@ class Interpreter(InterpreterBase, HoldableObject):
         except KeyError:
             if fallback is not None:
                 return self._holderify(fallback)
-        raise InterpreterException(f'Tried to get unknown variable "{varname}".')
+        ustr = f'Tried to get unknown variable "{varname}".'
+        from difflib import get_close_matches
+        close_matches = get_close_matches(varname, self.variables.keys())
+        if close_matches:
+            ustr += f' Did you mean "{close_matches[0]}"?'
+        raise InterpreterException(ustr)
 
     @typed_pos_args('is_variable', str)
     @noKwargs
@@ -3960,7 +3979,12 @@ class Interpreter(InterpreterBase, HoldableObject):
         try:
             del self.variables[varname]
         except KeyError:
-            raise InterpreterException(f'Tried to unset unknown variable "{varname}".')
+            ustr = f'Tried to unset unknown variable "{varname}".'
+            from difflib import get_close_matches
+            close_matches = get_close_matches(varname, self.variables.keys())
+            if close_matches:
+                ustr += f' Did you mean "{close_matches[0]}"?'
+            raise InterpreterException(ustr)
 
     @FeatureNew('is_disabler', '0.52.0')
     @typed_pos_args('is_disabler', object)
