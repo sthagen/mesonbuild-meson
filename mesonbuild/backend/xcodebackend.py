@@ -145,7 +145,6 @@ class PbxArrayItem:
 
 class PbxComment:
     def __init__(self, text: str):
-        assert isinstance(text, str)
         assert '/*' not in text
         self.text = f'/* {text} */'
 
@@ -305,9 +304,8 @@ class XCodeBackend(backends.Backend):
         return str(uuid.uuid4()).upper().replace('-', '')[:24]
 
     @functools.lru_cache(maxsize=None)
-    def get_target_dir(self, target: build.AnyTargetType) -> str:
+    def get_target_dir_cached(self, target: build.Target) -> str:
         dirname = os.path.join(target.get_subdir(), T.cast('str', self.environment.coredata.optstore.get_value_for(OptionKey('buildtype'))))
-        #os.makedirs(os.path.join(self.environment.get_build_dir(), dirname), exist_ok=True)
         return dirname
 
     def get_custom_target_output_dir(self, target: build.AnyTargetType) -> str:
@@ -316,15 +314,13 @@ class XCodeBackend(backends.Backend):
         return dirname
 
     def object_filename_from_source(self, target: build.BuildTarget, compiler: Compiler,
-                                    source: mesonlib.FileOrString, targetdir: T.Optional[str] = None) -> str:
+                                    source: mesonlib.File, targetdir: T.Optional[str] = None) -> str:
         # Xcode has the following naming scheme:
         # projectname.build/debug/prog@exe.build/Objects-normal/x86_64/func.o
         project = self.build.project_name
         buildtype = self.buildtype
         tname = target.get_id()
-        if isinstance(source, mesonlib.File):
-            source = source.fname
-        stem = os.path.splitext(os.path.basename(source))[0]
+        stem = os.path.splitext(os.path.basename(source.fname))[0]
         # Append "build" before the actual object path to match OBJROOT
         obj_path = f'build/{project}.build/{buildtype}/{tname}.build/Objects-normal/{self.arch}/{stem}.o'
         return obj_path
@@ -595,13 +591,8 @@ class XCodeBackend(backends.Backend):
         self.target_dependency_map: T.Dict[T.Union[str, T.Tuple[str, str]], str] = {}
         for tname, t in self.build_targets.items():
             for target in t.link_targets:
-                if isinstance(target, build.CustomTargetIndex):
-                    k = (tname, target.target.get_basename())
-                    if k in self.target_dependency_map:
-                        continue
-                else:
-                    k = (tname, target.get_basename())
-                    assert k not in self.target_dependency_map
+                k = (tname, target.get_basename())
+                assert k not in self.target_dependency_map
                 self.target_dependency_map[k] = self.gen_id()
         for tname, t in self.custom_targets.items():
             k = tname
@@ -668,7 +659,6 @@ class XCodeBackend(backends.Backend):
 
     def generate_build_file_maps(self) -> None:
         for buildfile in self.build.def_files:
-            assert isinstance(buildfile, str)
             self.buildfile_ids[buildfile] = self.gen_id()
             self.fileref_ids[buildfile] = self.gen_id()
 
@@ -1329,10 +1319,8 @@ class XCodeBackend(backends.Backend):
             for lt in self.build_targets[tname].link_targets:
                 # NOT DOCUMENTED, may need to make different links
                 # to same target have different targetdependency item.
-                if isinstance(lt, build.CustomTarget):
-                    dep_array.add_item(self.pbx_custom_dep_map[lt.get_id()], lt.name)
-                elif isinstance(lt, build.CustomTargetIndex):
-                    dep_array.add_item(self.pbx_custom_dep_map[lt.target.get_id()], lt.target.name)
+                if isinstance(lt, (build.CustomTarget, build.CustomTargetIndex)):
+                    dep_array.add_item(self.pbx_custom_dep_map[lt.get_id()], lt.get_basename())
                 else:
                     idval = self.pbx_dep_map[lt.get_id()]
                     dep_array.add_item(idval, 'PBXTargetDependency')
@@ -1343,10 +1331,8 @@ class XCodeBackend(backends.Backend):
                     dep_array.add_item(idval, 'PBXTargetDependency')
             generator_id = 0
             for o in t.generated:
-                if isinstance(o, build.CustomTarget):
-                    dep_array.add_item(self.pbx_custom_dep_map[o.get_id()], o.name)
-                elif isinstance(o, build.CustomTargetIndex):
-                    dep_array.add_item(self.pbx_custom_dep_map[o.target.get_id()], o.target.name)
+                if isinstance(o, (build.CustomTarget, build.CustomTargetIndex)):
+                    dep_array.add_item(self.pbx_custom_dep_map[o.get_id()], o.get_basename())
 
                 generator_id += 1
 
@@ -1664,11 +1650,8 @@ class XCodeBackend(backends.Backend):
         for l in target.link_targets:
             if isinstance(target, build.SharedModule) and isinstance(l, build.Executable):
                 continue
-            if isinstance(l, build.CustomTargetIndex):
-                rel_dir = self.get_custom_target_output_dir(l.target)
-                libname = l.get_filename()
-            elif isinstance(l, build.CustomTarget):
-                rel_dir = self.get_custom_target_output_dir(l)
+            if isinstance(l, (build.CustomTarget, build.CustomTargetIndex)):
+                rel_dir = self.get_custom_target_output_dir(l.get_target())
                 libname = l.get_filename()
             else:
                 rel_dir = self.get_target_dir(l)

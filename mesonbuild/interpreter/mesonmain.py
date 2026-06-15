@@ -99,10 +99,7 @@ class MesonMain(MesonInterpreterObject):
                 # this without completely rewriting install script handling.
                 # This is complicated by the fact that the install target
                 # depends on all.
-                if isinstance(a, build.CustomTargetIndex):
-                    a.target.build_by_default = True
-                else:
-                    a.build_by_default = True
+                a.get_target().build_by_default = True
             else:
                 script_args.extend(a.get_command())
                 new = True
@@ -128,8 +125,7 @@ class MesonMain(MesonInterpreterObject):
     @InterpreterObject.method('add_install_script')
     def add_install_script_method(
             self,
-            args: T.Tuple[T.Union[str, mesonlib.File, build.Executable, Program],
-                          T.List[T.Union[str, mesonlib.File, build.BuildTargetTypes, Program]]],
+            args: T.Tuple[T.Union[str, mesonlib.File, build.Executable, Program], T.List[build.CommandTypes]],
             kwargs: 'AddInstallScriptKW') -> None:
         script_args = self._process_script_args('add_install_script', args[1])
         script = self._find_source_script('add_install_script', args[0], script_args, allow_built_program=True)

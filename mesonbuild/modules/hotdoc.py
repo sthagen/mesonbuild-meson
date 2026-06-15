@@ -176,8 +176,8 @@ class HotdocTargetBuilder:
 
         self.cmd += ['--gi-c-source-roots'] + value
 
-    def process_dependencies(self, deps: T.Sequence[TargetDepends | Dependency | File | build.ExtractedObjects | build.StructuredSources]) -> T.List[str]:
-        # build.StructuredSources and build.ExtractedObjects shouldn't actually
+    def process_dependencies(self, deps: T.Sequence[TargetDepends | Dependency | File | build.ExtractedObjects]) -> T.List[str]:
+        # build.ExtractedObjects shouldn't actually
         # happen here, but we get them from Dependency.
         cflags = set()
         for dep in mesonlib.listify(ensure_list(deps)):
@@ -202,10 +202,8 @@ class HotdocTargetBuilder:
                 self.include_paths.add(os.path.join(self.builddir, dep.hotdoc_conf.subdir))
                 self.cmd += ['--extra-assets=' + p for p in dep.extra_assets]
                 self.add_extension_paths(dep.extra_extension_paths)
-            elif isinstance(dep, (CustomTarget, build.BuildTarget)):
-                self.extra_depends.append(dep)
-            elif isinstance(dep, CustomTargetIndex):
-                self.extra_depends.append(dep.target)
+            elif isinstance(dep, (CustomTarget, build.BuildTarget, CustomTargetIndex)):
+                self.extra_depends.append(dep.get_target())
 
         return [f.strip('-I') for f in cflags]
 
@@ -230,11 +228,8 @@ class HotdocTargetBuilder:
             elif isinstance(arg, build.IncludeDirs):
                 cmd.extend(arg.abs_string_list(self.sourcedir, self.builddir))
                 continue
-            elif isinstance(arg, (build.BuildTarget, CustomTarget)):
-                self.extra_depends.append(arg)
-                arg = self.interpreter.backend.get_target_filename_abs(arg)
-            elif isinstance(arg, CustomTargetIndex):
-                self.extra_depends.append(arg.target)
+            elif isinstance(arg, (build.BuildTarget, CustomTarget, CustomTargetIndex)):
+                self.extra_depends.append(arg.get_target())
                 arg = self.interpreter.backend.get_target_filename_abs(arg)
 
             cmd.append(arg)

@@ -361,8 +361,8 @@ class Vs2010Backend(backends.Backend):
                 result[o.target.get_id()] = o.target
         return result.items()
 
-    def get_target_deps(self, t: T.Mapping[str, build.AnyTargetType], recursive: bool = False) -> T.Dict[str, build.AnyTargetType]:
-        all_deps: T.Dict[str, build.AnyTargetType] = {}
+    def get_target_deps(self, t: T.Mapping[str, build.Target], recursive: bool = False) -> T.Dict[str, build.Target]:
+        all_deps: T.Dict[str, build.Target] = {}
         for target in t.values():
             if isinstance(target, build.CustomTargetIndex):
                 # just transfer it to the CustomTarget code
@@ -379,27 +379,19 @@ class Vs2010Backend(backends.Backend):
                         d = d.program
                     if isinstance(d, (programs.Program, build.GeneratedList)):
                         continue
-                    all_deps[d.get_id()] = d
+                    all_deps[d.get_id()] = d.get_target()
             elif isinstance(target, build.BuildTarget):
                 for ldep in target.link_targets:
-                    if isinstance(ldep, build.CustomTargetIndex):
-                        all_deps[ldep.get_id()] = ldep.target
-                    else:
-                        all_deps[ldep.get_id()] = ldep
+                    all_deps[ldep.get_id()] = ldep.get_target()
                 for ldep in target.link_whole_targets:
-                    if isinstance(ldep, build.CustomTargetIndex):
-                        all_deps[ldep.get_id()] = ldep.target
-                    else:
-                        all_deps[ldep.get_id()] = ldep
+                    all_deps[ldep.get_id()] = ldep.get_target()
 
                 for ldep in target.link_depends:
-                    if isinstance(ldep, build.CustomTargetIndex):
-                        all_deps[ldep.get_id()] = ldep.target
-                    elif isinstance(ldep, File):
+                    if isinstance(ldep, File):
                         # Already built, no target references needed
                         pass
                     else:
-                        all_deps[ldep.get_id()] = ldep
+                        all_deps[ldep.get_id()] = ldep.get_target()
 
                 for obj_id, objdep in self.get_obj_target_deps(target.objects):
                     all_deps[obj_id] = objdep
@@ -407,10 +399,8 @@ class Vs2010Backend(backends.Backend):
                 raise MesonException(f'Unknown target type for target {target}')
 
             for gendep in target.get_generated_sources():
-                if isinstance(gendep, build.CustomTarget):
-                    all_deps[gendep.get_id()] = gendep
-                elif isinstance(gendep, build.CustomTargetIndex):
-                    all_deps[gendep.target.get_id()] = gendep.target
+                if isinstance(gendep, (build.CustomTarget, build.CustomTargetIndex)):
+                    all_deps[gendep.get_id()] = gendep.get_target()
                 else:
                     generator = gendep.get_generator()
                     for d in itertools.chain(generator.depends, gendep.depends, gendep.extra_depends):
@@ -471,16 +461,14 @@ class Vs2010Backend(backends.Backend):
                     self.environment.coredata.lang_guids[lang],
                     prj[0], prj[1], prj[2])
                 ofile.write(prj_line)
-                target_dict: dict[str, build.AnyTargetType] = {target.get_id(): target}
+                target_dict: dict[str, build.Target] = {target.get_id(): target}
                 # Get recursive deps
                 recursive_deps = self.get_target_deps(
                     target_dict, recursive=True)
                 ofile.write('EndProject\n')
                 for dep, target in recursive_deps.items():
                     if prj[0] in default_projlist:
-                        if isinstance(target, build.CustomTargetIndex):
-                            target = target.target
-                        default_projlist[dep] = target
+                        default_projlist[dep] = target.get_target()
 
             test_line = prj_templ % (self.environment.coredata.lang_guids['default'],
                                      'RUN_TESTS', 'RUN_TESTS.vcxproj',
@@ -641,8 +629,8 @@ class Vs2010Backend(backends.Backend):
             # objects and .lib files manually.
             ET.SubElement(pref, 'LinkLibraryDependencies').text = 'false'
 
-    def add_target_deps(self, root: ET.Element, target: build.AnyTargetType) -> None:
-        target_dict: T.Dict[str, build.AnyTargetType] = {target.get_id(): target}
+    def add_target_deps(self, root: ET.Element, target: build.Target) -> None:
+        target_dict: T.Dict[str, build.Target] = {target.get_id(): target}
         for dep in self.get_target_deps(target_dict).values():
             if dep.get_id() in self.handled_target_deps[target.get_id()]:
                 # This dependency was already handled manually.
