@@ -10,6 +10,7 @@ from enum import Enum, unique
 from functools import lru_cache
 from pathlib import PurePath, Path
 from textwrap import dedent
+import dataclasses
 import itertools
 import json
 import os
@@ -191,8 +192,7 @@ class NinjaRule:
                 # shell constructs shouldn't be shell quoted
                 return NinjaCommandArg(c, Quoting.notShell)
             if c.startswith('$'):
-                varp = re.match(r'\$\{?(\w*)\}?', c)
-                assert varp is not None, 'for mypy'
+                varp = mesonlib.unwrap(re.match(r'\$\{?(\w*)\}?', c))
                 var: str = varp.group(1)
                 if var not in raw_names:
                     # ninja variables shouldn't be ninja quoted, and their value
@@ -274,8 +274,8 @@ class NinjaRule:
                     outfile.write('\n')
             outfile.write('\n')
 
-    def length_estimate(self, infiles: str, outfiles: str,
-                        elems: T.List[T.Tuple[str, T.List[str]]]) -> int:
+    def _length_estimate(self, infiles: str, outfiles: str,
+                         elems: T.List[T.Tuple[str, T.List[str]]]) -> int:
         # determine variables
         # this order of actions only approximates ninja's scoping rules, as
         # documented at: https://ninja-build.org/manual.html#ref_scope
@@ -301,6 +301,17 @@ class NinjaRule:
 
         # determine command length
         return estimate
+
+    def should_use_rspfile(self, element: NinjaBuildElement) -> bool:
+        if not self.rspable:
+            return False
+
+        infilenames = ' '.join([ninja_quote(i, True) for i in element.infilenames])
+        outfilenames = ' '.join([ninja_quote(i, True) for i in element.outfilenames])
+
+        return self._length_estimate(infilenames,
+                                     outfilenames,
+                                     element.elems) >= rsp_threshold
 
 class NinjaBuildElement:
 
@@ -354,15 +365,10 @@ class NinjaBuildElement:
         if self.rulename == 'phony':
             return False
 
-        if not self.rule.rspable:
-            return False
+        if not self.rule:
+            raise MesonBugException(f"build statement for {self.outfilenames} references unmapped rule {self.rulename}")
 
-        infilenames = ' '.join([ninja_quote(i, True) for i in self.infilenames])
-        outfilenames = ' '.join([ninja_quote(i, True) for i in self.outfilenames])
-
-        return self.rule.length_estimate(infilenames,
-                                         outfilenames,
-                                         self.elems) >= rsp_threshold
+        return self.rule.should_use_rspfile(self)
 
     def count_rule_references(self) -> None:
         if self.rulename != 'phony':
@@ -443,6 +449,59 @@ class NinjaBuildElement:
             self.all_outputs.add(n)
 
 @dataclass
+class NinjaBuild:
+    rules: list[NinjaRule | NinjaComment] = dataclasses.field(default_factory=list, init=False)
+    ruledict: dict[str, NinjaRule] = dataclasses.field(default_factory=dict, init=False)
+    build_elements: list[NinjaBuildElement | NinjaComment] = dataclasses.field(default_factory=list, init=False)
+
+    def add_rule_comment(self, comment: NinjaComment) -> None:
+        self.rules.append(comment)
+
+    def add_build_comment(self, comment: NinjaComment) -> None:
+        self.build_elements.append(comment)
+
+    def add_rule(self, rule: NinjaRule) -> None:
+        if rule.name in self.ruledict:
+            raise MesonException(f'Tried to add rule {rule.name} twice.')
+        self.rules.append(rule)
+        self.ruledict[rule.name] = rule
+
+    def has_rule(self, name: str) -> bool:
+        return name in self.ruledict
+
+    def should_use_rspfile(self, build: NinjaBuildElement) -> bool:
+        if build.rulename == 'phony':
+            return False
+
+        if build.rulename in self.ruledict:
+            return self.ruledict[build.rulename].should_use_rspfile(build)
+
+        mlog.warning(f"build statement for {build.outfilenames} references nonexistent rule {build.rulename}")
+        return False
+
+    def add_build(self, build: NinjaBuildElement) -> None:
+        build.check_outputs()
+        self.build_elements.append(build)
+
+        if build.rulename != 'phony':
+            # reference rule
+            if build.rulename in self.ruledict:
+                build.rule = self.ruledict[build.rulename]
+            else:
+                mlog.warning(f"build statement for {build.outfilenames} references nonexistent rule {build.rulename}")
+
+    def write(self, outfile: T.TextIO) -> None:
+        for b in self.build_elements:
+            if isinstance(b, NinjaBuildElement):
+                b.count_rule_references()
+
+        for r in self.rules:
+            r.write(outfile)
+
+        for b in ProgressBar(self.build_elements, desc='Writing build.ninja'):
+            b.write(outfile)
+
+@dataclass
 class RustDep:
 
     name: str
@@ -470,7 +529,6 @@ class RustCrate:
     edition: RUST_EDITIONS
     deps: T.List[RustDep]
     cfg: T.List[str]
-    is_proc_macro: bool
 
     # This is set to True for members of this project, and False for all
     # subprojects
@@ -483,13 +541,12 @@ class RustCrate:
             "root_module": self.root_module,
             "edition": self.edition,
             "cfg": self.cfg,
-            "is_proc_macro": self.is_proc_macro,
+            "is_proc_macro": self.proc_macro_dylib_path is not None,
             "deps": [d.to_json() for d in self.deps],
         }
 
-        if self.is_proc_macro:
-            assert self.proc_macro_dylib_path is not None, "This shouldn't happen"
-            ret["proc_macro_dylib_path"] = self.proc_macro_dylib_path
+        if (proc_macro := self.proc_macro_dylib_path) is not None:
+            ret["proc_macro_dylib_path"] = proc_macro
 
         return ret
 
@@ -505,6 +562,7 @@ class NinjaBackend(backends.Backend):
     def __init__(self, build: T.Optional[build.Build]):
         super().__init__(build)
         self.name = 'ninja'
+        self.ninja = NinjaBuild()
         self.ninja_filename = 'build.ninja'
         self.fortran_deps: T.Dict[str, T.Dict[str, File]] = {}
         self.all_outputs: T.Set[str] = set()
@@ -670,8 +728,6 @@ class NinjaBackend(backends.Backend):
 
         with self.detect_vs_dep_prefix(tempfilename) as outfile:
             self.generate_rules()
-
-            self.build_elements: T.List[T.Union[NinjaBuildElement, NinjaComment]] = []
             self.generate_phony()
             self.add_build_comment(NinjaComment('Build rules for targets'))
 
@@ -710,8 +766,8 @@ class NinjaBackend(backends.Backend):
             mlog.log_timestamp("Utils generated")
             self.generate_ending()
 
-            self.write_rules(outfile)
-            self.write_builds(outfile)
+            self.ninja.write(outfile)
+            mlog.log_timestamp("build.ninja generated")
 
             default = 'default all\n\n'
             outfile.write(default)
@@ -1411,9 +1467,6 @@ class NinjaBackend(backends.Backend):
         self.add_build(elem)
 
     def generate_rules(self) -> None:
-        self.rules: T.List[T.Union[NinjaRule, NinjaComment]] = []
-        self.ruledict: T.Dict[str, NinjaRule] = {}
-
         self.add_rule_comment(NinjaComment('Rules for module scanning.'))
         self.generate_scanner_rules()
         self.add_rule_comment(NinjaComment('Rules for compiling.'))
@@ -1449,40 +1502,16 @@ class NinjaBackend(backends.Backend):
                                 extra='generator = 1'))
 
     def add_rule_comment(self, comment: NinjaComment) -> None:
-        self.rules.append(comment)
+        self.ninja.add_rule_comment(comment)
 
     def add_build_comment(self, comment: NinjaComment) -> None:
-        self.build_elements.append(comment)
+        self.ninja.add_build_comment(comment)
 
     def add_rule(self, rule: NinjaRule) -> None:
-        if rule.name in self.ruledict:
-            raise MesonException(f'Tried to add rule {rule.name} twice.')
-        self.rules.append(rule)
-        self.ruledict[rule.name] = rule
+        self.ninja.add_rule(rule)
 
     def add_build(self, build: NinjaBuildElement) -> None:
-        build.check_outputs()
-        self.build_elements.append(build)
-
-        if build.rulename != 'phony':
-            # reference rule
-            if build.rulename in self.ruledict:
-                build.rule = self.ruledict[build.rulename]
-            else:
-                mlog.warning(f"build statement for {build.outfilenames} references nonexistent rule {build.rulename}")
-
-    def write_rules(self, outfile: T.TextIO) -> None:
-        for b in self.build_elements:
-            if isinstance(b, NinjaBuildElement):
-                b.count_rule_references()
-
-        for r in self.rules:
-            r.write(outfile)
-
-    def write_builds(self, outfile: T.TextIO) -> None:
-        for b in ProgressBar(self.build_elements, desc='Writing build.ninja'):
-            b.write(outfile)
-        mlog.log_timestamp("build.ninja generated")
+        self.ninja.add_build(build)
 
     def generate_phony(self) -> None:
         self.add_build_comment(NinjaComment('Phony build target, always out of date'))
@@ -1874,10 +1903,21 @@ class NinjaBackend(backends.Backend):
         ext = self.get_target_option(target, OptionKey('cython_language', machine=target.for_machine))
 
         pyx_sources = []  # Keep track of sources we're adding to build
+        pyx_count = 0
+        for src in target.get_sources():
+            if src.endswith('.pyx'):
+                pyx_count += 1
+        for gen in target.get_generated_sources():
+            for ssrc in gen.get_outputs():
+                if ssrc.endswith('.pyx'):
+                    pyx_count += 1
 
         for src in target.get_sources():
             if src.endswith('.pyx'):
-                output = os.path.join(self.get_target_private_dir(target), f'{src}.{ext}')
+                # Use basename to avoid too nested targets which can cause a
+                # problem with MAX_PATH on Windows
+                outname = os.path.basename(src.fname) if pyx_count == 1 else src.fname
+                output = os.path.join(self.get_target_private_dir(target), f'{outname}.{ext}')
                 element = NinjaBuildElement(
                     self.all_outputs, [output],
                     self.compiler_to_rule_name(cython),
@@ -1899,7 +1939,10 @@ class NinjaBackend(backends.Backend):
             for ssrc in gen.get_outputs():
                 ssrc = os.path.join(builddir, ssrc)
                 if ssrc.endswith('.pyx'):
-                    output = os.path.join(self.get_target_private_dir(target), f'{ssrc}.{ext}')
+                    # Use basename to avoid too nested targets which can cause
+                    # a problem with MAX_PATH on Windows
+                    outname = os.path.basename(ssrc) if pyx_count == 1 else ssrc
+                    output = os.path.join(self.get_target_private_dir(target), f'{outname}.{ext}')
                     element = NinjaBuildElement(
                         self.all_outputs, [output],
                         self.compiler_to_rule_name(cython),
@@ -1982,7 +2025,6 @@ class NinjaBackend(backends.Backend):
             deps,
             cfg,
             is_workspace_member=not from_subproject,
-            is_proc_macro=proc_macro_dylib_path is not None,
             proc_macro_dylib_path=proc_macro_dylib_path,
         )
 
@@ -2772,7 +2814,7 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
 
     def generate_scanner_rules(self) -> None:
         rulename = 'depscan'
-        if rulename in self.ruledict:
+        if self.ninja.has_rule(rulename):
             # Scanning command is the same for native and cross compilation.
             return
 
@@ -3345,7 +3387,27 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
                     result += c
                 return result
             element.add_item('CUDA_ESCAPED_TARGET', quote_make_target(rel_obj))
-        element.add_item('ARGS', commands)
+        if self.ninja.should_use_rspfile(element) and compiler.rsp_file_syntax() == RSPFileSyntax.NASM:
+            exe = compiler.get_exelist()
+            # Add to commands the args created by generate_compile_rule_for().
+            # commands remain separate from exelist because they must stay
+            # a CompilerArgs.
+            if dep_file:
+                commands += compiler.get_dependency_gen_args(rel_obj, dep_file)
+            commands += [*compiler.get_output_args(rel_obj), *compiler.get_compile_only_args(), rel_src]
+
+            element.rulename = 'CUSTOM_COMMAND'
+            meson_exe_cmd, reason = self.as_meson_exe_cmdline(exe[0],
+                                                              exe[1:] + commands.to_native(),
+                                                              separator='\n',
+                                                              rsp_file_flag='-@',
+                                                              can_use_rsp_file=True,
+                                                              verbose=True)
+            cmd_type = f' (wrapped by meson {reason})' if reason else ''
+            element.add_item('COMMAND', meson_exe_cmd)
+            element.add_item('description', f'Compiling {compiler.get_display_language()} object {rel_obj}{cmd_type}')
+        else:
+            element.add_item('ARGS', commands)
 
         self.add_dependency_scanner_entries_to_element(target, compiler, element, src)
         self.add_build(element)
@@ -3611,7 +3673,7 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
 
     def get_target_type_link_args_post_dependencies(self, target: build.BuildTarget, linker: T.Union[Compiler, StaticLinker]) -> T.List[str]:
         commands: T.List[str] = []
-        if isinstance(target, build.Executable):
+        if isinstance(target, (build.Executable, build.SharedLibrary)):
             assert isinstance(linker, Compiler)
 
             # If win_subsystem is significant on this platform, add the appropriate linker arguments.

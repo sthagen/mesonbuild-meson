@@ -27,7 +27,7 @@ from .. import compilers
 from ..compilers import detect, lang_suffixes
 from ..mesonlib import (
     File, MachineChoice, MesonException, MesonBugException, OrderedSet,
-    ExecutableSerialisation, EnvironmentException,
+    ExecutableSerialisation, EnvironmentException, FileMode,
     classify_unity_sources, get_compiler_for_source,
     get_rsp_threshold, unique_list
 )
@@ -42,7 +42,6 @@ if T.TYPE_CHECKING:
     from ..environment import Environment
     from ..interpreter import Test
     from ..linkers import StaticLinker
-    from ..mesonlib import FileMode
     from ..options import ElementaryOptionValues
 
     from typing_extensions import Literal, TypedDict, NotRequired, TypeAlias
@@ -146,8 +145,7 @@ class TargetInstallData:
     install_name_mappings: T.Mapping[str, str]
     rpath_dirs_to_remove: T.Set[bytes]
     install_rpath: str
-    # TODO: install_mode should just always be a FileMode object
-    install_mode: T.Optional['FileMode']
+    install_mode: FileMode
     subproject: str
     system: str
     optional: bool = False
@@ -225,7 +223,7 @@ class TestSerialisation:
             assert isinstance(self.exe_wrapper, programs.ExternalProgram)
 
 
-def get_backend_from_name(backend: str, build: T.Optional[build.Build] = None) -> T.Optional['Backend']:
+def get_backend_from_name(backend: str, build: T.Optional[build.Build] = None) -> Backend:
     if backend == 'ninja':
         from . import ninjabackend
         return ninjabackend.NinjaBackend(build)
@@ -262,17 +260,17 @@ def get_backend_from_name(backend: str, build: T.Optional[build.Build] = None) -
     elif backend == 'none':
         from . import nonebackend
         return nonebackend.NoneBackend(build)
-    return None
+    raise MesonException(f'Unknown backend {backend}')
 
 
-def get_genvslite_backend(genvsname: str, build: T.Optional[build.Build] = None) -> T.Optional['Backend']:
+def get_genvslite_backend(genvsname: str, build: T.Optional[build.Build] = None) -> Backend:
     if genvsname == 'vs2022':
         from . import vs2022backend
         return vs2022backend.Vs2022Backend(build, gen_lite = True)
     if genvsname == 'vs2026':
         from . import vs2026backend
         return vs2026backend.Vs2026Backend(build, gen_lite = True)
-    return None
+    raise MesonException(f'Unknown genvslite backend {genvsname}')
 
 # This class contains the basic functionality that is needed by all backends.
 # Feel free to move stuff in and out of it as you see fit.
@@ -551,10 +549,11 @@ class Backend:
             feed: T.Optional[str] = None,
             env: T.Optional[mesonlib.EnvironmentVariables] = None,
             can_use_rsp_file: bool = False,
+            separator: str = ' ',
+            rsp_file_flag: str = '@',
             tag: T.Optional[str] = None,
             verbose: bool = False,
             installdir_map: T.Optional[T.Dict[str, str]] = None) -> 'ExecutableSerialisation':
-
         # XXX: cmd_args either need to be lowered to strings, or need to be checked for non-string arguments, right?
         exe, *raw_cmd_args = cmd
         if isinstance(exe, build.LocalProgram):
@@ -620,14 +619,14 @@ class Backend:
 
         if needs_rsp_file:
             hasher = hashlib.sha1()
-            args = ' '.join(mesonlib.quote_arg(arg) for arg in cmd_args)
+            args = separator.join(mesonlib.quote_arg(arg) for arg in cmd_args)
             hasher.update(args.encode(encoding='utf-8', errors='ignore'))
             digest = hasher.hexdigest()
             scratch_file = f'meson_rsp_{digest}.rsp'
             rsp_file = os.path.join(self.environment.get_scratch_dir(), scratch_file)
             with open(rsp_file, 'w', encoding='utf-8', newline='\n') as f:
                 f.write(args)
-                cmd_args = [f'@{rsp_file}']
+                cmd_args = [f'{rsp_file_flag}{rsp_file}']
 
         return ExecutableSerialisation(exe_cmd + cmd_args, env,
                                        exe_wrapper, workdir,
@@ -642,6 +641,8 @@ class Backend:
                              force_serialize: bool = False,
                              env: T.Optional[mesonlib.EnvironmentVariables] = None,
                              can_use_rsp_file: bool = False,
+                             separator: str = ' ',
+                             rsp_file_flag: str = '@',
                              verbose: bool = False) -> T.Tuple[T.List[str], str]:
         '''
         Serialize an executable for running with a generator or a custom target
@@ -649,7 +650,7 @@ class Backend:
         cmd: T.List[build.CommandTypes] = []
         cmd.append(exe)
         cmd.extend(cmd_args)
-        es = self.get_executable_serialisation(cmd, workdir, extra_bdeps, capture, feed, env, can_use_rsp_file, verbose=verbose)
+        es = self.get_executable_serialisation(cmd, workdir, extra_bdeps, capture, feed, env, can_use_rsp_file, separator=separator, rsp_file_flag=rsp_file_flag, verbose=verbose)
         reasons: T.List[str] = []
         if es.extra_paths:
             reasons.append('to set PATH')
@@ -666,6 +667,9 @@ class Backend:
         if env and env.varnames:
             reasons.append('to set env')
 
+        if separator != ' ':
+            reasons.append('to use a custom argument separator')
+
         # force_serialize passed to this function means that the VS backend has
         # decided it absolutely cannot use real commands. This is "always",
         # because it's not clear what will work (other than compilers) and so
@@ -675,7 +679,7 @@ class Backend:
         # It's also overridden for a few conditions that can't be handled
         # inside a command line
 
-        can_use_env = env.can_use_env and not force_serialize
+        can_use_env = env and env.can_use_env and not force_serialize
         force_serialize = force_serialize or bool(reasons)
 
         if capture:
@@ -689,7 +693,7 @@ class Backend:
                 envlist.append(f'{k}={v}')
             return ['env'] + envlist + es.cmd_args, ', '.join(reasons)
 
-        if any(a.startswith('@') for a in es.cmd_args):
+        if can_use_rsp_file and any(a.startswith(rsp_file_flag) for a in es.cmd_args):
             reasons.append('because command is too long')
 
         if not force_serialize:
@@ -749,9 +753,7 @@ class Backend:
         Otherwise, we query the target for the dynamic linker.
         '''
         if isinstance(target, build.StaticLibrary):
-            static_linker = self.build.static_linker[target.for_machine]
-            assert static_linker is not None, "Compiler.needs_static_linker does not match backend logic"
-            return static_linker, []
+            return self.build.get_static_linker(target), []
         l, stdlib_args = target.get_clink_dynamic_linker_and_stdlibs()
         return l, stdlib_args
 
@@ -1457,8 +1459,7 @@ class Backend:
                 fname = self.determine_ext_objs(i)
             elif isinstance(i, programs.Program):
                 assert i.found(), "This shouldn't be possible"
-                assert i.get_path() is not None, 'for mypy'
-                fname = [i.get_path()]
+                fname = [mesonlib.unwrap(i.get_path())]
             else:
                 fname = [i.rel_to_builddir(self.build_to_src)]
             if target.absolute_paths:
@@ -1731,7 +1732,7 @@ class Backend:
                     'using the default installation directory for an output.'
                 raise MesonException(m.format(t.name, num_out, t.get_outputs(), num_outdirs, outdirs))
             assert len(t.install_tag) == num_out
-            install_mode = t.get_custom_install_mode()
+            install_mode = t.get_custom_install_mode() or FileMode()
             # because mypy gets confused type narrowing in lists
             first_outdir = outdirs[0]
             first_outdir_name = install_dir_names[0]

@@ -21,6 +21,7 @@ from glob import glob
 from pathlib import (PurePath, Path)
 import typing as T
 
+from mesonbuild.build import BuildProject
 import mesonbuild.mlog
 import mesonbuild.depfile
 import mesonbuild.dependencies.base
@@ -34,7 +35,7 @@ from mesonbuild.mesonlib import (
     DirectoryLock, DirectoryLockAction, MachineChoice, is_windows, is_osx, is_cygwin, is_dragonflybsd,
     is_sunos, windows_proof_rmtree, python_command, version_compare, split_args, quote_arg,
     relpath, is_linux, git, search_version, do_conf_file, do_conf_str, default_prefix,
-    MesonException, EnvironmentException,
+    SubProject, MesonException, EnvironmentException,
     windows_proof_rm, first
 )
 from mesonbuild.options import OptionKey
@@ -707,13 +708,13 @@ class AllPlatformTests(BasePlatformTests):
 
     def test_force_fallback_for(self):
         testdir = os.path.join(self.unit_test_dir, '31 forcefallback')
-        self.init(testdir, extra_args=['--force-fallback-for=zlib,foo'])
+        self.init(testdir, extra_args=['--force-fallback-for=zlib,foo,notfalse'])
         self.build()
         self.run_tests()
 
     def test_force_fallback_for_nofallback(self):
         testdir = os.path.join(self.unit_test_dir, '31 forcefallback')
-        self.init(testdir, extra_args=['--force-fallback-for=zlib,foo', '--wrap-mode=nofallback'])
+        self.init(testdir, extra_args=['--force-fallback-for=zlib,foo,notfalse', '--wrap-mode=nofallback'])
         self.build()
         self.run_tests()
 
@@ -1057,6 +1058,38 @@ class AllPlatformTests(BasePlatformTests):
         self.utime(os.path.join(testdir, 'simplestuff.pxi'))
         self.assertBuildRelinkedOnlyTarget(name)
 
+
+    def test_cython_avoid_nested_generated_paths(self):
+        # Ensure that cython transpiled outputs are not in a too deeply nested folder
+        testdir = os.path.join("test cases/cython", "5 nested folders")
+        env = get_fake_env(testdir, self.builddir, self.prefix)
+        try:
+            detect_compiler_for(env, "cython", MachineChoice.HOST, True, "")
+        except EnvironmentException:
+            raise SkipTest("Cython is not installed")
+        self.init(testdir)
+
+        targets = self.introspect("--targets")
+
+        found = False
+        for target in targets:
+            for target_sources in target["target_sources"]:
+                for generated_source in target_sources.get("generated_sources", []):
+                    if generated_source.endswith(".pyx.c") or generated_source.endswith("pyx.cpp"):
+                        found = True
+                        parts = os.path.normpath(generated_source).split(os.sep)
+                        parent = parts[-2]
+                        # We want the pyx.c files to be directly under the .p folder,
+                        # for example:
+                        # libdir/foo.cpython-313-x86_64-linux-gnu.so.p/foo.pyx.c
+                        # rather than (additional libdir folder):
+                        # libdir/foo.cpython-313-x86_64-linux-gnu.so.p/libdir/foo.pyx.c
+                        self.assertTrue(
+                            parent.endswith(".p"),
+                            "pyx.c file should be directly under the .p folder,"
+                            f" got {generated_source!r}"
+                        )
+        self.assertTrue(found, "No cython transpiled outputs found")
 
     def test_internal_include_order(self):
         if mesonbuild.envconfig.detect_msys2_arch() and ('MESON_RSP_THRESHOLD' in os.environ):
@@ -3375,6 +3408,29 @@ class AllPlatformTests(BasePlatformTests):
             name = entry['name']
             self.assertEqual(entry['subproject'], expected[name])
 
+    def test_introspection_target_native_subproject(self):
+        # When the same subproject is built for both the build machine
+        # (native : true) and the host machine (native : false) in a cross
+        # build, it is configured twice. The two copies of its 'lib' target
+        # share the same name and subproject but must have different ids.
+        crossdir = os.path.join(self.unit_test_dir, '69 cross')
+        # Reuse the cross test project to generate a native and a cross file
+        # describing this machine, so the configuration below is treated as a
+        # cross build (see test_identity_cross).
+        self.init(crossdir, extra_args=['-Dgenerate=true'])
+        self.meson_native_files = [os.path.join(self.builddir, "nativefile")]
+        self.meson_cross_files = [os.path.join(self.builddir, "crossfile")]
+
+        self.new_builddir()
+        testdir = os.path.join(self.unit_test_dir, '136 native subproject introspect')
+        self.init(testdir)
+        res = self.introspect('--targets')
+
+        ids = [entry['id'] for entry in res
+               if entry['name'] == 'lib' and entry['subproject'] == 'recursive-both']
+        self.assertEqual(len(ids), 2, 'subproject should be built for both machines')
+        self.assertEqual(len(set(ids)), 2, 'native and non-native targets must have different ids')
+
     def test_introspect_projectinfo_subproject_dir(self):
         testdir = os.path.join(self.common_test_dir, '75 custom subproject dir')
         self.init(testdir)
@@ -4119,7 +4175,7 @@ class AllPlatformTests(BasePlatformTests):
                 long comma list: alpha, alphacolor, apetag, audiofx, audioparsers, auparse,
                                  autodetect, avi
 
-              Subprojects
+              Subprojects (for host machine)
                 sub            : YES
                 sub2           : NO Problem encountered: This subproject failed
                 subsub         : YES (from sub2)
@@ -4593,7 +4649,7 @@ class AllPlatformTests(BasePlatformTests):
                 [wrap-redirect]
                 filename = foo/subprojects/real.wrapper
                 '''))
-        with self.assertRaisesRegex(WrapException, 'wrap-redirect filename must be a .wrap file'):
+        with self.assertRaisesRegex(WrapException, "wrap-redirect filename 'foo/subprojects/real.wrapper' must be a .wrap file"):
             PackageDefinition.from_wrap_file(redirect_wrap)
 
         # Invalid redirect, filename cannot be in parent directory
@@ -4602,7 +4658,7 @@ class AllPlatformTests(BasePlatformTests):
                 [wrap-redirect]
                 filename = ../real.wrap
                 '''))
-        with self.assertRaisesRegex(WrapException, 'wrap-redirect filename cannot contain ".."'):
+        with self.assertRaisesRegex(WrapException, "wrap-redirect filename '../real.wrap' cannot contain '..'"):
             PackageDefinition.from_wrap_file(redirect_wrap)
 
         # Invalid redirect, filename must be in foo/subprojects/real.wrap
@@ -4611,7 +4667,7 @@ class AllPlatformTests(BasePlatformTests):
                 [wrap-redirect]
                 filename = foo/real.wrap
                 '''))
-        with self.assertRaisesRegex(WrapException, 'wrap-redirect filename must be in the form foo/subprojects/bar.wrap'):
+        with self.assertRaisesRegex(WrapException, "wrap-redirect filename 'foo/real.wrap' must be in the form foo/subprojects/bar.wrap"):
             PackageDefinition.from_wrap_file(redirect_wrap)
 
         # Correct redirect
@@ -5003,11 +5059,11 @@ class AllPlatformTests(BasePlatformTests):
         env = get_fake_env(testdir, self.builddir, self.prefix)
 
         def output_name(name, type_):
-            target = type_(name=name, subdir=None, subproject=None,
+            target = type_(name=name, subdir='',
                            for_machine=MachineChoice.HOST, sources=[],
                            structured_sources=None,
                            objects=[], environment=env, compilers=env.coredata.compilers[MachineChoice.HOST],
-                           kwargs={})
+                           build_project=BuildProject('', '', SubProject(''), MachineChoice.HOST), kwargs={})
             target.process_compilers_late()
             return target.filename
 

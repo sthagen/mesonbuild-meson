@@ -238,7 +238,7 @@ class AddTestSetup(TypedDict):
 
 class Project(TypedDict):
 
-    version: T.Optional[FileOrString]
+    version: FileOrString
     meson_version: T.Optional[str]
     default_options: options.OptionDict
     license: T.List[str]
@@ -347,6 +347,7 @@ class Subproject(ExtractRequired):
 
     default_options: T.Dict[OptionKey, options.ElementaryOptionValues]
     version: T.List[str]
+    native: MachineChoice
 
 
 class DoSubproject(ExtractRequired):
@@ -355,6 +356,7 @@ class DoSubproject(ExtractRequired):
     version: T.List[str]
     cmake_options: T.List[str]
     options: T.Optional[CMakeSubprojectOptions]
+    for_machine: MachineChoice
 
 
 class BaseBuildTarget(TypedDict):
@@ -435,9 +437,10 @@ class _LibraryMixin(TypedDict):
     rust_abi: T.Optional[RustAbi]
 
 
-class _VsModuleDefsMixin(TypedDict):
+class _LinkableTargetMixin(TypedDict):
 
     vs_module_defs: T.Optional[T.Union[str, File, build.CustomTarget, build.CustomTargetIndex]]
+    win_subsystem: T.Optional[str]
 
 
 class _ExecutableMixin(TypedDict):
@@ -446,11 +449,10 @@ class _ExecutableMixin(TypedDict):
     gui_app: T.Optional[bool]
     implib: T.Optional[T.Union[str, bool]]
     pie: T.Optional[bool]
-    win_subsystem: T.Optional[str]
     android_exe_type: T.Optional[Literal['application', 'executable']]
 
 
-class Executable(BuildTarget, _ExecutableMixin, _VsModuleDefsMixin):
+class Executable(BuildTarget, _ExecutableMixin, _LinkableTargetMixin):
     pass
 
 
@@ -472,15 +474,15 @@ class _SharedLibMixin(TypedDict):
     shortname: str
 
 
-class SharedLibrary(BuildTarget, _SharedLibMixin, _LibraryMixin, _VsModuleDefsMixin):
+class SharedLibrary(BuildTarget, _SharedLibMixin, _LibraryMixin, _LinkableTargetMixin):
     pass
 
 
-class SharedModule(BuildTarget, _LibraryMixin, _VsModuleDefsMixin):
+class SharedModule(BuildTarget, _LibraryMixin, _LinkableTargetMixin):
     pass
 
 
-class Library(BuildTarget, _SharedLibMixin, _StaticLibMixin, _LibraryMixin, _VsModuleDefsMixin):
+class Library(BuildTarget, _SharedLibMixin, _StaticLibMixin, _LibraryMixin, _LinkableTargetMixin):
 
     """For library, both_library, and as a base for build_target"""
 
@@ -580,3 +582,9 @@ class FuncEnvironment(TypedDict):
 
     method: Literal['set', 'prepend', 'append']
     separator: str
+
+
+class MachineMapArgs(TypedDict):
+
+    native: NotRequired[MachineChoice]
+    install: NotRequired[bool]

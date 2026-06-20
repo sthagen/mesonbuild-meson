@@ -28,7 +28,7 @@ import json
 import dataclasses
 
 from mesonbuild import mlog
-from .core import MesonException, HoldableObject
+from .core import MesonException, MesonBugException, HoldableObject
 
 if T.TYPE_CHECKING:
     from typing_extensions import Literal, Protocol, Self
@@ -64,6 +64,7 @@ if T.TYPE_CHECKING:
 
 FileOrString = T.Union['File', str]
 
+_P = T.ParamSpec('_P')
 _T = T.TypeVar('_T')
 _U = T.TypeVar('_U')
 
@@ -81,6 +82,7 @@ __all__ = [
     'GitException',
     'LibType',
     'MachineChoice',
+    'ThreeMachineChoice',
     'EnvironmentException',
     'FileOrString',
     'GitException',
@@ -150,6 +152,7 @@ __all__ = [
     'is_wsl',
     'iter_regexin_iter',
     'join_args',
+    'late_property',
     'lazy_property',
     'listify',
     'listify_array_value',
@@ -176,6 +179,8 @@ __all__ = [
     'substring_is_in_list',
     'typeslistify',
     'unique_list',
+    'unwrap',
+    'unwrap_err',
     'verbose_git',
     'version_check_to_range',
     'version_compare',
@@ -223,8 +228,7 @@ class GitException(MesonException):
 
 GIT = shutil.which('git')
 def git(cmd: T.List[str], workingdir: StrOrBytesPath, check: bool = False, **kwargs: T.Any) -> T.Tuple[subprocess.Popen[str], str, str]:
-    assert GIT is not None, 'Callers should make sure it exists'
-    cmd = [GIT, *cmd]
+    cmd = [unwrap(GIT, 'Callers should make sure it exists'), *cmd]
     p, o, e = Popen_safe(cmd, cwd=workingdir, **kwargs)
     if check and p.returncode != 0:
         raise GitException('Git command failed: ' + str(cmd), e)
@@ -267,7 +271,9 @@ def set_meson_command(mainfile: str) -> None:
         mlog.log(f'meson_command is {_meson_command!r}')
 
 
-def get_meson_command() -> T.Optional['ImmutableListProtocol[str]']:
+def get_meson_command() -> ImmutableListProtocol[str]:
+    if _meson_command is None:
+        raise MesonBugException('Attempting to use meson_command before it is set')
     return _meson_command
 
 
@@ -539,7 +545,7 @@ def classify_unity_sources(compilers: T.Iterable['Compiler'], sources: T.List[Fi
     return compsrclist
 
 
-MACHINE_NAMES = ['build', 'host']
+MACHINE_NAMES = ['build', 'host', 'target']
 MACHINE_PREFIXES = ['build.', '']
 
 
@@ -560,6 +566,23 @@ class MachineChoice(enum.IntEnum):
 
     def get_prefix(self) -> str:
         return MACHINE_PREFIXES[self.value]
+
+
+class ThreeMachineChoice(enum.IntEnum):
+
+    """Enum class representing any of the three abstract machine names:
+    the build, host, and target, machines.
+    """
+
+    BUILD = MachineChoice.BUILD.value
+    HOST = MachineChoice.HOST.value
+    TARGET = 2
+
+    def __str__(self) -> str:
+        return f'{self.get_lower_case_name()} machine'
+
+    def get_lower_case_name(self) -> str:
+        return MACHINE_NAMES[self.value]
 
 
 @dataclasses.dataclass(eq=False, order=False)
@@ -611,14 +634,20 @@ class PerThreeMachine(PerMachine[_T]):
 
     target: _T
 
-    def miss_defaulting(self) -> "PerThreeMachineDefaultable[T.Optional[_T]]":
+    def __getitem__(self, machine: MachineChoice | ThreeMachineChoice) -> _T:
+        return [self.build, self.host, self.target][machine.value]
+
+    def __setitem__(self, machine: MachineChoice | ThreeMachineChoice, val: _T) -> None:
+        setattr(self, machine.get_lower_case_name(), val)
+
+    def miss_defaulting(self) -> "PerThreeMachineDefaultable[_T]":
         """Unset definition duplicated from their previous to None
 
         This is the inverse of ''default_missing''. By removing defaulted
         machines, we can elaborate the original and then redefault them and thus
         avoid repeating the elaboration explicitly.
         """
-        unfreeze: PerThreeMachineDefaultable[T.Optional[_T]] = PerThreeMachineDefaultable()
+        unfreeze: PerThreeMachineDefaultable[_T] = PerThreeMachineDefaultable()
         unfreeze.build = self.build
         unfreeze.host = self.host
         unfreeze.target = self.target
@@ -660,8 +689,8 @@ class PerMachineDefaultable(PerMachine[T.Optional[_T]]):
         This allows just specifying nothing in the native case, and just host in the
         cross non-compiler case.
         """
-        assert self.build is not None, 'Cannot fill in missing when all fields are empty'
-        return PerMachine(self.build, self.host if self.host is not None else self.build)
+        build = unwrap(self.build, 'Cannot fill in missing when all fields are empty')
+        return PerMachine(build, self.host if self.host is not None else build)
 
     @classmethod
     def default(cls, is_cross: bool, build: _T, host: _T) -> PerMachine[_T]:
@@ -692,10 +721,10 @@ class PerThreeMachineDefaultable(PerMachineDefaultable[T.Optional[_T]], PerThree
         cross non-compiler case, and just target in the native-built
         cross-compiler case.
         """
-        assert self.build is not None, 'Cannot default a PerMachine when all values are None'
-        host = self.host if self.host is not None else self.build
+        build = unwrap(self.build, 'Cannot fill in missing when all fields are empty')
+        host = self.host if self.host is not None else build
         target = self.target if self.target is not None else host
-        return PerThreeMachine(self.build, host, target)
+        return PerThreeMachine(build, host, target)
 
 
 _PLATFORM_SYSTEM_LOWER = platform.system().lower()
@@ -911,14 +940,13 @@ def detect_vcs(source_dir: T.Union[str, Path]) -> T.Optional[VcsData]:
     return None
 
 def current_vs_supports_modules() -> bool:
+    # if in a developer terminal, the version is available
+    # and can be used to avoid using modules for older versions
+    # of the MSVC executable.
     vsver = os.environ.get('VSCMD_VER', '')
-    nums = vsver.split('.', 2)
-    major = int(nums[0])
-    if major >= 17:
-        return True
-    if major == 16 and int(nums[1]) >= 10:
-        return True
-    return vsver.startswith('16.9.0') and '-pre.' in vsver
+    return not vsver \
+        or version_compare(vsver, '>=16.10.0') \
+        or (vsver.startswith('16.9.0') and '-pre.' in vsver)
 
 _VERSION_TOK_RE = re.compile(r'(\d+)|([a-zA-Z]+)')
 
@@ -2567,11 +2595,11 @@ def get_wine_shortpath(winecmd: T.List[str], wine_paths: T.List[str],
     return wine_path
 
 
-def run_once(func: T.Callable[..., _T]) -> T.Callable[..., _T]:
+def run_once(func: T.Callable[_P, _T]) -> T.Callable[_P, _T]:
     ret: T.List[_T] = []
 
     @wraps(func)
-    def wrapper(*args: T.Any, **kwargs: T.Any) -> _T:
+    def wrapper(*args: _P.args, **kwargs: _P.kwargs) -> _T:
         if ret:
             return ret[0]
 
@@ -2582,9 +2610,9 @@ def run_once(func: T.Callable[..., _T]) -> T.Callable[..., _T]:
     return wrapper
 
 
-def generate_list(func: T.Callable[..., T.Generator[_T, None, None]]) -> T.Callable[..., T.List[_T]]:
+def generate_list(func: T.Callable[_P, T.Generator[_T, None, None]]) -> T.Callable[_P, T.List[_T]]:
     @wraps(func)
-    def wrapper(*args: T.Any, **kwargs: T.Any) -> T.List[_T]:
+    def wrapper(*args: _P.args, **kwargs: _P.kwargs) -> T.List[_T]:
         return list(func(*args, **kwargs))
 
     return wrapper
@@ -2684,6 +2712,28 @@ class lazy_property(T.Generic[_T]):
         return value
 
 
+class late_property(T.Generic[_T]):
+    """Descriptor that allows setting a property late and erroring if it's
+    accessed early.
+
+    This property allows a more ergonomically typed equivalent of
+    self.value: T | None = None, since you then don't need to worry about
+    whether self.value is None.
+    """
+
+    def __init__(self) -> None:
+        self.__name: str | None = None
+
+    def __set_name__(self, owner: object, name: str) -> None:
+        if self.__name is None:
+            self.__name = name
+        else:
+            assert self.__name == name
+
+    def __get__(self, instance: T.Any, cls: type) -> _T:
+        raise MesonBugException(f'Attempted to access attribute {self.__name} before it is set')
+
+
 def get_subproject_dir(directory: str = '.') -> T.Optional[str]:
     """Get the name of the subproject directory for a specific project.
 
@@ -2763,3 +2813,38 @@ def pathname_sort_key(key: str) -> tuple[tuple[bool, tuple[int | str, ...]], ...
 
     return tuple((key.count('/') <= idx, alphanum_key(x))
                  for idx, x in enumerate(key.split('/')))
+
+
+def unwrap(value: _T | None, msg: str | None = None) -> _T:
+    """Remove None from a union type when it is a Meson bug.
+
+    This is used for cases where None being in the Union is a bug in Meson
+    itself.
+
+    :param value: The Union
+    :param msg: A message to print when a buggy value occurs, defaults to None
+    :raises MesonBugException: When None is in value
+    :return: The value union with None removed
+    """
+    if value is not None:
+        return value
+    raise MesonBugException(msg or 'Unexpected None value')
+
+
+def unwrap_err(value: _T | None, msg: str) -> _T:
+    """Remove None from a union type when it is not a Meson bug.
+
+    This is for cases where None is possible, but it represents a problem
+    outside of Meson itself.
+
+    For example, a missing external program, or a read only file system, or a
+    missing file
+
+    :param value: The Union to remove None from
+    :param msg: The message to print when None is found
+    :raises MesonException: When None is found in the union
+    :return: The Union with None removed
+    """
+    if value is not None:
+        return value
+    raise MesonException(msg)

@@ -12,6 +12,7 @@ project files and don't need this info."""
 
 from contextlib import redirect_stdout
 import dataclasses
+import itertools
 import json
 import os
 from pathlib import Path, PurePath
@@ -416,9 +417,12 @@ def list_projinfo(coredata: cdata.CoreData, builddata: build.Build, backend: bac
         'subproject_dir': builddata.subproject_dir,
     }
     subprojects = []
-    for k, build_proj in builddata.projects.items():
-        if not k:
+    seen = set([''])
+    for k, build_proj in itertools.chain(builddata.projects.host.items(),
+                                         builddata.projects.build.items()):
+        if k in seen:
             continue
+        seen.add(k)
         c: T.Dict[str, str] = {
             'name': k,
             'version': build_proj.version,
@@ -526,7 +530,6 @@ def run(options: argparse.Namespace) -> int:
         # Make sure that log entries in other parts of meson don't interfere with the JSON output
         with redirect_stdout(sys.stderr):
             backend = backends.get_backend_from_name(options.backend)
-            assert backend is not None
             intr = IntrospectionInterpreter(sourcedir, '', backend.name, visitors = [AstIDGenerator(), AstIndentationGenerator(), AstConditionLevel()])
             intr.analyze()
 
