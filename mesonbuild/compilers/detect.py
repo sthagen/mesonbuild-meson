@@ -1045,7 +1045,7 @@ def detect_cython_compiler(env: 'Environment', for_machine: MachineChoice) -> Co
 
 def detect_vala_compiler(env: 'Environment', for_machine: MachineChoice) -> Compiler:
     from .vala import ValaCompiler
-    exelist = env.lookup_binary_entry(MachineChoice.BUILD, 'vala')
+    exelist = env.lookup_binary_entry(for_machine, 'vala')
     if exelist is None:
         # TODO support fallback
         exelist = [defaults['vala'][0]]

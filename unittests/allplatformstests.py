@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2016-2021 The Meson development team
-# Copyright © 2023-2025 Intel Corporation
+# Copyright © 2023-2026 Intel Corporation
 
+from __future__ import annotations
 import itertools
 import subprocess
 import re
@@ -31,6 +32,7 @@ import mesonbuild.environment
 import mesonbuild.coredata
 import mesonbuild.machinefile
 import mesonbuild.modules.gnome
+import mesonbuild.tooldetect
 from mesonbuild.mesonlib import (
     DirectoryLock, DirectoryLockAction, MachineChoice, is_windows, is_osx, is_cygwin, is_dragonflybsd,
     is_sunos, windows_proof_rmtree, python_command, version_compare, split_args, quote_arg,
@@ -49,7 +51,7 @@ from mesonbuild.compilers.c import VisualStudioCCompiler, ClangClCCompiler
 from mesonbuild.compilers.cpp import VisualStudioCPPCompiler, ClangClCPPCompiler
 from mesonbuild.compilers import (
     detect_static_linker, detect_c_compiler, compiler_from_language,
-    detect_compiler_for, lang_suffixes
+    detect_compiler_for
 )
 from mesonbuild.linkers import linkers
 
@@ -67,6 +69,10 @@ from run_tests import (
 
 from .baseplatformtests import BasePlatformTests
 from .helpers import *
+
+if T.TYPE_CHECKING:
+    from mesonbuild.compilers.compilers import Language
+    from mesonbuild.environment import Environment
 
 UNIT_MACHINEFILE_DIR = Path(__file__).parent / 'machinefiles'
 
@@ -532,7 +538,7 @@ class AllPlatformTests(BasePlatformTests):
         printable representation
         https://github.com/mesonbuild/meson/issues/9894
         '''
-        testdir = os.path.join(self.unit_test_dir, '111 replace unencodable xml chars')
+        testdir = os.path.join(self.unit_test_dir, '112 replace unencodable xml chars')
         self.init(testdir)
         tests_command_output = self.run_tests()
         junit_xml_logs = Path(self.logdir, 'testlog.junit.xml')
@@ -693,7 +699,7 @@ class AllPlatformTests(BasePlatformTests):
         self.run_tests()
 
     def test_implicit_forcefallback(self):
-        testdir = os.path.join(self.unit_test_dir, '95 implicit force fallback')
+        testdir = os.path.join(self.unit_test_dir, '96 implicit force fallback')
         with self.assertRaises(subprocess.CalledProcessError):
             self.init(testdir)
         self.init(testdir, extra_args=['--wrap-mode=forcefallback'])
@@ -1485,7 +1491,7 @@ class AllPlatformTests(BasePlatformTests):
         Test that conflicts between -D for builtin options and the corresponding
         long option are detected without false positives or negatives.
         '''
-        testdir = os.path.join(self.unit_test_dir, '130 long opt vs D')
+        testdir = os.path.join(self.unit_test_dir, '131 long opt vs D')
 
         for opt in ['-Dsysconfdir=/etc', '-Dsysconfdir2=/etc']:
             exception_raised = False
@@ -2229,7 +2235,7 @@ class AllPlatformTests(BasePlatformTests):
         check_pcfile('libvartest2.pc', relocatable=False)
 
         self.wipe()
-        testdir_abs = os.path.join(self.unit_test_dir, '105 pkgconfig relocatable with absolute path')
+        testdir_abs = os.path.join(self.unit_test_dir, '106 pkgconfig relocatable with absolute path')
         self.init(testdir_abs)
 
         check_pcfile('libsimple.pc', relocatable=True, levels=3)
@@ -2311,7 +2317,7 @@ class AllPlatformTests(BasePlatformTests):
         self.assertDictEqual(original, expected)
 
     def test_executable_names(self):
-        testdir = os.path.join(self.unit_test_dir, '121 executable suffix')
+        testdir = os.path.join(self.unit_test_dir, '122 executable suffix')
         self.init(testdir)
         self.build()
         exe1 = os.path.join(self.builddir, 'foo' + exe_suffix)
@@ -2402,7 +2408,7 @@ class AllPlatformTests(BasePlatformTests):
 
     def test_options_listed_in_build_options(self) -> None:
         """Detect when changed options become listed in build options."""
-        testdir = os.path.join(self.unit_test_dir, '113 list build options')
+        testdir = os.path.join(self.unit_test_dir, '114 list build options')
 
         out = self.init(testdir)
         for line in out.splitlines():
@@ -2536,86 +2542,137 @@ class AllPlatformTests(BasePlatformTests):
             self.init(tdir)
         self.assertIn('ERROR: compiler.has_header_symbol got unknown keyword arguments "prefixxx"', cm.exception.output)
 
-    def test_templates(self):
-        ninja = mesonbuild.tooldetect.detect_ninja()
-        if ninja is None:
-            raise SkipTest('This test currently requires ninja. Fix this once "meson build" works.')
+    def _template_test_fresh(self, lang: Language, target_type: str, env: Environment, ninja: list[str]) -> None:
+        if is_windows() and lang == 'fortran' and target_type == 'library':
+            # non-Gfortran Windows Fortran compilers do not do shared libraries in a Fortran standard way
+            # see "test cases/fortran/6 dynamic"
+            fc = detect_compiler_for(env, 'fortran', MachineChoice.HOST, True, '')
+            if fc.get_id() in {'intel-cl', 'pgi'}:
+                raise SkipTest('The Intel (classic) and PGI fortran compilers do not support standard shared libraries')
 
-        langs = []
-        env = get_fake_env()
-        for l in ['c', 'cpp', 'cs', 'cuda', 'd', 'fortran', 'java', 'objc', 'objcpp', 'rust', 'vala']:
-            try:
-                comp = detect_compiler_for(env, l, MachineChoice.HOST, True, '')
-                with tempfile.TemporaryDirectory() as d:
-                    comp.sanity_check(d)
-                langs.append(l)
-            except EnvironmentException:
-                pass
+        # test empty directory
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self._run(self.meson_command + ['init', '--language', lang, '--type', target_type],
+                      workdir=tmpdir)
+            self._run(self.setup_command + ['--backend=ninja', 'builddir'], workdir=tmpdir)
+            self._run(ninja, workdir=os.path.join(tmpdir, 'builddir'))
 
-        # The D template fails under mac CI and we don't know why.
-        # Patches welcome
-        if is_osx():
-            langs = [l for l in langs if l != 'd']
-
-        def _template_test_fresh(lang, target_type):
-            if is_windows() and lang == 'fortran' and target_type == 'library':
-                # non-Gfortran Windows Fortran compilers do not do shared libraries in a Fortran standard way
-                # see "test cases/fortran/6 dynamic"
-                fc = detect_compiler_for(env, 'fortran', MachineChoice.HOST, True, '')
-                if fc.get_id() in {'intel-cl', 'pgi'}:
-                    return
-
-            # test empty directory
+        # custom executable name
+        if target_type == 'executable':
             with tempfile.TemporaryDirectory() as tmpdir:
-                self._run(self.meson_command + ['init', '--language', lang, '--type', target_type],
-                            workdir=tmpdir)
-                self._run(self.setup_command + ['--backend=ninja', 'builddir'], workdir=tmpdir)
-                self._run(ninja, workdir=os.path.join(tmpdir, 'builddir'))
-
-            # custom executable name
-            if target_type == 'executable':
-                with tempfile.TemporaryDirectory() as tmpdir:
-                    self._run(self.meson_command + ['init', '--language', lang, '--type', target_type,
-                                                    '--executable', 'foobar'],
-                                                    workdir=tmpdir)
-                    self._run(self.setup_command + ['--backend=ninja', 'builddir'], workdir=tmpdir)
-                    self._run(ninja, workdir=os.path.join(tmpdir, 'builddir'))
-
-                    if lang not in {'cs', 'java'}:
-                        exe = os.path.join(tmpdir, 'builddir', 'foobar' + exe_suffix)
-                        self.assertTrue(os.path.exists(exe))
-
-        def _template_test_dirty(lang, target_type):
-            if is_windows() and lang == 'fortran' and target_type == 'library':
-                # non-Gfortran Windows Fortran compilers do not do shared libraries in a Fortran standard way
-                # see "test cases/fortran/6 dynamic"
-                fc = detect_compiler_for(env, 'fortran', MachineChoice.HOST, True, '')
-                if fc.get_id() in {'intel-cl', 'pgi'}:
-                    return
-
-            # test empty directory
-            with tempfile.TemporaryDirectory() as tmpdir:
-                self._run(self.meson_command + ['init', '--language', lang, '--type', target_type],
+                self._run(self.meson_command + ['init', '--language', lang, '--type', target_type,
+                                                '--executable', 'foobar'],
                           workdir=tmpdir)
                 self._run(self.setup_command + ['--backend=ninja', 'builddir'], workdir=tmpdir)
                 self._run(ninja, workdir=os.path.join(tmpdir, 'builddir'))
 
-            # test directory with existing code file
-            if lang in {'c', 'cpp', 'd'}:
-                with tempfile.TemporaryDirectory() as tmpdir:
-                    with open(os.path.join(tmpdir, 'foo.' + lang), 'w', encoding='utf-8') as f:
-                        f.write('int main(void) {}')
-                    self._run(self.meson_command + ['init', '-b'], workdir=tmpdir)
+                if lang not in {'cs', 'java'}:
+                    exe = os.path.join(tmpdir, 'builddir', 'foobar' + exe_suffix)
+                    self.assertTrue(os.path.exists(exe))
 
-            elif lang in {'java'}:
-                with tempfile.TemporaryDirectory() as tmpdir:
-                    with open(os.path.join(tmpdir, 'Foo.' + lang), 'w', encoding='utf-8') as f:
-                        f.write('public class Foo { public static void main() {} }')
-                    self._run(self.meson_command + ['init', '-b'], workdir=tmpdir)
+    def _template_test_dirty(self, lang: Language, target_type: str, env: Environment, ninja: list[str]) -> None:
+        if is_windows() and lang == 'fortran' and target_type == 'library':
+            # non-Gfortran Windows Fortran compilers do not do shared libraries in a Fortran standard way
+            # see "test cases/fortran/6 dynamic"
+            fc = detect_compiler_for(env, 'fortran', MachineChoice.HOST, True, '')
+            if fc.get_id() in {'intel-cl', 'pgi'}:
+                raise SkipTest('The Intel (classic) and PGI fortran compilers do not support standard shared libraries')
 
-        for lang, target_type, fresh in itertools.product(langs, ('executable', 'library'), (True, False)):
-            with self.subTest(f'Language: {lang}; type: {target_type}; fresh: {fresh}'):
-                _template_test_fresh(lang, target_type) if fresh else _template_test_dirty(lang, target_type)
+        # test empty directory
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self._run(self.meson_command + ['init', '--language', lang, '--type', target_type],
+                      workdir=tmpdir)
+            self._run(self.setup_command + ['--backend=ninja', 'builddir'], workdir=tmpdir)
+            self._run(ninja, workdir=os.path.join(tmpdir, 'builddir'))
+
+        # test directory with existing code file
+        if lang in {'c', 'cpp', 'd'}:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                with open(os.path.join(tmpdir, 'foo.' + lang), 'w', encoding='utf-8') as f:
+                    f.write('int main(void) {}')
+                self._run(self.meson_command + ['init', '-b'], workdir=tmpdir)
+
+        elif lang in {'java'}:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                with open(os.path.join(tmpdir, 'Foo.' + lang), 'w', encoding='utf-8') as f:
+                    f.write('public class Foo { public static void main() {} }')
+                self._run(self.meson_command + ['init', '-b'], workdir=tmpdir)
+
+    def _test_template(self, lang: Language) -> None:
+        ninja = mesonbuild.tooldetect.detect_ninja()
+        if ninja is None:
+            raise SkipTest('This test currently requires ninja. Fix this once "meson build" works.')
+
+        env = get_fake_env(bdir=self.builddir)
+
+        extra_lang: Language | None
+        match lang:
+            case 'cuda':
+                extra_lang = 'cpp'
+            case 'vala':
+                extra_lang = 'c'
+            case _:
+                extra_lang = None
+
+        if extra_lang is not None:
+            try:
+                comp = detect_compiler_for(env, extra_lang, MachineChoice.HOST, True, '')
+            except EnvironmentException:
+                comp = None
+            if comp is None:
+                raise SkipTest(f'Could not find compiler for {extra_lang}, which is required for {lang}')
+
+        with tempfile.TemporaryDirectory() as d:
+            try:
+                comp = detect_compiler_for(env, lang, MachineChoice.HOST, True, '')
+                if comp is None:
+                    raise SkipTest(f'Could not find compiler for language: {lang}')
+                comp.sanity_check(d)
+            except EnvironmentException:
+                raise SkipTest(f'Compiler for language {lang} failed to sanity check')
+
+        for target_type, fresh in itertools.product(('executable', 'library'), (True, False)):
+            with self.subTest(type=target_type, fresh=fresh):
+                func = self._template_test_fresh if fresh else self._template_test_dirty
+                try:
+                    func(lang, target_type, env, ninja)
+                except subprocess.CalledProcessError as e:
+                    self.fail(e.stdout)
+
+    def test_template_c(self) -> None:
+        self._test_template('c')
+
+    def test_template_cpp(self) -> None:
+        self._test_template('cpp')
+
+    def test_template_cs(self) -> None:
+        self._test_template('cs')
+
+    def test_template_cuda(self) -> None:
+        self._test_template('cuda')
+
+    def test_template_d(self) -> None:
+        if is_osx():
+            raise SkipTest('The D template fails under MacOS CI, we are unsure why. Patches welcome.')
+        self._test_template('d')
+
+    def test_template_fortran(self) -> None:
+        self._test_template('fortran')
+
+    def test_template_java(self) -> None:
+        self._test_template('java')
+
+    def test_template_objc(self) -> None:
+        self._test_template('objc')
+
+    def test_template_objcpp(self) -> None:
+        self._test_template('objcpp')
+
+    def test_template_rust(self) -> None:
+        self._test_template('rust')
+
+    def test_template_vala(self) -> None:
+        self._test_template('vala')
 
     def test_compiler_run_command(self):
         '''
@@ -2670,7 +2727,7 @@ class AllPlatformTests(BasePlatformTests):
         self.assertIn(msg, out)
 
     def test_mixed_language_linker_check(self):
-        testdir = os.path.join(self.unit_test_dir, '96 compiler.links file arg')
+        testdir = os.path.join(self.unit_test_dir, '97 compiler.links file arg')
         self.init(testdir)
         cmds = self.get_meson_log_compiler_checks()
         self.assertEqual(len(cmds), 5)
@@ -3131,7 +3188,7 @@ class AllPlatformTests(BasePlatformTests):
     @skipIf(is_windows(), 'POSIX only')
     def test_python_build_config_extensions(self):
         testdir = os.path.join(self.unit_test_dir,
-                               '126 python extension')
+                               '127 python extension')
 
         VERSION_INFO_KEYS = ('major', 'minor', 'micro', 'releaselevel', 'serial')
         EXTENSION_SUFFIX = '.extension-suffix.so'
@@ -3422,7 +3479,7 @@ class AllPlatformTests(BasePlatformTests):
         self.meson_cross_files = [os.path.join(self.builddir, "crossfile")]
 
         self.new_builddir()
-        testdir = os.path.join(self.unit_test_dir, '136 native subproject introspect')
+        testdir = os.path.join(self.unit_test_dir, '137 native subproject introspect')
         self.init(testdir)
         res = self.introspect('--targets')
 
@@ -4133,6 +4190,14 @@ class AllPlatformTests(BasePlatformTests):
         self.init(testdir)
         self._run(self.mconf_command + [self.builddir])
 
+    def test_configure_with_augments(self):
+        # A list-valued augment used to crash `meson configure <builddir>`.
+        testdir = os.path.join(self.unit_test_dir, '47 reconfigure')
+        self.init(testdir, extra_args=['-Dsub1:c_args=-DFOO'])
+        out = self._run(self.mconf_command + [self.builddir])
+        self.assertIn('sub1:c_args', out)
+        self.assertIn('[-DFOO]', out)
+
     def test_summary(self):
         testdir = os.path.join(self.unit_test_dir, '71 summary')
         out = self.init(testdir, extra_args=['-Denabled_opt=enabled', f'-Dpython={sys.executable}'])
@@ -4606,7 +4671,7 @@ class AllPlatformTests(BasePlatformTests):
         if self.backend is not Backend.ninja:
             raise SkipTest('ninja backend needed for "meson test" to build test dependencies')
 
-        testdir = os.path.join(self.unit_test_dir, '132 custom target index test')
+        testdir = os.path.join(self.unit_test_dir, '133 custom target index test')
         self.init(testdir)
         self.run_tests()
 
@@ -4717,7 +4782,7 @@ class AllPlatformTests(BasePlatformTests):
         self.init(srcdir, extra_args=['-Dbuild.b_lto=true'])
 
     def test_install_skip_subprojects(self):
-        testdir = os.path.join(self.unit_test_dir, '91 install skip subprojects')
+        testdir = os.path.join(self.unit_test_dir, '92 install skip subprojects')
         self.init(testdir)
         self.build()
 
@@ -4764,7 +4829,7 @@ class AllPlatformTests(BasePlatformTests):
         check_installed_files(['--skip-subprojects', 'another'], all_expected)
 
     def test_adding_subproject_to_configure_project(self) -> None:
-        srcdir = os.path.join(self.unit_test_dir, '92 new subproject in configured project')
+        srcdir = os.path.join(self.unit_test_dir, '93 new subproject in configured project')
         self.init(srcdir)
         self.build()
         self.setconf('-Duse-sub=true')
@@ -4817,7 +4882,7 @@ class AllPlatformTests(BasePlatformTests):
         if self.backend is not Backend.ninja:
             raise SkipTest(f'Skipping clang-format tests with {self.backend.name} backend')
 
-        testdir = os.path.join(self.unit_test_dir, '93 clangformat')
+        testdir = os.path.join(self.unit_test_dir, '94 clangformat')
         newdir = os.path.join(self.builddir, 'testdir')
         shutil.copytree(testdir, newdir)
         self.new_builddir()
@@ -4842,7 +4907,7 @@ class AllPlatformTests(BasePlatformTests):
         self.build('clang-format-check')
 
     def test_custom_target_implicit_include(self):
-        testdir = os.path.join(self.unit_test_dir, '94 custominc')
+        testdir = os.path.join(self.unit_test_dir, '95 custominc')
         self.init(testdir)
         self.build()
         compdb = self.get_compdb()
@@ -4878,7 +4943,7 @@ class AllPlatformTests(BasePlatformTests):
                 self.assertEqual(sorted(link_args), sorted(['-flto']))
 
     def test_install_tag(self) -> None:
-        testdir = os.path.join(self.unit_test_dir, '98 install all targets')
+        testdir = os.path.join(self.unit_test_dir, '99 install all targets')
         self.init(testdir)
         self.build()
 
@@ -5049,7 +5114,7 @@ class AllPlatformTests(BasePlatformTests):
 
 
     def test_introspect_install_plan(self):
-        testdir = os.path.join(self.unit_test_dir, '98 install all targets')
+        testdir = os.path.join(self.unit_test_dir, '99 install all targets')
         introfile = os.path.join(self.builddir, 'meson-info', 'intro-install_plan.json')
         self.init(testdir)
         self.assertPathExists(introfile)
@@ -5384,7 +5449,7 @@ class AllPlatformTests(BasePlatformTests):
                 }}
             ''')
 
-        testdir = os.path.join(self.unit_test_dir, '101 rlib linkage')
+        testdir = os.path.join(self.unit_test_dir, '102 rlib linkage')
         gen_file = os.path.join(testdir, 'lib.rs')
         with open(gen_file, 'w', encoding='utf-8') as f:
             f.write(template.format(0))
@@ -5432,7 +5497,7 @@ class AllPlatformTests(BasePlatformTests):
                 return
 
     def test_custom_target_name(self):
-        testdir = os.path.join(self.unit_test_dir, '99 custom target name')
+        testdir = os.path.join(self.unit_test_dir, '100 custom target name')
         self.init(testdir)
         out = self.build()
         if self.backend is Backend.ninja:
@@ -5440,7 +5505,7 @@ class AllPlatformTests(BasePlatformTests):
             self.assertIn('Generating subdir/file.txt with a custom command', out)
 
     def test_symlinked_subproject(self):
-        testdir = os.path.join(self.unit_test_dir, '107 subproject symlink')
+        testdir = os.path.join(self.unit_test_dir, '108 subproject symlink')
         subproject_dir = os.path.join(testdir, 'subprojects')
         subproject = os.path.join(testdir, 'symlinked_subproject')
         symlinked_subproject = os.path.join(testdir, 'subprojects', 'symlinked_subproject')
@@ -5456,7 +5521,7 @@ class AllPlatformTests(BasePlatformTests):
         self.build()
 
     def test_configure_same_noop(self):
-        testdir = os.path.join(self.unit_test_dir, '109 configure same noop')
+        testdir = os.path.join(self.unit_test_dir, '110 configure same noop')
         args = [
             '-Dstring=val',
             '-Dboolean=true',
@@ -5495,7 +5560,7 @@ class AllPlatformTests(BasePlatformTests):
     def test_link_language_promotion(self):
         if self.backend is Backend.vs:
             raise SkipTest('target introspection is lacking linker details')
-        testdir = os.path.join(self.unit_test_dir, '134 promote link_language')
+        testdir = os.path.join(self.unit_test_dir, '135 promote link_language')
         self.init(testdir)
         cintrospection = self.introspect('--compilers')
         clinker = cintrospection['host']['c']['linker_exelist']
@@ -5508,7 +5573,7 @@ class AllPlatformTests(BasePlatformTests):
 
     def __test_multi_stds(self, test_c: bool = True, test_objc: bool = False) -> None:
         assert test_c or test_objc, 'must test something'
-        testdir = os.path.join(self.unit_test_dir, '115 c cpp stds')
+        testdir = os.path.join(self.unit_test_dir, '116 c cpp stds')
         self.init(testdir, extra_args=[f'-Dwith-c={str(test_c).lower()}',
                                        f'-Dwith-objc={str(test_objc).lower()}'])
         # Invalid values should fail whatever compiler we have
@@ -5567,7 +5632,7 @@ class AllPlatformTests(BasePlatformTests):
         self.__test_multi_stds(test_objc=True)
 
     def test_slice(self):
-        testdir = os.path.join(self.unit_test_dir, '128 test slice')
+        testdir = os.path.join(self.unit_test_dir, '129 test slice')
         self.init(testdir)
         self.build()
 
@@ -5607,7 +5672,7 @@ class AllPlatformTests(BasePlatformTests):
         self.assertEqual(cc.linker.get_accepts_rsp(), has_rsp)
 
     def test_nonexisting_bargs(self):
-        testdir = os.path.join(self.unit_test_dir, '116 empty project')
+        testdir = os.path.join(self.unit_test_dir, '117 empty project')
         args = ['-Db_ndebug=if_release']
         self.init(testdir, extra_args=args)
 
@@ -5617,7 +5682,7 @@ class AllPlatformTests(BasePlatformTests):
         self.init(testdir, extra_args=['--wipe'])
 
     def test_interactive_tap(self):
-        testdir = os.path.join(self.unit_test_dir, '124 interactive tap')
+        testdir = os.path.join(self.unit_test_dir, '125 interactive tap')
         self.init(testdir, extra_args=['--wrap-mode=forcefallback'])
         output = self._run(self.mtest_command + ['--interactive'])
         self.assertRegex(output, r'Ok:\s*0')
