@@ -213,8 +213,14 @@ def guess_nix_linker(env: 'Environment', compiler: T.List[str], comp_class: T.Ty
             compiler, env, for_machine, comp_class.LINKER_OPTION_STYLE, override, version=v)
     # detect xtools first, bug #10805
     elif 'xtools-' in o.split('\n', maxsplit=1)[0]:
-        xtools = o.split(' ', maxsplit=1)[0]
-        v = xtools.split('-', maxsplit=2)[1]
+        # See https://github.com/iains/darwin-xtools/blob/darwin-xtools-3-3-0/ld64/src/ld/ld_vers.c.in
+        # for the format
+        for line in o.split('\n'):
+            if line.startswith('Based on Apple Inc. ld64-'):
+                v = line.split()[4][5:]
+                break
+        else:
+            __failed_to_detect_linker(compiler, check_args, o, e)
         linker = linkers.AppleDynamicLinker(
             compiler, env, for_machine, comp_class.LINKER_OPTION_STYLE, override,
             system=system, version=v
@@ -228,17 +234,15 @@ def guess_nix_linker(env: 'Environment', compiler: T.List[str], comp_class: T.Ty
         cmd = compiler + comp_class.LINKER_OPTION_STYLE.wrap(['-v']) + extra_args
         _, newo, newerr = Popen_safe_logged(cmd, msg='Detecting Apple linker via')
 
-        is_dyld: bool
         for line in newerr.split('\n'):
             if 'PROJECT:ld' in line or 'PROJECT:dyld' in line:
                 v = line.split('-')[1]
-                is_dyld = 'PROJECT:dyld' in line
                 break
         else:
             __failed_to_detect_linker(compiler, check_args, o, e)
         linker = linkers.AppleDynamicLinker(
             compiler, env, for_machine, comp_class.LINKER_OPTION_STYLE, override,
-            system=system, version=v, is_dyld=is_dyld
+            system=system, version=v
         )
     elif 'ld.exe: unrecognized option' in e or 'ld: unrecognized option' in e:
         linker = linkers.OS2AoutDynamicLinker(

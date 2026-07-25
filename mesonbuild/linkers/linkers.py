@@ -853,13 +853,6 @@ class AppleDynamicLinker(PosixDynamicLinkerMixin, DynamicLinker):
 
     id = 'ld64'
 
-    def __init__(self, exelist: T.List[str], env: Environment,
-                 for_machine: mesonlib.MachineChoice, prefix_arg: T.Optional[LinkerOptionStyle],
-                 always_args: T.List[str], *, system: str,
-                 version: str, is_dyld: bool = False):
-        super().__init__(exelist, env, for_machine, prefix_arg, always_args, system=system, version=version)
-        self.is_dyld = is_dyld
-
     def get_asneeded_args(self) -> T.List[str]:
         return self._apply_prefix('-dead_strip_dylibs')
 
@@ -966,9 +959,9 @@ class AppleDynamicLinker(PosixDynamicLinkerMixin, DynamicLinker):
 
     def get_lto_obj_cache_path(self, path: str) -> T.List[str]:
         # https://clang.llvm.org/docs/CommandGuide/clang.html#cmdoption-flto
-        if self.is_dyld:
-            return []
-        return ["-Wl,-object_path_lto," + path]
+        if mesonlib.version_compare(self.version, '>=123.2'):
+            return self._apply_prefix(['-object_path_lto', path])
+        return []
 
     def export_dynamic_args(self) -> T.List[str]:
         if mesonlib.version_compare(self.version, '>=224.1'):

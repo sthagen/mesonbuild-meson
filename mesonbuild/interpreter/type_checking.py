@@ -277,7 +277,7 @@ DEPENDS_KW: KwargInfo[T.List[T.Union[BuildTarget, CustomTarget, CustomTargetInde
     ContainerTypeInfo(list, (BuildTarget, CustomTarget, CustomTargetIndex, Program)),
     listify=True,
     default=[],
-    since_values={CustomTargetIndex: '1.5.0', ExternalProgram: '1.11.2'},
+    since_values={CustomTargetIndex: '1.5.0', ExternalProgram: '1.12.0'},
 )
 
 DEPEND_FILES_KW: KwargInfo[T.List[T.Union[str, File]]] = KwargInfo(
@@ -367,7 +367,7 @@ CT_INPUT_KW: KwargInfo[T.List[T.Union[str, File, BuildTarget, GeneratedTypes, Ex
     listify=True,
     default=[],
     convertor=_local_program_convertor,
-    since_values={ExternalProgram: '1.11.2'},
+    since_values={ExternalProgram: '1.12.0'},
 )
 
 CT_INSTALL_TAG_KW: KwargInfo[T.List[T.Union[str, bool]]] = KwargInfo(
@@ -1039,7 +1039,7 @@ BUILD_TARGET_KWS = [
     *_EXCLUSIVE_STATIC_LIB_KWS,
     *EXCLUSIVE_EXECUTABLE_KWS,
     *_SHARED_STATIC_ARGS,
-    _VS_MODULE_DEFS_KW,
+    _VS_MODULE_DEFS_KW.evolve(since='1.12.0'),
     _WIN_SUBSYSTEM_KW.evolve(since='1.12.0'),
     RUST_ABI_KW.evolve(since='1.10.0'),
     *[a.evolve(deprecated='1.3.0', deprecated_message='The use of "jar" in "build_target()" is deprecated, and this argument is only used by jar()')

@@ -1389,7 +1389,7 @@ class Interpreter(InterpreterBase, HoldableObject):
         if self.cargo is None:
             self.load_root_cargo_lock_file()
 
-        build_project = build.BuildProject(proj_name, self.project_version, self.subproject, for_machine)
+        build_project = build.BuildProject(proj_name, self.project_version, self.subproject, self.build.for_machine, for_machine)
         self.build.projects[for_machine][self.subproject] = build_project
 
         extra_args: T.List[mlog.TV_Loggable] = []
@@ -3089,26 +3089,22 @@ class Interpreter(InterpreterBase, HoldableObject):
 
     @typed_pos_args('add_global_arguments', varargs=str)
     @typed_kwargs('add_global_arguments', NATIVE_KW, LANGUAGE_KW)
-    @apply_machine_map
     def func_add_global_arguments(self, node: mparser.FunctionNode, args: T.Tuple[T.List[str]], kwargs: 'kwtypes.FuncAddProjectArgs') -> None:
         self._add_global_arguments(node, self.build.global_args[kwargs['native']], args[0], kwargs)
 
     @typed_pos_args('add_global_link_arguments', varargs=str)
     @typed_kwargs('add_global_link_arguments', NATIVE_KW, LANGUAGE_KW)
-    @apply_machine_map
     def func_add_global_link_arguments(self, node: mparser.FunctionNode, args: T.Tuple[T.List[str]], kwargs: 'kwtypes.FuncAddProjectArgs') -> None:
         self._add_global_arguments(node, self.build.global_link_args[kwargs['native']], args[0], kwargs)
 
     @typed_pos_args('add_project_arguments', varargs=str)
     @typed_kwargs('add_project_arguments', NATIVE_KW, LANGUAGE_KW)
-    @apply_machine_map
     def func_add_project_arguments(self, node: mparser.FunctionNode, args: T.Tuple[T.List[str]], kwargs: 'kwtypes.FuncAddProjectArgs') -> None:
         self._add_project_arguments(node, self.current_build_project().project_args[kwargs['native']],
                                     args[0], kwargs)
 
     @typed_pos_args('add_project_link_arguments', varargs=str)
     @typed_kwargs('add_project_link_arguments', NATIVE_KW, LANGUAGE_KW)
-    @apply_machine_map
     def func_add_project_link_arguments(self, node: mparser.FunctionNode, args: T.Tuple[T.List[str]], kwargs: 'kwtypes.FuncAddProjectArgs') -> None:
         self._add_project_arguments(node, self.current_build_project().project_link_args[kwargs['native']],
                                     args[0], kwargs)
@@ -3120,7 +3116,6 @@ class Interpreter(InterpreterBase, HoldableObject):
     @FeatureNew('add_project_dependencies', '0.63.0')
     @typed_pos_args('add_project_dependencies', varargs=dependencies.Dependency)
     @typed_kwargs('add_project_dependencies', NATIVE_KW, LANGUAGE_KW)
-    @apply_machine_map
     def func_add_project_dependencies(self, node: mparser.FunctionNode, args: T.Tuple[T.List[dependencies.Dependency]], kwargs: 'kwtypes.FuncAddProjectArgs') -> None:
         for_machine = kwargs['native']
         for lang in kwargs['language']:
@@ -3186,18 +3181,8 @@ class Interpreter(InterpreterBase, HoldableObject):
                                args: T.List[str], kwargs: 'kwtypes.FuncAddProjectArgs') -> None:
         self._add_arguments(node, argsdict, self.project_args_frozen, args, kwargs)
 
-    def is_dup_machine(self, for_machine: MachineChoice) -> bool:
-        # Return whether applying the caller's effect to the build and
-        # host machine would duplicate the effect
-        return \
-            for_machine is not MachineChoice.HOST and \
-            self.build.machine_map[for_machine] is self.build.machine_map.host
-
     def _add_arguments(self, node: mparser.FunctionNode, argsdict: T.Dict[Language, T.List[str]],
                        args_frozen: bool, args: T.List[str], kwargs: 'kwtypes.FuncAddProjectArgs') -> None:
-        if self.is_dup_machine(kwargs['native']):
-            return
-
         if args_frozen:
             msg = f'Tried to use \'{node.func_name.value}\' after a build target has been declared.\n' \
                   'This is not permitted. Please declare all arguments before your targets.'
@@ -3500,6 +3485,17 @@ class Interpreter(InterpreterBase, HoldableObject):
             self.add_languages(tobj.missing_languages.copy(), True, tobj.for_machine)
             tobj.process_compilers_late()
             self.add_stdlib_info(tobj)
+
+            if tobj.uses_cython():
+                for gensrc in tobj.get_generated_sources():
+                    # a generator producing a .pyx has always worked; feeding
+                    # anything else from a generator into Cython triggered a bug
+                    # in the ninja backend and was effectively a new feature.
+                    if isinstance(gensrc, build.GeneratedList) and \
+                            any(not o.endswith('.pyx') for o in gensrc.get_outputs()):
+                        FeatureNew.single_use('Generators for non-.pyx Cython sources',
+                                              '1.12.0', self.subproject, location=self.current_node)
+                        break
 
         self.build.targets[idname] = tobj
         # Only need to add executables to this set
@@ -3886,7 +3882,8 @@ class Interpreter(InterpreterBase, HoldableObject):
         # copy common arguments directly
         for arg in ('build_by_default', 'build_subdir', 'dependencies',
                     'install', 'install_mode', 'implicit_include_directories',
-                    'link_with', 'java_args', 'java_resources', 'main_class'):
+                    'link_with', 'java_args', 'java_resources', 'main_class',
+                    'native'):
             final[arg] = kwargs[arg]
 
         # this is not accessable from the DSL, so we need to initialize it
@@ -3939,6 +3936,8 @@ class Interpreter(InterpreterBase, HoldableObject):
             mlog.debug('Unknown target type:', str(targetclass))
             raise RuntimeError('Unreachable code')
 
+        # preserved for global and project arguments
+        orig_for_machine = kwargs['native']
         self.apply_machine_map_to_kwargs(kwargs)
         for_machine = kwargs['native']
 
@@ -4012,29 +4011,29 @@ class Interpreter(InterpreterBase, HoldableObject):
         if targetclass is build.Executable:
             nkwargs = self.__convert_executable_kwargs(
                 node, T.cast('kwtypes.Executable', kwargs))
-            target = build.Executable(name, self.subdir, for_machine, srcs, struct, objs,
+            target = build.Executable(name, self.subdir, orig_for_machine, srcs, struct, objs,
                                       self.environment, self.compilers[for_machine], self.current_build_project(), nkwargs)
         elif targetclass is build.StaticLibrary:
             nkwargs = self.__convert_static_library_kwargs(
                 node, T.cast('kwtypes.StaticLibrary', kwargs))
-            target = build.StaticLibrary(name, self.subdir, for_machine, srcs, struct, objs,
+            target = build.StaticLibrary(name, self.subdir, orig_for_machine, srcs, struct, objs,
                                          self.environment, self.compilers[for_machine], self.current_build_project(), nkwargs)
         elif targetclass is build.SharedLibrary:
             nkwargs = self.__convert_shared_library_kwargs(
                 node, T.cast('kwtypes.SharedLibrary', kwargs))
-            target = build.SharedLibrary(name, self.subdir, for_machine, srcs, struct, objs,
+            target = build.SharedLibrary(name, self.subdir, orig_for_machine, srcs, struct, objs,
                                          self.environment, self.compilers[for_machine], self.current_build_project(), nkwargs)
             target.shared_library_only = shared_library_only
         elif targetclass is build.SharedModule:
             nkwargs = self.__convert_shared_module_kwargs(
                 node, T.cast('kwtypes.SharedModule', kwargs))
-            target = build.SharedModule(name, self.subdir, for_machine, srcs, struct, objs,
+            target = build.SharedModule(name, self.subdir, orig_for_machine, srcs, struct, objs,
                                         self.environment, self.compilers[for_machine], self.current_build_project(), nkwargs)
             target.shared_library_only = shared_library_only
         else:
             nkwargs = self.__convert_jar_kwargs(
                 node, T.cast('kwtypes.Jar', kwargs))
-            target = build.Jar(name, self.subdir, for_machine, srcs, struct, objs,
+            target = build.Jar(name, self.subdir, orig_for_machine, srcs, struct, objs,
                                self.environment, self.compilers[for_machine], self.current_build_project(), nkwargs)
 
         if objs and target.uses_rust():
