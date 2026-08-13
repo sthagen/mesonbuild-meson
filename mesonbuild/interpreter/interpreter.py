@@ -31,7 +31,7 @@ from ..interpreterbase import noPosargs, noKwargs, noArgsFlattening, noSecondLev
 from .decorators import apply_machine_map
 from ..interpreterbase import InterpreterException, InvalidArguments, InvalidCode, SubdirDoneRequest
 from ..interpreterbase import Disabler, disablerIfNotFound
-from ..interpreterbase import FeatureNew, FeatureDeprecated, FeatureBroken, FeatureNewKwargs
+from ..interpreterbase import FeatureNew, FeatureDeprecated, FeatureBroken
 from ..interpreterbase import ObjectHolder, ContextManagerObject, DefaultObject
 from ..interpreterbase import stringifyUserArguments, Feature, FeatureValue
 from ..modules import ExtensionModule, ModuleObject, MutableModuleObject, NewExtensionModule, NotFoundExtensionModule, __path__ as modules_path
@@ -335,9 +335,10 @@ class Interpreter(InterpreterBase, HoldableObject):
         from .. import cargo
         try:
             self.cargo = cargo.Interpreter(self.environment, self.subdir, self.subproject_dir)
-        except cargo.TomlImplementationMissing as e:
-            # error delayed to actual usage of a Cargo subproject
-            mlog.warning(f'cannot load Cargo.lock: {e}', fatal=False)
+        except cargo.TomlImplementationMissing:
+            # Error delayed to actual usage of a Cargo subproject. The warning
+            # has already been printed by Resolver.load_wraps().
+            pass
 
     def _redetect_machines(self) -> None:
         # Re-initialize machine descriptions. We can do a better job now because we
@@ -2037,7 +2038,6 @@ class Interpreter(InterpreterBase, HoldableObject):
                  kwargs: kwtypes.Jar) -> build.Jar:
         return self.build_target(node, T.cast('tuple[str, SourcesVarargsType]', args), kwargs, build.Jar)
 
-    @FeatureNewKwargs('build_target', '0.40.0', ['link_whole', 'override_options'])
     @typed_pos_args('build_target', str, varargs=SOURCES_VARARGS)
     @typed_kwargs('build_target', *BUILD_TARGET_KWS)
     def func_build_target(self, node: mparser.BaseNode,

@@ -24,6 +24,7 @@ import mesonbuild.dependencies.base
 import mesonbuild.dependencies.factory
 import mesonbuild.envconfig
 import mesonbuild.environment
+import mesonbuild.modules.cuda
 import mesonbuild.modules.gnome
 import mesonbuild.scripts.env2mfile
 from mesonbuild import coredata
@@ -38,7 +39,7 @@ from mesonbuild.interpreterbase import typed_pos_args, InvalidArguments, ObjectH
 from mesonbuild.interpreterbase import typed_pos_args, InvalidArguments, typed_kwargs, ContainerTypeInfo, KwargInfo
 from mesonbuild.mesonlib import (
     LibType, MachineChoice, PerMachine, SimpleABC, Version, is_windows, is_osx,
-    is_cygwin, is_openbsd, search_version, MesonException, python_command,
+    is_cygwin, is_openbsd, search_version, MesonException, EnvironmentException, python_command,
     version_check_to_range,
 )
 from mesonbuild.options import OptionKey
@@ -53,6 +54,13 @@ from run_tests import get_fake_env, get_fake_options
 from .helpers import *
 
 class InternalTests(unittest.TestCase):
+
+    def test_cmake_skip_compiler_test_invalid(self):
+        properties = mesonbuild.envconfig.Properties({'cmake_skip_compiler_test': True})
+        with self.assertRaisesRegex(
+                EnvironmentException,
+                '"True" is not a valid value for cmake_skip_compiler_test'):
+            properties.get_cmake_skip_compiler_test()
 
     def test_machine_info_is_ohos(self):
         def machine(system: str, subsystem: str) -> mesonbuild.envconfig.MachineInfo:
@@ -83,6 +91,10 @@ class InternalTests(unittest.TestCase):
         self.assertEqual(search_version('2016.oops 1.2.3'), '1.2.3')
         self.assertEqual(search_version('2016.x'), 'unknown version')
         self.assertEqual(search_version(r'something version is \033[32;2m1.2.0\033[0m.'), '1.2.0')
+
+        self.assertEqual(search_version(r'''(FooBar LLVM-Linux 5.0.0) clang version 21.9.0
+Target: riscv64-unknown-linux-gnu
+Thread model: posix'''), '21.9.0')
 
         # Literal output of mvn
         self.assertEqual(search_version(r'''\
@@ -720,6 +732,90 @@ class InternalTests(unittest.TestCase):
             self._test_all_naming(cc, patterns, 'cygwin')
             env.machines.host.system = 'windows'
             self._test_all_naming(cc, patterns, 'windows-mingw')
+
+        self._test_find_library_undefined(cc)
+
+    def _test_find_library_undefined(self, cc):
+        '''
+        find_library checks if its argument both exists and can be
+        linked against, but it must tolerate underlinked static
+        libraries.
+
+        https://github.com/mesonbuild/meson/issues/15601
+        '''
+        def create_static_lib_with_undefined(name):
+            src = name.with_suffix('.c')
+            out = name.with_suffix('.o')
+            with src.open('w', encoding='utf-8') as f:
+                f.write('extern int get_cookie();')
+                f.write('int meson_foobar (void) { return get_cookie(); }')
+            # use of x86_64 is hardcoded in run_tests.py:get_fake_env()
+            if is_osx():
+                subprocess.check_call(['clang', '-c', str(src), '-o', str(out), '-arch', 'x86_64'])
+            else:
+                subprocess.check_call(['gcc', '-c', str(src), '-o', str(out)])
+            subprocess.check_call(['ar', 'csr', str(name), str(out)])
+
+        def create_static_lib_empty(name):
+            with name.open('w', encoding='utf-8') as f:
+                f.write("garbage")
+
+        # The test relies on some open-coded toolchain invocations for
+        # library creation in create_static_lib_with_undefined.
+        if is_windows() or is_cygwin():
+            return
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            p1 = Path(tmpdir)
+            create_static_lib_with_undefined(p1 / 'libfoo.a')
+
+            code = 'int meson_foobar (void); int main(void) { return meson_foobar(); }'
+
+            # Check that we always tolerate undefined references in a static
+            # library regardless of the library type.
+            for type in (LibType.STATIC, LibType.PREFER_STATIC, LibType.PREFER_SHARED):
+                found = cc._find_library_real('foo', [tmpdir],
+                                              code,
+                                              type, lib_prefix_warning=True, ignore_system_dirs=False)
+                self.assertEqual(os.path.basename(found[0]), 'libfoo.a')
+
+            # Check that we reject broken static libraries unless we were
+            # told to only find a static library.
+            create_static_lib_empty(p1 / 'libbar.a')
+
+            # We have a broken static library *and* we indicated we want a static
+            # library, so we don't perform a link test.
+            found = cc._find_library_real('bar', [tmpdir],
+                                          code,
+                                          LibType.STATIC, lib_prefix_warning=True, ignore_system_dirs=False)
+            self.assertEqual(os.path.basename(found[0]), 'libbar.a')
+
+            # We have a broken static library we're testing against but we only said
+            # we'd prefer static, not that it must be static: the heuristic
+            # says it likely isn't a special toolchain library, so we perform a
+            # link test.
+            found = cc._find_library_real('bar', [tmpdir],
+                                          code,
+                                          LibType.PREFER_STATIC, lib_prefix_warning=True, ignore_system_dirs=False)
+            self.assertIsNone(found, 'Unexpectedly found a library with PREFER_STATIC, link test expected to reject it')
+
+            # We have a broken static library we're testing against but we only said
+            # we'd prefer shared, not that it must be shared: the heuristic
+            # says it likely isn't a special toolchain library, so we perform a
+            # link test.
+            found = cc._find_library_real('bar', [tmpdir],
+                                          code,
+                                          LibType.PREFER_SHARED, lib_prefix_warning=True, ignore_system_dirs=False)
+            self.assertIsNone(found, 'Unexpectedly found a library with PREFER_SHARED, link test expected to reject it')
+
+            # We asked for a shared library and we only got a broken
+            # static one. We only tolerate them being broken if people
+            # explicitly ask for it w/ static: true, so we perform a link
+            # test.
+            found = cc._find_library_real('bar', [tmpdir],
+                                          code,
+                                          LibType.SHARED, lib_prefix_warning=True, ignore_system_dirs=False)
+            self.assertIsNone(found, 'Unexpectedly found a library with SHARED')
 
     @skipIfNoPkgconfig
     def test_pkgconfig_parse_libs(self):
@@ -2233,3 +2329,81 @@ class InternalTests(unittest.TestCase):
                 self.assertEqual(actual.compile_args, expected.compile_args)
                 self.assertEqual(actual.link_args, expected.link_args)
                 self.assertEqual(actual.cmake, expected.cmake)
+
+    def test_cuda_module_nvcc_arch_flags(self):
+        def flags(cuda_version, arch_list, detected=None):
+            # swallow the mlog warnings emitted for filtered-out archs
+            with contextlib.redirect_stdout(io.StringIO()):
+                return mesonbuild.modules.cuda.CudaModule._nvcc_arch_flags(cuda_version, arch_list, detected or [])
+
+        # (cuda_version, arch_list, detected, expected gencode flags, expected readable names)
+        cases = [
+            # baseline; also asserted in "test cases/cuda/3 cudamodule/meson.build"
+            ('11.1', '8.6', None, ['-gencode', 'arch=compute_86,code=sm_86'], ['sm_86']),
+            # toolkit too old for the arch -> filtered out with a warning
+            ('11.0', '8.6', None, [], []),
+            # family names only expand to members inside the support window
+            ('11.0', 'Ampere', None, ['-gencode', 'arch=compute_80,code=sm_80'], ['sm_80']),
+            # 'X.Y(Z.W)+PTX' embeds the PTX of the virtual arch, not the real one
+            ('11.1', '8.6(8.0)+PTX', None, ['-gencode', 'arch=compute_80,code=sm_86', '-gencode', 'arch=compute_80,code=compute_80'], ['sm_86', 'compute_80']),
+            # a detected GPU newer than the toolkit saturates to the max common arch + PTX
+            ('10.2', 'Auto', ['8.0'], ['-gencode', 'arch=compute_75,code=sm_75', '-gencode', 'arch=compute_75,code=compute_75'], ['sm_75', 'compute_75']),
+            # sm_21 has no compute_21: both the family and the numeric spelling must fall back to compute_20
+            ('8.0', 'Fermi', None, ['-gencode', 'arch=compute_20,code=sm_20', '-gencode', 'arch=compute_20,code=sm_21'], ['sm_20', 'sm_21']),
+            ('8.0', '2.1', None, ['-gencode', 'arch=compute_20,code=sm_21'], ['sm_21']),
+            # PTX fallbacks go at the end, not interleaved by virtual arch
+            ('12.9', '5.0+PTX;8.6', None, ['-gencode', 'arch=compute_50,code=sm_50', '-gencode', 'arch=compute_86,code=sm_86', '-gencode', 'arch=compute_50,code=compute_50'], ['sm_50', 'sm_86', 'compute_50']),
+            # numeric (not lexicographic) ordering: 10.x < 12.x
+            ('12.9', 'Blackwell', None, ['-gencode', 'arch=compute_100,code=sm_100', '-gencode', 'arch=compute_103,code=sm_103', '-gencode', 'arch=compute_120,code=sm_120', '-gencode', 'arch=compute_121,code=sm_121'], ['sm_100', 'sm_103', 'sm_120', 'sm_121']),
+            ('12.9', 'Thor;Hopper(A)', None, ['-gencode', 'arch=compute_90a,code=sm_90a', '-gencode', 'arch=compute_101,code=sm_101'], ['sm_90a', 'sm_101']),
+            # different code under different CUDA versions
+            ('12.9', 'Thor', None, ['-gencode', 'arch=compute_101,code=sm_101'], ['sm_101']),
+            ('13.0', 'Thor', None, ['-gencode', 'arch=compute_110,code=sm_110'], ['sm_110']),
+            # family-specific virtual arch pairs forward within its family
+            ('12.9', '10.3(10.0f)', None, ['-gencode', 'arch=compute_100f,code=sm_103'], ['sm_103']),
+            # architecture-specific archs self-pair
+            ('12.0', '9.0a', None, ['-gencode', 'arch=compute_90a,code=sm_90a'], ['sm_90a']),
+            # an 'a' code arch may be built from its own plain virtual arch
+            ('12.9', '10.0a(10.0)', None, ['-gencode', 'arch=compute_100,code=sm_100a'], ['sm_100a']),
+        ]
+        for cuda_version, arch_list, detected, expected_flags, expected_readable in cases:
+            with self.subTest(cuda_version=cuda_version, arch_list=arch_list, detected=detected):
+                actual_flags, actual_readable = flags(cuda_version, arch_list, detected)
+                self.assertEqual(actual_flags, expected_flags)
+                self.assertEqual(actual_readable, expected_readable)
+
+    def test_cuda_module_nvcc_arch_flags_invalid(self):
+        def flags(cuda_version, arch_list):
+            with contextlib.redirect_stdout(io.StringIO()):
+                return mesonbuild.modules.cuda.CudaModule._nvcc_arch_flags(cuda_version, arch_list, [])
+
+        # (cuda_version, arch_list, expected error message pattern)
+        cases = [
+            # 'a' archs have no forward compatibility, so embedding their PTX is meaningless
+            ('12.0', '9.0a+PTX', 'mutually exclusive'),
+            ('12.0', 'Hopper(A)+PTX', 'mutually exclusive'),
+            # an 'a' virtual arch can only emit code for exactly itself
+            ('12.9', '10.0(10.0a)', 'architecture-specific'),
+            # there is no compute_21; the error points at the correct virtual arch
+            ('8.0', '2.1(2.1)', r'use 2\.0 instead'),
+            # 'f' virtual archs only pair within their own family generation:
+            # not Thor (carved out of the 10.x family), not other majors, not backwards
+            ('12.9', '10.1(10.0f)', 'family-specific'),
+            ('12.9', '12.0(10.0f)', 'family-specific'),
+            ('12.9', '10.0(10.3f)', 'family-specific'),
+            # an 'f' code arch requires a same-generation virtual arch
+            ('12.9', '10.0f(9.0)', 'same-generation'),
+            # nvcc: "The same GPU code (`sm_121`) generated for non family-specific
+            # and family-specific GPU arch"
+            ('12.9', '12.1f;12.1', r'same GPU code sm_121'),
+            # ... also when the plain arch comes from a named set expansion
+            ('12.9', 'Blackwell;12.1f', r'same GPU code sm_121'),
+            # unknown archs
+            ('12.9', '99.9', 'Unknown CUDA'),
+            ('12.9', '8.6(99.9)', 'Unknown CUDA Virtual'),
+            ('12.9', 'NotAnArch', 'Unknown CUDA Architecture Name'),
+        ]
+        for cuda_version, arch_list, message in cases:
+            with self.subTest(cuda_version=cuda_version, arch_list=arch_list):
+                with self.assertRaisesRegex(InvalidArguments, message):
+                    flags(cuda_version, arch_list)
