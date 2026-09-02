@@ -9,7 +9,7 @@ import string
 import typing as T
 
 from .. import options
-from ..mesonlib import is_windows, LibType, version_compare
+from ..mesonlib import LibType, version_compare
 from .compilers import Compiler, CompileCheckMode, CrossNoRunException, SimplePrefixLinkerOptionStyle
 
 if T.TYPE_CHECKING:
@@ -528,6 +528,16 @@ class CudaCompiler(Compiler):
             }
             '''
 
+    def _sanity_check_mode(self) -> CompileCheckMode:
+        # Linking cross built apps is painful. You can't really
+        # tell if you should use -nostdlib or not and for example
+        # on OSX the compiler binary is the same but you need
+        # a ton of compiler flags to differentiate between
+        # arm and x86_64. So just compile.
+        if self.is_cross and not self.environment.has_exe_wrapper():
+            return CompileCheckMode.COMPILE
+        return CompileCheckMode.LINK
+
     def _sanity_check_compile_args(self, sourcename: str, binname: str
                                    ) -> T.Tuple[T.List[str], T.List[str]]:
         # Disable warnings, compile with statically-linked runtime for minimum
@@ -540,12 +550,8 @@ class CudaCompiler(Compiler):
         flags += self._get_ccbin_args(None, '')
 
         # If cross-compiling, we can't run the sanity check, only compile it.
-        if self.is_cross and not self.environment.has_exe_wrapper():
-            # Linking cross built apps is painful. You can't really
-            # tell if you should use -nostdlib or not and for example
-            # on OSX the compiler binary is the same but you need
-            # a ton of compiler flags to differentiate between
-            # arm and x86_64. So just compile.
+        mode = self._sanity_check_mode()
+        if mode is CompileCheckMode.COMPILE:
             flags += self.get_compile_only_args()
         flags += self.get_output_args(binname)
 
@@ -622,7 +628,7 @@ class CudaCompiler(Compiler):
         # On Windows, the version of the C++ standard used by nvcc is dictated by
         # the combination of CUDA version and MSVC version; the --std= is thus ignored
         # and attempting to use it will result in a warning: https://stackoverflow.com/a/51272091/741027
-        if not is_windows():
+        if not self.info.is_windows():
             std = self.get_compileropt_value('std', target, subproject)
             assert isinstance(std, str)
             if std != 'none':

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass, InitVar
 from functools import lru_cache
 from itertools import chain
@@ -219,10 +220,16 @@ class TestSerialisation:
     depends: T.List[str]
     version: str
     verbose: bool
+    # Path of the test program itself.
+    exe_fname: str
 
     def __post_init__(self) -> None:
         if self.exe_wrapper is not None:
             assert isinstance(self.exe_wrapper, programs.ExternalProgram)
+
+    @property
+    def cmd_has_interpreter(self) -> bool:
+        return self.fname[0] != self.exe_fname
 
 
 def get_backend_from_name(backend: str, build: T.Optional[build.Build] = None) -> Backend:
@@ -321,6 +328,17 @@ class Backend:
             filename = t.get_filename()
         return os.path.join(self.get_target_dir(t), filename)
 
+    def get_aix_so_archive_name(self, t: build.AnyTargetType, filename: str) -> T.Optional[str]:
+        '''On AIX shared libraries are stored inside an archive; it is the archive
+        that gets linked against and installed.  Shared modules are not archived.
+        Return the name of the archive, or None if TARGET is not archived.'''
+        if not isinstance(t, build.SharedLibrary) or not t.aix_so_archive:
+            return None
+        if not self.environment.machines[t.for_machine].is_aix():
+            return None
+        linker, _ = t.get_clink_dynamic_linker_and_stdlibs()
+        return linker.get_archive_name(filename)
+
     def get_target_filename_abs(self, target: build.AnyTargetType) -> str:
         return os.path.join(self.environment.get_build_dir(), self.get_target_filename(target))
 
@@ -362,8 +380,7 @@ class Backend:
         if isinstance(target, build.SharedLibrary):
             link_lib = target.get_import_filename() or target.get_filename()
             # In AIX, if we archive .so, the blibpath must link to archived shared library otherwise to the .so file.
-            if mesonlib.is_aix() and target.aix_so_archive:
-                link_lib = re.sub('[.][a]([.]?([0-9]+))*([.]?([a-z]+))*', '.a', link_lib.replace('.so', '.a'))
+            link_lib = self.get_aix_so_archive_name(target, link_lib) or link_lib
             return Path(self.get_target_dir(target), link_lib).as_posix()
         elif isinstance(target, build.StaticLibrary):
             return Path(self.get_target_dir(target), target.get_filename()).as_posix()
@@ -488,13 +505,41 @@ class Backend:
         return os.path.relpath(os.path.join('dummyprefixdir', todir),
                                os.path.join('dummyprefixdir', fromdir))
 
+    def get_all_linked_targets(self, target: build.BuildTarget) -> T.Iterator[build.BuildTargetTypes]:
+        """Get all targets that have been linked with this one, including internal and
+        indirect static libraries unlike :method:`build.BuildTarget.get_all_link_deps`
+        and :method:`build.all_dependencies_recurse`, and targets whose objects
+        are borrowed by this one or any returned target.
+
+        This is useful for cases where we need to analyze these links, such as
+        for module information.
+        """
+        seen: T.Set[build.BuildTarget] = set()
+        stack: T.Deque[build.BuildTargetTypes] = deque()
+
+        def add_linked_targets(t: build.BuildTarget) -> None:
+            stack.extendleft(t.link_targets)
+            stack.extendleft(t.link_whole_targets)
+            _, od = self.flatten_object_list(t)
+            stack.extendleft(od)
+
+        add_linked_targets(target)
+        while stack:
+            t = stack.pop()
+            if t in seen or not isinstance(t, build.BuildTarget):
+                continue
+            seen.add(t)
+            add_linked_targets(t)
+            yield t
+        assert target not in seen, 'should not have self'
+
     def flatten_object_list(self, target: build.BuildTarget, proj_dir_to_build_root: str = ''
-                            ) -> T.Tuple[T.List[str], T.List[build.BuildTarget]]:
-        obj_list, deps = self._flatten_object_list(target, target.get_objects(), proj_dir_to_build_root)
+                            ) -> T.Tuple[T.List[str], T.Iterable[build.BuildTarget]]:
+        obj_list, deps = self._flatten_object_list(target.get_objects(), proj_dir_to_build_root)
         return unique_list(obj_list), deps
 
     def determine_ext_objs(self, objects: build.ExtractedObjects) -> T.List[str]:
-        obj_list, _ = self._flatten_object_list(objects.target, [objects], '')
+        obj_list, _ = self._flatten_object_list([objects], '')
         return unique_list(obj_list)
 
     def get_target_deps(self, targets: T.Mapping[str, build.Target], recursive: bool = False) -> T.Dict[str, build.Target]:
@@ -550,36 +595,59 @@ class Backend:
         result.update(all_deps)
         return result
 
-    def _flatten_object_list(self, target: build.BuildTarget,
-                             objects: T.Sequence[build.ObjectTypes],
-                             proj_dir_to_build_root: str) -> T.Tuple[T.List[str], T.List[build.BuildTarget]]:
-        obj_list: T.List[str] = []
-        deps: T.List[build.BuildTarget] = []
+    def _flatten_object_list(self, objects: T.Sequence[build.ObjectTypes],
+                             proj_dir_to_build_root: str) -> T.Tuple[T.List[str], T.Iterable[build.BuildTarget]]:
+        # The same target can be reached through multiple ExtractObjects, so
+        # ensure each distinct target is visited exactly once.
+        seen: T.Set[build.BuildTarget] = set()
+        deps: OrderedSet[build.BuildTarget] = OrderedSet()
+        result: T.Dict[build.BuildTarget, T.List[str]] = {}
+
+        def visit_dfs(o: build.ExtractedObjects) -> T.Iterator[build.BuildTarget]:
+            t = o.target
+            deps.add(t)
+            if o.recursive:
+                if t in seen:
+                    return
+                seen.add(t)
+                for obj in t.get_objects():
+                    if isinstance(obj, build.ExtractedObjects):
+                        yield from visit_dfs(obj)
+                yield t
+
+        def flatten_one(objs: T.Sequence[build.ObjectTypes]) -> T.List[str]:
+            obj_list: T.List[str] = []
+            for obj in objs:
+                if isinstance(obj, mesonlib.File):
+                    if obj.is_built:
+                        o = os.path.join(proj_dir_to_build_root,
+                                         obj.rel_to_builddir(self.build_to_src))
+                        obj_list.append(o)
+                    else:
+                        o = os.path.join(proj_dir_to_build_root,
+                                         self.build_to_src)
+                        obj_list.append(obj.rel_to_builddir(o))
+                elif isinstance(obj, build.ExtractedObjects):
+                    # Whatever obj.target recursively depends on has already
+                    # been yielded and flattened.
+                    if obj.recursive:
+                        obj_list.extend(result[obj.target])
+                    new_objs = self._determine_ext_objs(obj)
+                    if proj_dir_to_build_root:
+                        for o in new_objs:
+                            obj_list.append(os.path.join(proj_dir_to_build_root, o))
+                    else:
+                        obj_list.extend(new_objs)
+                else:
+                    raise MesonBugException('Unknown data type in object list.')
+            return obj_list
+
         for obj in objects:
-            if isinstance(obj, mesonlib.File):
-                if obj.is_built:
-                    o = os.path.join(proj_dir_to_build_root,
-                                     obj.rel_to_builddir(self.build_to_src))
-                    obj_list.append(o)
-                else:
-                    o = os.path.join(proj_dir_to_build_root,
-                                     self.build_to_src)
-                    obj_list.append(obj.rel_to_builddir(o))
-            elif isinstance(obj, build.ExtractedObjects):
-                if obj.recursive:
-                    objs, d = self._flatten_object_list(obj.target, obj.objlist, proj_dir_to_build_root)
-                    obj_list.extend(objs)
-                    deps.extend(d)
-                new_objs = self._determine_ext_objs(obj)
-                if proj_dir_to_build_root:
-                    for o in new_objs:
-                        obj_list.append(os.path.join(proj_dir_to_build_root, o))
-                else:
-                    obj_list.extend(new_objs)
-                deps.append(obj.target)
-            else:
-                raise MesonException('Unknown data type in object list.')
-        return obj_list, deps
+            if isinstance(obj, build.ExtractedObjects):
+                for t in visit_dfs(obj):
+                    result[t] = flatten_one(t.get_objects())
+
+        return flatten_one(objects), deps
 
     @staticmethod
     def is_swift_target(target: build.BuildTargetTypes) -> bool:
@@ -595,6 +663,23 @@ class Backend:
         for l in target.link_targets:
             result.append(self.get_target_private_dir_abs(l))
         return result
+
+    def get_exe_interpreter(self, exe_cmd: T.List[str], for_machine: MachineChoice) -> T.List[str]:
+        """Return the command needed to run exe_cmd, if it is not directly executable."""
+        if exe_cmd[0].endswith('.jar'):
+            return ['java', '-jar']
+        # Wrap the executable in mono in very limited cases:
+        # - the executable can run on the build machine (if not, let the user make
+        #   their own decision, and use e.g. wine to start .NET executables)
+        # - the target does not use the .exe suffix for all executables (if so,
+        #   assume it is able to start .NET executables as well), or at least for
+        #   some as is the case for WSL1.
+        machine = self.environment.machines[for_machine]
+        if exe_cmd[0].endswith('.exe') and \
+                (self.environment.machines.matches_build_machine(for_machine) or not self.environment.need_exe_wrapper()) and \
+                not (machine.get_exe_suffix() == 'exe' or mesonlib.is_wsl()):
+            return ['mono']
+        return []
 
     def get_executable_serialisation(
             self, cmd: T.Iterable[build.CommandTypes],
@@ -654,17 +739,17 @@ class Backend:
             extra_paths = []
 
         is_cross_built = not self.environment.machines.matches_build_machine(exe_for_machine)
-        if is_cross_built and self.environment.need_exe_wrapper():
+        interpreter = self.get_exe_interpreter(exe_cmd, exe_for_machine)
+        if interpreter:
+            exe_cmd = interpreter + exe_cmd
+            exe_wrapper = None
+        elif is_cross_built and self.environment.need_exe_wrapper():
             if not self.environment.has_exe_wrapper():
                 msg = 'An exe_wrapper is needed for ' + exe_cmd[0] + ' but was not found. Please define one ' \
                       'in cross file and check the command and/or add it to PATH.'
                 raise MesonException(msg)
             exe_wrapper = self.environment.get_exe_wrapper()
         else:
-            if exe_cmd[0].endswith('.jar'):
-                exe_cmd = ['java', '-jar'] + exe_cmd
-            elif exe_cmd[0].endswith('.exe') and not (mesonlib.is_windows() or mesonlib.is_cygwin() or mesonlib.is_wsl() or machine.is_os2()):
-                exe_cmd = ['mono'] + exe_cmd
             exe_wrapper = None
 
         workdir = workdir or self.environment.get_build_dir()
@@ -1027,8 +1112,11 @@ class Backend:
         commands += self.build.get_global_args(compiler, target)
         # Compile args added from the env: CFLAGS/CXXFLAGS, etc, or the cross
         # file. We want these to override all the defaults, but not the
-        # per-target compile args.
-        commands += self.environment.coredata.get_external_args(target.for_machine, compiler.get_language())
+        # per-target compile args. Resolved per target so that per-subproject
+        # values (-Dsub:c_args=...) are honoured.
+        ext_args = self.environment.coredata.get_option_for_target(target, f'{compiler.get_language()}_args')
+        assert isinstance(ext_args, list), 'for mypy'
+        commands += ext_args
         # Using both /Z7 or /ZI and /Zi at the same times produces a compiler warning.
         # We do not add /Z7 or /ZI by default. If it is being used it is because the user has explicitly enabled it.
         # /Zi needs to be removed in that case to avoid cl's warning to that effect (D9025 : overriding '/Zi' with '/ZI')
@@ -1266,6 +1354,8 @@ class Backend:
             is_cross = self.environment.is_cross_build(test_for_machine)
             exe_wrapper = self.environment.get_exe_wrapper()
             machine = self.environment.machines[exe.for_machine]
+            exe_fname = cmd[0]
+            cmd = self.get_exe_interpreter(cmd, test_for_machine) + cmd
             if machine.is_windows() or machine.is_cygwin():
                 extra_bdeps: T.List[build.BuildTargetTypes] = []
                 if isinstance(exe, build.CustomTarget):
@@ -1328,7 +1418,7 @@ class Backend:
                                    isinstance(exe, build.Executable),
                                    [x.get_id() for x in depends],
                                    self.environment.coredata.version,
-                                   t.verbose)
+                                   t.verbose, exe_fname)
             arr.append(ts)
         return arr
 
@@ -1815,7 +1905,11 @@ class Backend:
                 if first_outdir is not False:
                     tag = t.install_tag[0] or ('devel' if isinstance(t, build.StaticLibrary) else 'runtime')
                     mappings = t.get_link_deps_mapping(d.prefix)
-                    i = TargetInstallData(self.get_target_filename(t), first_outdir,
+                    # In AIX we archive our shared libraries, and it is the archive
+                    # that has to be installed rather than the .so itself.
+                    fname = self.get_target_filename(t)
+                    fname = self.get_aix_so_archive_name(t, fname) or fname
+                    i = TargetInstallData(fname, first_outdir,
                                           first_outdir_name,
                                           should_strip, mappings, t.rpath_dirs_to_remove,
                                           t.install_rpath, install_mode, t.subproject,

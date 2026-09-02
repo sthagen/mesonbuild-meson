@@ -180,16 +180,27 @@ class CargoCfgTest(unittest.TestCase):
                 (TokenType.IDENTIFIER, 'unix'),
                 (TokenType.RPAREN, None),
             ]),
-            ('cfg(windows)', [
-                (TokenType.CFG, None),
-                (TokenType.LPAREN, None),
+            ('windows', [
                 (TokenType.IDENTIFIER, 'windows'),
-                (TokenType.RPAREN, None),
             ]),
         ]
         for data, expected in cases:
             with self.subTest():
                 self.assertListEqual(list(cfg.lexer(data)), expected)
+
+    def test_parse_invalid(self) -> None:
+        cases = [
+            'all(unix,)',
+            'any(',
+            'not(',
+            'not(all(unix,))',
+            'not(any)',
+            ''
+        ]
+        for data in cases:
+            with self.subTest():
+                with self.assertRaises(MesonException):
+                    cfg.parse(iter(cfg.lexer(data)))
 
     def test_parse(self) -> None:
         cases = [
@@ -215,7 +226,7 @@ class CargoCfgTest(unittest.TestCase):
                             cfg.Equal(cfg.Identifier("target_arch"), cfg.String("x86")),
                             cfg.Equal(cfg.Identifier("target_os"), cfg.String("linux")),
                         ]))),
-            ('cfg(all(any(target_os = "android", target_os = "linux"), any(custom_cfg)))',
+            ('all(any(target_os = "android", target_os = "linux"), any(custom_cfg))',
                 cfg.All([
                     cfg.Any([
                         cfg.Equal(cfg.Identifier("target_os"), cfg.String("android")),
@@ -247,12 +258,12 @@ class CargoCfgTest(unittest.TestCase):
             ('any(unix, windows)', True),
             ('all()', True),
             ('any()', False),
-            ('cfg(unix)', True),
-            ('cfg(windows)', False),
+            ('unix', True),
+            ('windows', False),
         ]
         for data, expected in cases:
             with self.subTest():
-                value = cfg.eval_cfg(data, d)
+                value = cfg.eval_cfg(f'cfg({data})', d)
                 self.assertEqual(value, expected)
 
 class CargoLockTest(unittest.TestCase):

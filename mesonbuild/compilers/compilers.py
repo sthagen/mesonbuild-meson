@@ -909,7 +909,6 @@ class Compiler(HoldableObject, metaclass=SimpleABC):
             args += self.get_preprocess_only_args()
         else:
             assert mode is CompileCheckMode.LINK
-            args += self.get_linker_always_args()
         return args
 
     def compiler_args(self, args: T.Optional[T.Iterable[str]] = None) -> CompilerArgs:
@@ -1195,9 +1194,13 @@ class Compiler(HoldableObject, metaclass=SimpleABC):
         # Link args added using add_global_link_arguments() override
         # per-project link arguments.  Link args added from the env (LDFLAGS)
         # override all the defaults but not the per-target link args.
+        # Resolved per target so that per-subproject values
+        # (-Dsub:c_link_args=...) are honoured.
+        ext_link_args = self.environment.coredata.get_option_for_target(target, f'{self.get_language()}_link_args')
+        assert isinstance(ext_link_args, list), 'for mypy'
         return build.get_project_link_args(self, target) \
             + build.get_global_link_args(self, target) \
-            + self.environment.coredata.get_external_link_args(self.for_machine, self.get_language())
+            + ext_link_args
 
     def get_target_link_args(self, target: 'BuildTarget') -> T.List[str]:
         return target.link_args
@@ -1428,6 +1431,20 @@ class Compiler(HoldableObject, metaclass=SimpleABC):
         """
         return compiler._sanity_check_compile_args(sourcename, binname)
 
+    def _sanity_check_mode(self) -> CompileCheckMode:
+        """Whether the sanity check links a binary, or only compiles one."""
+        return CompileCheckMode.LINK
+
+    def get_external_compile_args(self) -> T.List[str]:
+        optstore = self.environment.coredata.optstore
+        return list(T.cast('T.List[str]', optstore.get_value_for(
+            OptionKey(f'{self.language}_args', machine=self.for_machine))))
+
+    def get_external_link_args(self) -> T.List[str]:
+        optstore = self.environment.coredata.optstore
+        return list(T.cast('T.List[str]', optstore.get_value_for(
+            OptionKey(f'{self.language}_link_args', machine=self.for_machine))))
+
     def _sanity_check_compile_args(self, sourcename: str, binname: str
                                    ) -> T.Tuple[T.List[str], T.List[str]]:
         """Get arguments to run compiler for sanity check.
@@ -1440,9 +1457,17 @@ class Compiler(HoldableObject, metaclass=SimpleABC):
         :return: a tuple of arguments, the first is the executable and compiler
             arguments, the second is linker arguments
         """
-        cargs = list(self.environment.coredata.get_external_args(self.for_machine, self.language))
-        largs = list(self.environment.coredata.get_external_link_args(self.for_machine, self.language))
-        return self.exelist_no_ccache + self.get_always_args() + self.get_output_args(binname) + [sourcename] + cargs, largs
+        mode = self._sanity_check_mode()
+        cargs = self.exelist_no_ccache \
+            + self.get_always_args() \
+            + self.get_compiler_check_args(CompileCheckMode.COMPILE) \
+            + self.get_output_args(binname) \
+            + [sourcename] \
+            + self.get_external_compile_args()
+        if mode is CompileCheckMode.COMPILE:
+            return cargs, []
+        largs = self.get_external_link_args()
+        return cargs, largs
 
     @abc.abstractmethod
     def _sanity_check_source_code(self) -> str:
@@ -1587,10 +1612,11 @@ class Compiler(HoldableObject, metaclass=SimpleABC):
 
         if mode is CompileCheckMode.COMPILE:
             # Add DFLAGS from the env
-            args += self.environment.coredata.get_external_args(self.for_machine, self.language)
+            args += self.get_external_compile_args()
         elif mode is CompileCheckMode.LINK:
+            args += self.get_linker_always_args()
             # Add LDFLAGS from the env
-            args += self.environment.coredata.get_external_link_args(self.for_machine, self.language)
+            args += self.get_external_link_args()
         # extra_args must override all other arguments, so we add them last
         args += extra_args
         return args

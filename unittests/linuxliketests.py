@@ -9,6 +9,7 @@ import textwrap
 import os
 import shutil
 import hashlib
+import zipfile
 from unittest import mock, skipUnless, SkipTest
 from glob import glob
 from pathlib import Path
@@ -35,7 +36,9 @@ from mesonbuild.compilers.c import AppleClangCCompiler, ElbrusCompiler
 from mesonbuild.compilers.cpp import AppleClangCPPCompiler
 from mesonbuild.compilers.objc import AppleClangObjCCompiler
 from mesonbuild.compilers.objcpp import AppleClangObjCPPCompiler
-from mesonbuild.dependencies.pkgconfig import PkgConfigDependency, PkgConfigCLI, PkgConfigInterface
+from mesonbuild.dependencies.pkgconfig import (
+    PkgConfigDependency, PkgConfigCLI, PkgConfigCLIImplementation, PkgConfigInterface,
+)
 from mesonbuild.programs import NonExistingExternalProgram
 import mesonbuild.modules.pkgconfig
 
@@ -180,7 +183,23 @@ class LinuxlikeTests(BasePlatformTests):
         self.assertEqual(libhello_nolib.get_variable(pkgconfig='foo'), 'bar')
         self.assertEqual(libhello_nolib.get_variable(pkgconfig='prefix'), self.prefix)
         impl = libhello_nolib.pkgconfig
-        if not isinstance(impl, PkgConfigCLI) or version_compare(impl.pkgbin_version, ">=0.29.1"):
+        if isinstance(impl, PkgConfigCLI) and impl.implementation == PkgConfigCLIImplementation.PKGCONF \
+                and version_compare(impl.pkgbin_version, ">=3.0.4") \
+                and version_compare(impl.pkgbin_version, "<3.0.5"):
+            # pkgconf 3.0.4 (only) unescapes '\ ' when storing a variable's
+            # value (fixing double-escaping when the variable is expanded into a
+            # fragment, see https://github.com/pkgconf/pkgconf/issues/575), so
+            # --variable returns the canonical (unescaped) value instead of
+            # preserving the literal backslash. This was superseded in 3.0.5,
+            # which fixes the double-escaping differently (consuming quoting
+            # after expansion rather than at variable-storage time) and so
+            # restores the literal-backslash behavior below. See
+            # https://github.com/pkgconf/pkgconf/issues/579.
+            self.assertEqual(libhello_nolib.get_variable(pkgconfig='escaped_var'), 'hello world')
+        elif not isinstance(impl, PkgConfigCLI) or (
+                impl.implementation == PkgConfigCLIImplementation.FREEDESKTOP and version_compare(impl.pkgbin_version, ">=0.29.1")) or (
+                impl.implementation == PkgConfigCLIImplementation.PKGCONF and (
+                    version_compare(impl.pkgbin_version, "<3.0.4") or version_compare(impl.pkgbin_version, ">=3.0.5"))):
             self.assertEqual(libhello_nolib.get_variable(pkgconfig='escaped_var'), r'hello\ world')
         self.assertEqual(libhello_nolib.get_variable(pkgconfig='unescaped_var'), 'hello world')
 
@@ -264,6 +283,22 @@ class LinuxlikeTests(BasePlatformTests):
         with open(os.path.join(privatedir1, 'simple5.pc'), encoding='utf-8') as f:
             content = f.read()
             self.assertNotIn('-lstat2', content)
+
+    def test_pkgconfig_fibonacci(self):
+        testdir = os.path.join(self.unit_test_dir, '138 pkgconfig fibonacci')
+        self.init(testdir)
+        self.build()
+
+        with open(os.path.join(self.builddir, 'meson-uninstalled/top-uninstalled.pc'), encoding='utf-8') as f:
+            lines = f.readlines()
+
+        libs_line = next(l for l in lines if l.startswith('Libs:'))
+        libs = libs_line.split()
+        num_libs = len(libs) - 2
+        for i in libs[2:]:
+            num_libs -= 1
+            self.assertTrue(i.startswith('-ll'))
+            self.assertEqual(int(i[3:]), num_libs)
 
     @mock.patch.dict(os.environ)
     def test_pkgconfig_uninstalled(self):
@@ -810,8 +845,13 @@ class LinuxlikeTests(BasePlatformTests):
         self.assertNotIn('-std=c++98', plain_comp)
         self.assertNotIn('-std=c++11', plain_comp)
         # Now werror
-        self.assertIn('-Werror', plain_comp)
-        self.assertNotIn('-Werror', c98_comp)
+        self.assertIn('-Werror', plain_comp.split())
+        self.assertNotIn('-Werror', c98_comp.split())
+
+    def test_sanity_check_fails_on_bad_c_args(self):
+        testdir = os.path.join(self.common_test_dir, '1 trivial')
+        with self.assertRaises((subprocess.CalledProcessError, RuntimeError)):
+            self.init(testdir, extra_args=['-Dc_args=-Wbad-flag-does-not-exist'])
 
     def test_run_installed(self):
         if is_cygwin() or is_osx():
@@ -2028,10 +2068,55 @@ class LinuxlikeTests(BasePlatformTests):
         testdir = os.path.join(self.rust_test_dir, '36 staticlib rlib deps')
         self.init(testdir)
         targets = self.introspect('--targets')
-        executable = next(t for t in targets if t['type'] == 'executable')
-        linker = next(src for src in executable['target_sources'] if 'linker' in src)
-        for param in linker['parameters']:
-            self.assertNotIn('liblib.rlib', param)
+        for t in targets:
+            if t['type'] == 'executable':
+                for src in t['target_sources']:
+                    if 'linker' in src or src['language'] == 'rust':
+                        for param in src['parameters']:
+                            self.assertNotIn('liblib.rlib', param)
+
+    @skip_if_not_language('java')
+    def test_jar_install_reproducible(self):
+        '''
+        Test that a jar without a Class-Path manifest attribute is installed
+        unmodified, so that its manifest keeps the timestamp from build time
+        instead of getting stamped with the time of installation.
+        See https://reproducible-builds.org/ for why this is good.
+        '''
+        testdir = os.path.join(self.java_test_dir, '1 basic')
+        self.init(testdir)
+        self.build()
+        self.install()
+        built = Path(self.builddir, 'myprog.jar').read_bytes()
+        installed = Path(self.installdir, 'usr/bin/myprog.jar').read_bytes()
+        self.assertEqual(built, installed)
+
+    @skip_if_not_language('java')
+    def test_jar_install_strips_classpath(self):
+        '''
+        Test that installing a jar that links with other jars strips the
+        Class-Path attribute from its manifest while preserving the other
+        attributes, the entry order and the entry timestamps.
+        '''
+        testdir = os.path.join(self.java_test_dir, '7 linking')
+        self.init(testdir)
+        self.build()
+        self.install()
+        with zipfile.ZipFile(os.path.join(self.builddir, 'myprog.jar')) as jar:
+            manifest = jar.read('META-INF/MANIFEST.MF').decode('utf-8')
+            self.assertIn('Class-Path:', manifest)
+            built_infos = [(i.filename, i.date_time) for i in jar.infolist()]
+            built_contents = {i.filename: jar.read(i) for i in jar.infolist()}
+        with zipfile.ZipFile(os.path.join(self.installdir, 'usr', 'bin', 'myprog.jar')) as jar:
+            manifest = jar.read('META-INF/MANIFEST.MF').decode('utf-8')
+            self.assertNotIn('Class-Path:', manifest)
+            self.assertIn('Main-Class:', manifest)
+            # Entry order and mtimes must be preserved from the built jar
+            installed_infos = [(i.filename, i.date_time) for i in jar.infolist()]
+            self.assertEqual(installed_infos, built_infos)
+            for info in jar.infolist():
+                if info.filename != 'META-INF/MANIFEST.MF':
+                    self.assertEqual(jar.read(info), built_contents[info.filename])
 
     def test_sanitizers(self):
         testdir = os.path.join(self.unit_test_dir, '129 sanitizers')

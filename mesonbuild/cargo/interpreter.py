@@ -32,6 +32,7 @@ from ..mesonlib import (
     PerMachine, unique_list, SubProject,
 )
 from .. import coredata, mlog
+from ..options import OptionKey
 from ..wrap.wrap import PackageDefinition, WrapType
 
 if T.TYPE_CHECKING:
@@ -177,30 +178,14 @@ class PackageState:
 
         return args
 
-    def get_env_args(self, rustc: RustCompiler, environment: Environment, subdir: str) -> T.List[str]:
-        """Get environment variable arguments for rustc."""
-        enable_env_set_args = rustc.enable_env_set_args()
-        if enable_env_set_args is None:
-            return []
-
-        env_dict = self.get_env_dict(environment, subdir)
-        env_args = list(enable_env_set_args)
-        for k, v in env_dict.items():
-            env_args.extend(['--env-set', f'{k}={v}'])
-        return env_args
-
     def get_rustc_args(self, environment: Environment, subdir: str, machine: MachineChoice) -> T.List[str]:
         """Get rustc arguments for this package."""
-        if not environment.is_cross_build():
-            machine = MachineChoice.HOST
-
         rustc = T.cast('RustCompiler', environment.coredata.compilers[machine]['rust'])
         cfg = self.cfg[machine]
 
         args: T.List[str] = []
         args.extend(self.get_lint_args(rustc))
         args.extend(cfg.get_features_args())
-        args.extend(self.get_env_args(rustc, environment, subdir))
         return args
 
     def supported_abis(self) -> T.Set[RUST_ABI]:
@@ -578,10 +563,12 @@ class Interpreter:
             return  # Already prepared for this machine
 
         pkg.cfg[machine] = PackageConfiguration(for_machine=machine)
+
         # Merge target-specific dependencies that are enabled for this machine
-        target_cfgs = self._get_cfgs(machine)
+        rustc = T.cast('RustCompiler', self.environment.coredata.compilers[machine]['rust'])
+        target_cfgs = self._get_cfgs(machine, pkg.get_subproject_name())
         for condition, dependencies in pkg.manifest.target.items():
-            if eval_cfg(condition, target_cfgs):
+            if condition == rustc.get_target_triple() or eval_cfg(condition, target_cfgs):
                 pkg.manifest.dependencies.update(dependencies)
 
         # If you specify the optional dependency with the dep: prefix anywhere in the [features]
@@ -698,19 +685,12 @@ class Interpreter:
             else:
                 self._enable_feature(pkg, f, machine)
 
-    def has_check_cfg(self, machine: MachineChoice) -> bool:
-        if not self.environment.is_cross_build():
-            machine = MachineChoice.HOST
-        rustc = T.cast('RustCompiler', self.environment.coredata.compilers[machine]['rust'])
-        return rustc.has_check_cfg
-
     @functools.lru_cache(maxsize=None)
-    def _get_cfgs(self, machine: MachineChoice) -> T.Dict[str, str]:
-        if not self.environment.is_cross_build():
-            machine = MachineChoice.HOST
+    def _get_cfgs(self, machine: MachineChoice, subproject: SubProject) -> T.Dict[str, str]:
         rustc = T.cast('RustCompiler', self.environment.coredata.compilers[machine]['rust'])
         cfgs = rustc.get_cfgs().copy()
-        rustflags = self.environment.coredata.get_external_args(machine, 'rust')
+        rustflags = T.cast('T.List[str]', self.environment.coredata.optstore.get_value_for(
+            OptionKey('rust_args', subproject=subproject, machine=machine)))
         rustflags_i = iter(rustflags)
         for i in rustflags_i:
             if i == '--cfg':

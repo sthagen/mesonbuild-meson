@@ -26,7 +26,7 @@ import enum
 import typing as T
 
 
-from ..mesonlib import MesonBugException, lookahead
+from ..mesonlib import MesonBugException, MesonException, lookahead
 
 if T.TYPE_CHECKING:
     _T = T.TypeVar('_T')
@@ -46,7 +46,6 @@ class TokenType(enum.Enum):
     NOT = enum.auto()
     COMMA = enum.auto()
     EQUAL = enum.auto()
-    CFG = enum.auto()
 
 
 def lexer(raw: str) -> _LEX_STREAM:
@@ -71,8 +70,6 @@ def lexer(raw: str) -> _LEX_STREAM:
                 yield (TokenType.ALL, None)
             elif val == 'not':
                 yield (TokenType.NOT, None)
-            elif val == 'cfg':
-                yield (TokenType.CFG, None)
             elif val:
                 yield (TokenType.IDENTIFIER, val)
 
@@ -136,6 +133,10 @@ class Not(IR):
 
 
 def _parse(ast: _LEX_STREAM_AH) -> IR:
+    def assertToken(t: TokenType, expected: str) -> None:
+        if token is not t:
+            raise MesonException(f'expected {expected}')
+
     (token, value), n_stream = next(ast)
     if n_stream is not None:
         ntoken, _ = n_stream
@@ -148,7 +149,7 @@ def _parse(ast: _LEX_STREAM_AH) -> IR:
         if ntoken is TokenType.EQUAL:
             next(ast)
             (token, value), _ = next(ast)
-            assert token is TokenType.STRING
+            assertToken(TokenType.STRING, 'string')
             assert value is not None
             return Equal(id_, String(value))
         return id_
@@ -156,26 +157,26 @@ def _parse(ast: _LEX_STREAM_AH) -> IR:
         type_ = All if token is TokenType.ALL else Any
         args: T.List[IR] = []
         (token, value), n_stream = next(ast)
-        assert token is TokenType.LPAREN
+        assertToken(TokenType.LPAREN, '"("')
         if n_stream and n_stream[0] == TokenType.RPAREN:
+            (token, value), _ = next(ast)
             return type_(args)
         while True:
             args.append(_parse(ast))
             (token, value), _ = next(ast)
             if token is TokenType.RPAREN:
                 break
-            assert token is TokenType.COMMA
+            assertToken(TokenType.COMMA, '")" or ","')
         return type_(args)
-    elif token in {TokenType.NOT, TokenType.CFG}:
-        is_not = token is TokenType.NOT
+    elif token is TokenType.NOT:
         (token, value), _ = next(ast)
-        assert token is TokenType.LPAREN
+        assertToken(TokenType.LPAREN, '"("')
         arg = _parse(ast)
         (token, value), _ = next(ast)
-        assert token is TokenType.RPAREN
-        return Not(arg) if is_not else arg
+        assertToken(TokenType.RPAREN, '")"')
+        return Not(arg)
     else:
-        raise MesonBugException(f'Unhandled Cargo token:{token} {value}')
+        raise MesonException(f'Unhandled Cargo token:{token} {value}')
 
 
 def parse(ast: _LEX_STREAM) -> IR:
@@ -185,7 +186,14 @@ def parse(ast: _LEX_STREAM) -> IR:
     :return: An mparser Node to be used as a conditional
     """
     ast_i: _LEX_STREAM_AH = lookahead(ast)
-    return _parse(ast_i)
+    try:
+        ir = _parse(ast_i)
+    except StopIteration:
+        raise MesonException('malformed cfg expression')
+
+    if next(ast_i, None) is not None:
+        raise MesonException('trailing text after cfg expression')
+    return ir
 
 
 def _eval_cfg(ir: IR, cfgs: T.Dict[str, str]) -> bool:
@@ -204,4 +212,6 @@ def _eval_cfg(ir: IR, cfgs: T.Dict[str, str]) -> bool:
 
 
 def eval_cfg(raw: str, cfgs: T.Dict[str, str]) -> bool:
-    return _eval_cfg(parse(lexer(raw)), cfgs)
+    if raw.startswith('cfg(') and raw.endswith(')'):
+        return _eval_cfg(parse(lexer(raw[4:-1])), cfgs)
+    return False

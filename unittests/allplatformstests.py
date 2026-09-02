@@ -1339,7 +1339,7 @@ class AllPlatformTests(BasePlatformTests):
         for cmd in self.get_compdb():
             # Get compiler
             split = split_args(cmd['command'])
-            if split[0] in ('ccache', 'sccache'):
+            if os.path.basename(split[0]) in ('ccache', 'sccache'):
                 compiler = split[1]
             else:
                 compiler = split[0]
@@ -2642,7 +2642,7 @@ class AllPlatformTests(BasePlatformTests):
         tdir = os.path.join(self.unit_test_dir, '25 non-permitted kwargs')
         with self.assertRaises(subprocess.CalledProcessError) as cm:
             self.init(tdir)
-        self.assertIn('ERROR: compiler.has_header_symbol got unknown keyword arguments "prefixxx"', cm.exception.output)
+        self.assertIn('ERROR: "compiler.has_header_symbol" got unknown keyword arguments "prefixxx"', cm.exception.output)
 
     def _template_test_fresh(self, lang: Language, target_type: str, env: Environment, ninja: list[str]) -> None:
         if is_windows() and lang == 'fortran' and target_type == 'library':
@@ -3462,6 +3462,23 @@ class AllPlatformTests(BasePlatformTests):
         self.build()
         self.run_tests()
 
+    def test_subproject_lang_args(self):
+        testdir = os.path.join(self.unit_test_dir, '139 subproject lang args')
+        self.init(testdir, extra_args=['-Dc_args=-DTOP_FLAG', '-Dsub:c_args=-DSUB_FLAG'])
+        # The source files #error out if their expected flag is missing.
+        self.build()
+        # A per-subproject or per-target value replaces the global one.
+        for cmd in self.get_compdb():
+            if cmd['file'].endswith('top.c'):
+                self.assertIn('-DTOP_FLAG', cmd['command'])
+                self.assertNotIn('-DSUB_FLAG', cmd['command'])
+            elif cmd['file'].endswith('sub.c'):
+                self.assertIn('-DSUB_FLAG', cmd['command'])
+                self.assertNotIn('-DTOP_FLAG', cmd['command'])
+            elif cmd['file'].endswith('over.c'):
+                self.assertIn('-DOVERRIDE_FLAG', cmd['command'])
+                self.assertNotIn('-DTOP_FLAG', cmd['command'])
+
     def test_wipe_from_builddir(self):
         testdir = os.path.join(self.common_test_dir, '157 custom target subdir depend files')
         self.init(testdir)
@@ -3720,6 +3737,17 @@ class AllPlatformTests(BasePlatformTests):
         self.maxDiff = None
         # XXX: These now generate in a different order, is that okay?
         self.assertListEqual(sorted(res_nb, key=lambda x: x['name']), sorted(res_wb, key=lambda x: x['name']))
+
+    def test_introspect_buildoptions_subproject_defaults(self):
+        testdir = os.path.join(self.unit_test_dir, '58 introspect buildoptions')
+        testfile = os.path.join(testdir, 'meson.build')
+        options = {
+            option['name']: option['value']
+            for option in self.introspect_directory(testfile, ['--buildoptions'] + self.meson_args)
+        }
+
+        self.assertEqual(options['projectA:buildtype'], 'release')
+        self.assertTrue(options['projectA:subproj_var'])
 
     def test_meson_configure_from_source_does_not_crash(self):
         testdir = os.path.join(self.unit_test_dir, '58 introspect buildoptions')
@@ -5054,11 +5082,11 @@ class AllPlatformTests(BasePlatformTests):
 
             # C does have a separate linking step. It can be done through the compiler
             # driver or not; act accordingly.
+            link_args = env.coredata.optstore.get_value_for(OptionKey(f'{cc.language}_link_args', machine=cc.for_machine))
+            assert isinstance(link_args, list), 'for mypy'
             if cc.USED_FOR_SEPARATE_LINKING_STEP:
-                link_args = env.coredata.get_external_link_args(cc.for_machine, cc.language)
                 self.assertEqual(sorted(link_args), sorted(['-DCFLAG', '-flto']))
             else:
-                link_args = env.coredata.get_external_link_args(cc.for_machine, cc.language)
                 self.assertEqual(sorted(link_args), sorted(['-flto']))
 
     def test_install_tag(self) -> None:

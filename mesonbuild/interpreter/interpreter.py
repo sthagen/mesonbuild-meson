@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import io, sys, traceback
 import dataclasses
 import functools
@@ -122,6 +123,7 @@ if T.TYPE_CHECKING:
     from . import kwargs as kwtypes
     from ..backend.backends import Backend
     from ..compilers.compilers import CompilerDict, Language
+    from ..interpreterbase import FeatureCheckBase
     from ..interpreterbase.baseobjects import InterpreterObject, TYPE_var, TYPE_kwargs
     from ..options import OptionDict
     from ..mesonlib import InstallScript, SubProject
@@ -266,6 +268,7 @@ class InterpreterRuleRelaxation(Enum):
 
     ALLOW_BUILD_DIR_FILE_REFERENCES = 1
     CARGO_SUBDIR = 2
+    ALLOW_SANDBOX_VIOLATION = 4
 
 implicit_check_false_warning = """You should add the boolean check kwarg to the run_command call.
          It currently defaults to false,
@@ -284,19 +287,20 @@ class Interpreter(InterpreterBase, HoldableObject):
                 subproject_dir: str = 'subprojects',
                 invoker_method_default_options: T.Optional[OptionDict] = None,
                 ast: T.Optional[mparser.CodeBlockNode] = None,
-                relaxations: T.Optional[T.Set[InterpreterRuleRelaxation]] = None,
+                relaxations: T.Optional[T.Dict[InterpreterRuleRelaxation, T.Optional[FeatureCheckBase]]] = None,
                 user_defined_options: T.Optional[SharedCMDOptions] = None,
                 cargo: T.Optional[cargo.Interpreter] = None,
             ) -> None:
         super().__init__(_build.environment.get_source_dir(), subdir, subproject, subproject_dir, _build.environment)
         self.active_projectname = ''
         self.build = _build
+        self.n_targets = 0
         if backend is not None:
             self.backend = backend
         self.cargo = cargo
         self.summary: T.Dict[str, 'Summary'] = {}
         self.modules: T.Dict[str, NewExtensionModule] = {}
-        self.relaxations = relaxations or set()
+        self.relaxations = relaxations or {}
         if ast is None:
             self.load_root_meson_file()
         else:
@@ -327,6 +331,29 @@ class Interpreter(InterpreterBase, HoldableObject):
 
     def __getnewargs_ex__(self) -> T.Tuple[T.Tuple[object], T.Dict[str, object]]:
         raise MesonBugException('This class is unpicklable')
+
+    @contextlib.contextmanager
+    def relaxing(self, relaxation: InterpreterRuleRelaxation, feature: FeatureCheckBase) -> T.Iterator[None]:
+        '''Temporarily add a rule relaxation to the interpreter, with a
+           warning if it is encountered.'''
+        if relaxation in self.relaxations:
+            yield
+        else:
+            try:
+                self.relaxations[relaxation] = feature
+                yield
+            finally:
+                del self.relaxations[relaxation]
+
+    def relaxed(self, relaxation: InterpreterRuleRelaxation) -> bool:
+        '''Check if a relaxation is in place, and if so whether it should warn
+           as a broken or deprecated feature.'''
+        if relaxation not in self.relaxations:
+            return False
+        feature = self.relaxations[relaxation]
+        if feature is not None:
+            feature.use(self.subproject, location=self.current_node)
+        return True
 
     def load_root_cargo_lock_file(self) -> None:
         cargo_lock = os.path.join(self.source_root, self.subdir, 'Cargo.lock')
@@ -1054,7 +1081,7 @@ class Interpreter(InterpreterBase, HoldableObject):
                              kwargs: kwtypes.DoSubproject,
                              ast: T.Optional[mparser.CodeBlockNode] = None,
                              build_def_files: T.Optional[T.List[str]] = None,
-                             relaxations: T.Optional[T.Set[InterpreterRuleRelaxation]] = None,
+                             relaxations: T.Optional[T.Dict[InterpreterRuleRelaxation, T.Optional[FeatureCheckBase]]] = None,
                              cargo: T.Optional[cargo.Interpreter] = None) -> SubprojectHolder:
         for_machine = kwargs['for_machine']
         if for_machine is MachineChoice.BUILD:
@@ -1125,7 +1152,7 @@ class Interpreter(InterpreterBase, HoldableObject):
                     kwargs, ast,
                     [str(f) for f in cm_int.bs_files],
                     relaxations={
-                        InterpreterRuleRelaxation.ALLOW_BUILD_DIR_FILE_REFERENCES,
+                        InterpreterRuleRelaxation.ALLOW_BUILD_DIR_FILE_REFERENCES: None,
                     }
             )
             result.cm_interpreter = cm_int
@@ -1153,7 +1180,7 @@ class Interpreter(InterpreterBase, HoldableObject):
 
             return self._do_subproject_meson(
                 subp_name, subdir, default_options, kwargs, ast,
-                relaxations={InterpreterRuleRelaxation.CARGO_SUBDIR} if ast is not None else None,
+                relaxations={InterpreterRuleRelaxation.CARGO_SUBDIR: None} if ast is not None else None,
                 cargo=cargo_int)
 
     @typed_pos_args('get_option', str)
@@ -2260,6 +2287,10 @@ class Interpreter(InterpreterBase, HoldableObject):
 
         self._validate_custom_target_outputs(len(inputs) > 1, kwargs['output'], "custom_target")
 
+        with self.relaxing(InterpreterRuleRelaxation.ALLOW_SANDBOX_VIOLATION,
+                           FeatureBroken('grabbing custom target depend_files from outside the current project', '1.12.0')):
+            depend_files = self.source_strings_to_files(kwargs['depend_files'])
+
         tg = build.CustomTarget(
             name,
             self.subdir,
@@ -2272,7 +2303,7 @@ class Interpreter(InterpreterBase, HoldableObject):
             build_by_default=build_by_default,
             capture=kwargs['capture'],
             console=kwargs['console'],
-            depend_files=self.source_strings_to_files(kwargs['depend_files']),
+            depend_files=depend_files,
             depfile=kwargs['depfile'],
             extra_depends=kwargs['depends'],
             env=kwargs['env'],
@@ -2395,9 +2426,6 @@ class Interpreter(InterpreterBase, HoldableObject):
         if isinstance(exe, (build.Executable, build.CustomTarget, build.CustomTargetIndex)):
             kwargs.setdefault('depends', []).append(exe.get_target())
 
-        if kwargs['timeout'] <= 0:
-            FeatureNew.single_use('test() timeout <= 0', '0.57.0', self.subproject, location=node)
-
         expected_fail = False
         if kwargs['should_fail'] is not None and kwargs['expected_fail'] is not None:
             raise InvalidArguments("Tried to use both 'should_fail' and 'expected_fail'")
@@ -2435,8 +2463,6 @@ class Interpreter(InterpreterBase, HoldableObject):
                  kwargs: kwtypes.FuncTest | kwtypes.FuncBenchmark, is_base_test: bool) -> None:
         if isinstance(args[1], (build.CustomTarget, build.CustomTargetIndex)):
             FeatureNew.single_use('test with CustomTarget as command', '1.4.0', self.subproject)
-        if any(isinstance(i, ExternalProgram) for i in kwargs['args']):
-            FeatureNew.single_use('test with program in args', '1.6.0', self.subproject)
 
         t: Test = self.make_test(node, args, kwargs)
         if is_base_test:
@@ -2615,7 +2641,7 @@ class Interpreter(InterpreterBase, HoldableObject):
 
         self.create_build_subdir(subdir)
 
-        if InterpreterRuleRelaxation.CARGO_SUBDIR in self.relaxations and \
+        if self.relaxed(InterpreterRuleRelaxation.CARGO_SUBDIR) and \
            os.path.exists(os.path.join(self.environment.get_source_dir(), subdir, 'Cargo.toml')):
             codeblock = self.cargo.interpret(subdir, self.root_subdir)
             self._save_ast(subdir, codeblock)
@@ -3124,12 +3150,11 @@ class Interpreter(InterpreterBase, HoldableObject):
 
         for d in dependencies.get_leaf_external_dependencies(args[0]):
             compile_args = list(d.get_compile_args())
-            system_incdir = d.get_include_type() == 'system'
             for i in d.get_include_dirs():
                 for lang in kwargs['language']:
                     comp = self.coredata.compilers[for_machine][lang]
                     for idir in i.abs_string_list(self.environment.get_source_dir(), self.environment.get_build_dir()):
-                        compile_args.extend(comp.get_include_args(idir, system_incdir))
+                        compile_args.extend(comp.get_include_args(idir, i.is_system))
 
             self._add_project_arguments(node, self.current_build_project().project_args[for_machine],
                                         compile_args, kwargs)
@@ -3226,7 +3251,9 @@ class Interpreter(InterpreterBase, HoldableObject):
 
     def run(self) -> None:
         super().run()
-        mlog.log('Build targets in project:', mlog.bold(str(len(self.build.targets))))
+        mlog.log('Build targets in project:', mlog.bold(str(self.n_targets)))
+        if not self.is_subproject() and self.n_targets != len(self.build.targets):
+            mlog.log('Total number of targets:', mlog.bold(str(len(self.build.targets))))
         FeatureNew.report(self.subproject)
         FeatureDeprecated.report(self.subproject)
         FeatureBroken.report(self.subproject)
@@ -3349,6 +3376,9 @@ class Interpreter(InterpreterBase, HoldableObject):
                                 ) -> list[T.Union[build.TargetSources, build.BuildTargetTypes, build.BothLibraries, build.ExtractedObjects]]: ...
 
     @T.overload
+    def source_strings_to_files(self, sources: list[T.Union[str, build.BuildTarget, build.TargetSources]]) -> list[build.BuildTarget | build.TargetSources]: ...  # type: ignore[overload-overlap]
+
+    @T.overload
     def source_strings_to_files(self, sources: list[T.Union[str, build.TargetSources, build.StructuredSources]],
                                 ) -> list[T.Union[build.TargetSources, build.StructuredSources]]: ... # noqa: F811
 
@@ -3366,6 +3396,7 @@ class Interpreter(InterpreterBase, HoldableObject):
                                     list[mesonlib.File | str | build.BuildTargetTypes],
                                     list[str | build.TargetSources],
                                     list[str | build.TargetSources | build.StructuredSources],
+                                    list[str | build.TargetSources | build.BuildTarget],
                                     list[kwtypes.CustomTargetInputs],
                                     list[mesonlib.File | str | build.BuildTargetTypes | build.BothLibraries | build.ExtractedObjects | build.GeneratedTypes],
                                     list[kwtypes.BuildTargetObjects],
@@ -3377,6 +3408,7 @@ class Interpreter(InterpreterBase, HoldableObject):
                                              list[mesonlib.File | build.CustomTarget | build.CustomTargetIndex],
                                              list[build.TargetSources],
                                              list[build.TargetSources | build.StructuredSources],
+                                             list[build.TargetSources | build.BuildTarget],
                                              list[mesonlib.File | build.BuildTargetTypes | build.BothLibraries | build.ExtractedObjects | build.GeneratedTypes],
                                              list[build.ObjectTypes | build.GeneratedTypes],
                                              list[CustomTargetSources],
@@ -3399,7 +3431,7 @@ class Interpreter(InterpreterBase, HoldableObject):
                     self.validate_within_subproject(self.subdir, s)
                 except BuiltFileByNameError as e:
                     # In Meson 2.0 this should just raise
-                    if InterpreterRuleRelaxation.ALLOW_BUILD_DIR_FILE_REFERENCES not in self.relaxations:
+                    if not self.relaxed(InterpreterRuleRelaxation.ALLOW_BUILD_DIR_FILE_REFERENCES):
                         #raise
                         mlog.warning(str(e), location=self.current_node)
                     if path_has_root(s):
@@ -3413,8 +3445,11 @@ class Interpreter(InterpreterBase, HoldableObject):
                         results.append(mesonlib.File.from_built_relative(rel))
                     else:
                         results.append(mesonlib.File.from_built_file(self.subdir, s))
-                else:
-                    results.append(mesonlib.File.from_source_file(self.environment.source_dir, self.subdir, s))
+                    continue
+                except SandboxViolationError:
+                    if not self.relaxed(InterpreterRuleRelaxation.ALLOW_SANDBOX_VIOLATION):
+                        raise
+                results.append(mesonlib.File.from_source_file(self.environment.source_dir, self.subdir, s))
             elif isinstance(s, (mesonlib.File, build.GeneratedList, Program,
                                 build.BuildTarget, build.CustomTargetIndex, build.CustomTarget,
                                 build.ExtractedObjects, build.StructuredSources)):
@@ -3459,6 +3494,10 @@ class Interpreter(InterpreterBase, HoldableObject):
                     To define a target that builds in that directory you must define it
                     in the meson.build file in that directory.
             '''))
+
+        # Keep track of the number of targets added by the (sub)project
+        # being interpreted. For informational purposes only.
+        self.n_targets += 1
 
         # Make sure build_subdir doesn't exist in the source tree and
         # doesn't contain ..

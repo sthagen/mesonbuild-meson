@@ -149,7 +149,7 @@ class FeatureOptionHolder(ObjectHolder[Feature]):
             return self.held_object
 
         if self.held_object.is_enabled():
-            err_msg = f'Feature {self.held_object.name} cannot be enabled'
+            err_msg = f'Feature {self.held_object.name} cannot be disabled'
             if message:
                 err_msg += f': {message}'
             raise InterpreterException(err_msg)
@@ -187,7 +187,7 @@ class FeatureOptionHolder(ObjectHolder[Feature]):
             return self.held_object
 
         if self.held_object.is_disabled():
-            err_msg = f'Feature {self.held_object.name} cannot be disabled'
+            err_msg = f'Feature {self.held_object.name} cannot be enabled'
             if kwargs['error_message']:
                 err_msg += f': {kwargs["error_message"]}'
             raise InterpreterException(err_msg)
@@ -535,9 +535,6 @@ class DependencyHolder(ObjectHolder[Dependency]):
         from ..dependencies.pkgconfig import PkgConfigDependency
         if not isinstance(self.held_object, PkgConfigDependency):
             raise InvalidArguments(f'{self.held_object.get_name()!r} is not a pkgconfig dependency')
-        if kwargs['define_variable'] and len(kwargs['define_variable']) > 1:
-            FeatureNew.single_use('dependency.get_pkgconfig_variable keyword argument "define_variable"  with more than one pair',
-                                  '1.3.0', self.subproject, location=self.current_node)
         return self.held_object.get_variable(
             pkgconfig=args[0],
             default_value=kwargs['default'],
@@ -584,10 +581,6 @@ class DependencyHolder(ObjectHolder[Dependency]):
         default_varname = args[0]
         if default_varname is not None:
             FeatureNew('Positional argument to dependency.get_variable()', '0.58.0').use(self.subproject, self.current_node)
-        if kwargs['pkgconfig_define'] and len(kwargs['pkgconfig_define']) > 1:
-            FeatureNew.single_use('dependency.get_variable keyword argument "pkgconfig_define" with more than one pair',
-                                  '1.3.0', self.subproject, 'In previous versions, this silently returned a malformed value.',
-                                  self.current_node)
         return self.held_object.get_variable(
             cmake=kwargs['cmake'] or default_varname,
             pkgconfig=kwargs['pkgconfig'] or default_varname,
@@ -1230,7 +1223,7 @@ class GeneratorHolder(ObjectHolder[build.Generator]):
     def __init__(self, gen: build.Generator, interpreter: 'Interpreter'):
         super().__init__(gen, interpreter)
 
-    @typed_pos_args('generator.process', min_varargs=1, varargs=(str, mesonlib.File, build.CustomTarget, build.CustomTargetIndex, build.GeneratedList))
+    @typed_pos_args('generator.process', min_varargs=1, varargs=(str, mesonlib.File, build.BuildTarget, build.CustomTarget, build.CustomTargetIndex, build.GeneratedList))
     @typed_kwargs(
         'generator.process',
         KwargInfo('preserve_path_from', (str, NoneType), since='0.45.0'),
@@ -1240,7 +1233,7 @@ class GeneratorHolder(ObjectHolder[build.Generator]):
     )
     @InterpreterObject.method('process')
     def process_method(self,
-                       args: T.Tuple[T.List[str | build.TargetSources]],
+                       args: T.Tuple[T.List[str | build.BuildTarget | build.TargetSources]],
                        kwargs: 'kwargs.GeneratorProcess') -> build.GeneratedList:
         preserve_path_from = kwargs['preserve_path_from']
         if preserve_path_from is not None:
@@ -1253,6 +1246,11 @@ class GeneratorHolder(ObjectHolder[build.Generator]):
             FeatureNew.single_use(
                 'Calling generator.process with CustomTarget or Index of CustomTarget.',
                 '0.57.0', self.interpreter.subproject)
+
+        if any(isinstance(a, build.BuildTarget) for a in args[0]):
+            FeatureNew.single_use(
+                'Calling generator.process with BuildTarget.',
+                '1.13.0', self.interpreter.subproject)
 
         sources = self.interpreter.source_strings_to_files(args[0])
         gl = self.held_object.process_files(sources, self.interpreter.subdir,

@@ -77,6 +77,23 @@ known_cpu_families = (
     'tricore'
 )
 
+KNOWN_SYSTEMS = frozenset({
+    'aix',
+    'android',
+    'cygwin',
+    'darwin',
+    'dragonfly',
+    'freebsd',
+    'gnu',
+    'haiku',
+    'linux',
+    'netbsd',
+    'openbsd',
+    'os/2',
+    'sunos',
+    'windows',
+})
+
 # It would feel more natural to call this "64_BIT_CPU_FAMILIES", but
 # python identifiers cannot start with numbers
 CPU_FAMILIES_64_BIT = [
@@ -301,6 +318,8 @@ class MachineInfo(HoldableObject):
             mlog.warning(f'Unknown endian {endian}')
 
         system = literal['system']
+        if system not in KNOWN_SYSTEMS:
+            mlog.warning(f'Unknown system {system}, please report this at https://github.com/mesonbuild/meson/issues/new')
         kernel = literal.get('kernel', None)
         subsystem = literal.get('subsystem', None)
 
@@ -537,6 +556,7 @@ KERNEL_MAPPINGS: T.Mapping[str, str] = {'freebsd': 'freebsd',
                                         'haiku': 'haiku',
                                         'gnu': 'gnu',
                                         'fuchsia': 'fuchsia',
+                                        'aix': 'aix',
                                         }
 
 def detect_windows_arch(compilers: CompilerDict) -> str:
@@ -646,7 +666,7 @@ def detect_cpu_family(compilers: CompilerDict) -> str:
         # report it as 32 bit for simplicity.
         trial = 'parisc'
     elif trial == 'ppc':
-        # AIX always returns powerpc, check here for 64-bit
+        # AIX and OS400 always return powerpc, check here for 64-bit
         if any_compiler_has_define(compilers, '__64BIT__'):
             trial = 'ppc64'
     # MIPS64 is able to run MIPS32 code natively, so there is a chance that
@@ -672,6 +692,9 @@ def detect_cpu(compilers: CompilerDict) -> str:
 
     if trial in {'amd64', 'x64', 'i86pc'}:
         trial = 'x86_64'
+    elif trial == 'powerpc':
+        trial = 'ppc'
+
     if trial == 'x86_64':
         # Same check as above for cpu_family
         if any_compiler_has_define(compilers, '__i386__'):
@@ -697,7 +720,7 @@ def detect_cpu(compilers: CompilerDict) -> str:
             else:
                 trial = 'mips64'
     elif trial == 'ppc':
-        # AIX always returns powerpc, check here for 64-bit
+        # AIX and OS400 always return powerpc, check here for 64-bit
         if any_compiler_has_define(compilers, '__64BIT__'):
             trial = 'ppc64'
 
@@ -723,6 +746,8 @@ def detect_kernel(system: str) -> T.Optional[str]:
                          "Please open a Meson issue with the OS you're running and the value detected for your kernel.")
             return None
         return out
+    elif mesonlib.is_os400():
+        return 'os400'
     return KERNEL_MAPPINGS.get(system, None)
 
 def detect_subsystem(system: str) -> T.Optional[str]:
@@ -733,7 +758,11 @@ def detect_subsystem(system: str) -> T.Optional[str]:
 def detect_system() -> str:
     if sys.platform == 'cygwin':
         return 'cygwin'
-    return platform.system().lower()
+    system = platform.system().lower()
+    # OS400 is close to AIX, they'll have the same 'system' value but distinct 'kernel' values
+    if system == 'os400':
+        return 'aix'
+    return system
 
 def detect_msys2_arch() -> T.Optional[str]:
     return os.environ.get('MSYSTEM_CARCH', None)
@@ -755,6 +784,19 @@ def detect_machine_info(compilers: T.Optional[CompilerDict] = None) -> MachineIn
         detect_kernel(system),
         detect_subsystem(system))
 
+def has_rosetta() -> bool:
+    """Whether Rosetta 2 is installed and able to translate x86_64 binaries.
+
+    oahd is the daemon that services Rosetta 2 translation requests; if it
+    can be reached, the kernel will transparently run x86_64 binaries on
+    this arm64 Mac.
+    """
+    try:
+        p, _, _ = Popen_safe(['/usr/bin/pgrep', '-q', 'oahd'])
+    except OSError:
+        return False
+    return p.returncode == 0
+
 # TODO make this compare two `MachineInfo`s purely. How important is the
 # `detect_cpu_family({})` distinction? It is the one impediment to that.
 def machine_info_can_run(machine_info: MachineInfo) -> bool:
@@ -772,7 +814,11 @@ def machine_info_can_run(machine_info: MachineInfo) -> bool:
         return False
     true_build_cpu_family = detect_cpu_family({})
     assert machine_info.cpu_family is not None, 'called on incomplete machine_info'
-    return \
-        (machine_info.cpu_family == true_build_cpu_family) or \
-        ((true_build_cpu_family == 'x86_64') and (machine_info.cpu_family == 'x86')) or \
-        ((true_build_cpu_family == 'mips64') and (machine_info.cpu_family == 'mips'))
+    if machine_info.cpu_family == true_build_cpu_family or \
+            (true_build_cpu_family == 'x86_64' and machine_info.cpu_family == 'x86') or \
+            (true_build_cpu_family == 'mips64' and machine_info.cpu_family == 'mips'):
+        return True
+    # Apple Silicon Macs can run x86_64 binaries via the Rosetta 2 translator.
+    if system == 'darwin' and true_build_cpu_family == 'aarch64' and machine_info.cpu_family == 'x86_64':
+        return has_rosetta()
+    return False

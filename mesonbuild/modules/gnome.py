@@ -90,7 +90,7 @@ if T.TYPE_CHECKING:
         env: EnvironmentVariables
         export_packages: T.List[str]
         extra_args: T.List[str]
-        fatal_warnings: bool
+        fatal_warnings: T.Optional[bool]
         header: T.List[str]
         identifier_prefix: T.List[str]
         include_directories: T.List[T.Union[build.IncludeDirs, str]]
@@ -856,7 +856,7 @@ class GnomeModule(ExtensionModule):
         ret: T.List[str] = []
 
         for lang in langs:
-            link_args = state.environment.coredata.get_external_link_args(MachineChoice.HOST, lang)
+            link_args = T.cast('T.List[str]', state.get_option(f'{lang}_link_args', state.subproject))
             for link_arg in link_args:
                 if link_arg.startswith('-L'):
                     ret.append(link_arg)
@@ -1115,7 +1115,7 @@ class GnomeModule(ExtensionModule):
     def _get_external_args_for_langs(state: 'ModuleState', langs: T.List[str]) -> T.List[str]:
         ret: T.List[str] = []
         for lang in langs:
-            ret += mesonlib.listify(state.environment.coredata.get_external_args(MachineChoice.HOST, lang))
+            ret += mesonlib.listify(state.get_option(f'{lang}_args', state.subproject))
         return ret
 
     @staticmethod
@@ -1145,7 +1145,7 @@ class GnomeModule(ExtensionModule):
         KwargInfo('dependencies', ContainerTypeInfo(list, Dependency), default=[], listify=True),
         KwargInfo('doc_format', (str, NoneType), since='1.8.0'),
         KwargInfo('export_packages', ContainerTypeInfo(list, str), default=[], listify=True),
-        KwargInfo('fatal_warnings', bool, default=False, since='0.55.0'),
+        KwargInfo('fatal_warnings', (bool, NoneType), default=None, since='0.55.0'),
         KwargInfo('header', ContainerTypeInfo(list, str), default=[], listify=True),
         KwargInfo('identifier_prefix', ContainerTypeInfo(list, str), default=[], listify=True),
         KwargInfo('include_directories', ContainerTypeInfo(list, (str, build.IncludeDirs)), default=[], listify=True),
@@ -1206,7 +1206,8 @@ class GnomeModule(ExtensionModule):
         scan_cflags += list(self._get_scanner_cflags(self._get_external_args_for_langs(state, [lc[0] for lc in langs_compilers])))
         scan_internal_ldflags = []
         scan_external_ldflags = []
-        scan_env_ldflags = state.environment.coredata.get_external_link_args(MachineChoice.HOST, 'c')
+        # Copy: the returned list is the stored option value and gets appended to below.
+        scan_env_ldflags = list(T.cast('T.List[str]', state.get_option('c_link_args', state.subproject)))
         for cli_flags, env_flags in (self._get_scanner_ldflags(internal_ldflags), self._get_scanner_ldflags(dep_internal_ldflags)):
             scan_internal_ldflags += cli_flags
             scan_env_ldflags += env_flags
@@ -1261,7 +1262,11 @@ class GnomeModule(ExtensionModule):
         if '--warn-error' in scan_command:
             FeatureDeprecated.single_use('gnome.generate_gir argument --warn-error', '0.55.0',
                                          state.subproject, 'Use "fatal_warnings" keyword argument', state.current_node)
-        if kwargs['fatal_warnings']:
+        fatal_warnings = kwargs['fatal_warnings']
+        if fatal_warnings is None:
+            fatal_warnings = state.environment.coredata.optstore.get_value_for(
+                OptionKey('werror', machine=MachineChoice.BUILD, subproject=state.subproject))
+        if fatal_warnings:
             scan_command.append('--warn-error')
 
         generated_files: list[build.GeneratedTypes] = []
@@ -1626,8 +1631,8 @@ class GnomeModule(ExtensionModule):
         ldflags.extend(internal_ldflags)
         ldflags.extend(external_ldflags)
 
-        cflags.extend(state.environment.coredata.get_external_args(MachineChoice.HOST, 'c'))
-        ldflags.extend(state.environment.coredata.get_external_link_args(MachineChoice.HOST, 'c'))
+        cflags.extend(T.cast('T.List[str]', state.get_option('c_args', state.subproject)))
+        ldflags.extend(T.cast('T.List[str]', state.get_option('c_link_args', state.subproject)))
         compiler = state.environment.coredata.compilers[MachineChoice.HOST]['c']
 
         compiler_flags = self._get_langs_compilers_flags(state, [('c', compiler)])

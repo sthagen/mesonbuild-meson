@@ -26,10 +26,12 @@ import mesonbuild.envconfig
 import mesonbuild.environment
 import mesonbuild.modules.cuda
 import mesonbuild.modules.gnome
+import mesonbuild.scripts.depfixer
 import mesonbuild.scripts.env2mfile
 from mesonbuild import coredata
-from mesonbuild.compilers.c import ClangCCompiler, GnuCCompiler
-from mesonbuild.compilers.compilers import ManyInOneLinkerOptionStyle
+from mesonbuild.compilers import Compiler
+from mesonbuild.compilers.c import ClangCCompiler, ClangClCCompiler, GnuCCompiler, VisualStudioCCompiler
+from mesonbuild.compilers.compilers import CompileCheckMode, ManyInOneLinkerOptionStyle
 from mesonbuild.compilers.cpp import VisualStudioCPPCompiler
 from mesonbuild.compilers.d import DmdDCompiler
 from mesonbuild.compilers.detect import detect_c_compiler
@@ -77,6 +79,98 @@ class InternalTests(unittest.TestCase):
         self.assertFalse(machine('android', 'android').is_ohos())
         # A non-Android system with an 'ohos' subsystem is not OHOS either.
         self.assertFalse(machine('linux', 'ohos').is_ohos())
+
+    def test_get_env_for_paths(self):
+        machines = {
+            system: mesonbuild.envconfig.MachineInfo(
+                system=system, cpu_family='x86_64', cpu='x86_64',
+                endian='little', kernel=None, subsystem=None)
+            for system in ('linux', 'windows', 'cygwin', 'darwin')
+        }
+
+        env = get_fake_env()
+
+        # Cross-compiling to Windows from a non-Windows build machine: Wine
+        # is used to run host binaries. 'extra_paths' (PATH-only entries,
+        # e.g. an executable's own directory) must still end up in WINEPATH
+        # too, so that "wine foo.exe" can find any DLLs sitting next to it,
+        # in addition to being in PATH itself (so "foo.exe" can be run
+        # directly via wine-binfmt, and so bash completion works). Callers
+        # such as Backend.get_devenv() rely on this to be able to put
+        # Windows DLL search directories into 'extra_paths' and still have
+        # them reach WINEPATH.
+        with self.subTest('cross-compiling to windows via wine'):
+            env.machines.build = machines['linux']
+            env.machines.host = machines['windows']
+            envvars = env.get_env_for_paths({'/lib/dir'}, {'/dll/dir'}).get_env({})
+            self.assertIn('WINEPATH', envvars)
+            self.assertIn('/lib/dir', envvars['WINEPATH'])
+            self.assertIn('/dll/dir', envvars['WINEPATH'])
+            self.assertIn('PATH', envvars)
+            self.assertIn('/dll/dir', envvars['PATH'])
+            self.assertNotIn('LD_LIBRARY_PATH', envvars)
+            self.assertNotIn('DYLD_LIBRARY_PATH', envvars)
+
+        # Natively building/running on Windows (build == host == windows, so
+        # need_wine is False): there is no WINEPATH, and library_paths is
+        # merged into extra_paths so everything ends up in PATH, since
+        # Windows has no rpath equivalent.
+        with self.subTest('native windows'):
+            env.machines.build = machines['windows']
+            env.machines.host = machines['windows']
+            envvars = env.get_env_for_paths({'/lib/dir'}, {'/dll/dir'}).get_env({})
+            self.assertNotIn('WINEPATH', envvars)
+            self.assertIn('PATH', envvars)
+            self.assertIn('/lib/dir', envvars['PATH'])
+            self.assertIn('/dll/dir', envvars['PATH'])
+
+        # Cygwin behaves like Windows here (no rpath), but is a distinct
+        # 'system' from 'windows', so it needs its own check of the `or
+        # host.is_cygwin()` branch. A Cygwin host also does not trigger
+        # need_wine (Wine cannot run Cygwin binaries), even when
+        # cross-compiling from a non-Windows build machine.
+        with self.subTest('cygwin'):
+            env.machines.build = machines['linux']
+            env.machines.host = machines['cygwin']
+            envvars = env.get_env_for_paths({'/lib/dir'}, {'/dll/dir'}).get_env({})
+            self.assertNotIn('WINEPATH', envvars)
+            self.assertIn('PATH', envvars)
+            self.assertIn('/lib/dir', envvars['PATH'])
+            self.assertIn('/dll/dir', envvars['PATH'])
+
+        # On Darwin, rpath works, so library_paths and extra_paths are kept
+        # separate instead of being merged: library_paths only need
+        # DYLD_LIBRARY_PATH as a fallback and are not also added to PATH.
+        with self.subTest('darwin'):
+            env.machines.build = machines['darwin']
+            env.machines.host = machines['darwin']
+            envvars = env.get_env_for_paths({'/lib/dir'}, {'/dll/dir'}).get_env({})
+            self.assertNotIn('WINEPATH', envvars)
+            self.assertIn('DYLD_LIBRARY_PATH', envvars)
+            self.assertIn('/lib/dir', envvars['DYLD_LIBRARY_PATH'])
+            self.assertNotIn('/dll/dir', envvars['DYLD_LIBRARY_PATH'])
+            self.assertIn('PATH', envvars)
+            self.assertIn('/dll/dir', envvars['PATH'])
+            self.assertNotIn('/lib/dir', envvars['PATH'])
+
+        # On Linux (and other Unix-likes), same shape as Darwin but using
+        # LD_LIBRARY_PATH instead.
+        with self.subTest('linux'):
+            env.machines.build = machines['linux']
+            env.machines.host = machines['linux']
+            envvars = env.get_env_for_paths({'/lib/dir'}, {'/dll/dir'}).get_env({})
+            self.assertNotIn('WINEPATH', envvars)
+            self.assertIn('LD_LIBRARY_PATH', envvars)
+            self.assertIn('/lib/dir', envvars['LD_LIBRARY_PATH'])
+            self.assertNotIn('/dll/dir', envvars['LD_LIBRARY_PATH'])
+            self.assertIn('PATH', envvars)
+            self.assertIn('/dll/dir', envvars['PATH'])
+            self.assertNotIn('/lib/dir', envvars['PATH'])
+
+        # Empty inputs should produce no environment variables at all.
+        with self.subTest('empty paths'):
+            envvars = env.get_env_for_paths(set(), set()).get_env({})
+            self.assertEqual(envvars, {})
 
     def test_version_number(self):
         self.assertEqual(search_version('foobar 1.2.3'), '1.2.3')
@@ -323,6 +417,46 @@ Thread model: posix'''), '21.9.0')
         self.assertEqual(a.to_native(copy=True), ['/showIncludes'])
 
 
+    def test_clike_sanity_check_drops_link_only_args_when_compile_only(self):
+        # When cross-compiling without an exe wrapper, CLikeCompiler's sanity
+        # check only compiles and never links because we can't run the
+        # executable. Therefore, it doesn't make sense for link-only arguments
+        # to be added on the command line. Some compilers warn about unused
+        # command line arguments.
+        env = get_fake_env()
+        linker = linkers.MoldDynamicLinker([], env, MachineChoice.HOST, '-Wl,', [])
+        cc = ClangCCompiler([], [], '14.0.0', MachineChoice.HOST, env, linker=linker)
+        cc.is_cross = True
+
+        with mock.patch.object(env, 'has_exe_wrapper', return_value=False), \
+             mock.patch.object(cc, '_get_basic_compiler_args', return_value=([], ['-fake-cross-link-arg'])), \
+             mock.patch.object(Compiler, '_sanity_check_compile_args', return_value=([], ['-Lfake-ldflags-arg'])):
+            _, largs = cc._sanity_check_compile_args('foo.c', 'foo.exe')
+
+        self.assertEqual(largs, [])
+
+
+    def test_clang_family_compiler_check_args_contain_werror_unknown_warning(self):
+        env = get_fake_env()
+        mold = linkers.MoldDynamicLinker([], env, MachineChoice.HOST, '-Wl,', [])
+        lld_link = linkers.ClangClDynamicLinker(env, MachineChoice.HOST, [])
+
+        compilers = {
+            'clang': ClangCCompiler([], [], '14.0.0', MachineChoice.HOST, env, linker=mold),
+            'clang-cl': ClangClCCompiler([], '14.0.0', MachineChoice.HOST, env, 'x64', linker=lld_link),
+        }
+
+        for name, cc in compilers.items():
+            with self.subTest(compiler=name):
+                self.assertIn('-Werror=unknown-warning-option',
+                              cc.get_compiler_check_args(CompileCheckMode.COMPILE))
+                # Both clang and clang-cl only apply this diagnostic when
+                # actually compiling; it's intentionally omitted for LINK to
+                # avoid failing on flags that are unused during linking.
+                self.assertNotIn('-Werror=unknown-warning-option',
+                                 cc.get_compiler_check_args(CompileCheckMode.LINK))
+
+
     def test_msvc_unix_args_to_native(self):
         # joined
         self.assertEqual(MSVCCompiler.unix_args_to_native(['-isystemfoo']), ['/Ifoo'])
@@ -354,6 +488,81 @@ Thread model: posix'''), '21.9.0')
         self.assertEqual(ClangClCompiler.unix_args_to_native(['-isystem', 'foo']), ['/clang:-isystemfoo'])
         self.assertEqual(ClangClCompiler.unix_args_to_native(['-idirafter', 'foo']), ['/clang:-idirafterfoo'])
         self.assertEqual(ClangClCompiler.unix_args_to_native(['-iquote', 'foo']), ['/clang:-iquotefoo'])
+
+    def _fake_msvc_cc(self, cflags='-DCFLAG', ldflags='/SUBSYSTEM:CONSOLE'):
+        with mock.patch.dict(os.environ, {'CFLAGS': cflags, 'LDFLAGS': ldflags}):
+            env = get_fake_env()
+        env.add_lang_args('c', VisualStudioCCompiler, MachineChoice.HOST)
+        linker = linkers.MSVCDynamicLinker(env, MachineChoice.HOST, [])
+        return VisualStudioCCompiler([], [], '20.00', MachineChoice.HOST, env, 'x64', linker=linker)
+
+    def _fake_gnu_cc(self, cflags='-DCFLAG', ldflags='-Wl,-O1',
+                     linker_cls=linkers.GnuBFDDynamicLinker):
+        with mock.patch.dict(os.environ, {'CFLAGS': cflags, 'LDFLAGS': ldflags}):
+            env = get_fake_env()
+        env.add_lang_args('c', GnuCCompiler, MachineChoice.HOST)
+        linker = linker_cls([], env, MachineChoice.HOST,
+                            ManyInOneLinkerOptionStyle('-Wl,', ','), [])
+        return GnuCCompiler([], [], 'fake', MachineChoice.HOST, env, linker=linker)
+
+    def assertAfterLink(self, args: T.List[str], flag: str) -> None:
+        '''Assert that a linker-only flag is passed exactly once, after /link.'''
+        self.assertEqual(args.count(flag), 1, f'{flag} not passed exactly once in {args}')
+        self.assertIn('/link', args)
+        self.assertLess(args.index('/link'), args.index(flag), f'{flag} passed before /link in {args}')
+
+    def test_sanity_check_args_msvc(self):
+        cc = self._fake_msvc_cc()
+        args, largs = cc._sanity_check_compile_args('t.c', 't.exe')
+        # external link args are passed once, and after /link
+        self.assertAfterLink(largs, '/SUBSYSTEM:CONSOLE')
+        self.assertNotIn('/SUBSYSTEM:CONSOLE', args)
+        # so are the linker's own always args
+        self.assertAfterLink(largs, '/release')
+        self.assertNotIn('/release', args)
+        # external compile args are passed to the compiler, not to the linker
+        self.assertNotIn('-DCFLAG', largs)
+        self.assertEqual(args.count('-DCFLAG'), 1, args)
+        # linking, so name the executable with /Fe even if it is not a .exe
+        self.assertIn('/Fet.exe', args)
+        dll_args, _ = cc._sanity_check_compile_args('t.c', 't.dll')
+        self.assertIn('/Fet.dll', dll_args)
+
+    def test_sanity_check_args_gnu(self):
+        cc = self._fake_gnu_cc()
+        args, largs = cc._sanity_check_compile_args('t.c', 't.exe')
+        # external args must reach the probe, but only once
+        self.assertEqual(args.count('-DCFLAG'), 1, args)
+        self.assertEqual((args + largs).count('-Wl,-O1'), 1, (args, largs))
+        self.assertIn('-Wl,-O1', largs)
+
+    def test_compiler_check_args_msvc(self):
+        cc = self._fake_msvc_cc()
+        args = cc.build_wrapper_args(None, None, CompileCheckMode.LINK).to_native()
+        # linker-only flags belong after /link, not on the compiler command line
+        self.assertAfterLink(args, '/release')
+        self.assertAfterLink(args, '/SUBSYSTEM:CONSOLE')
+        args = cc.build_wrapper_args(None, None, CompileCheckMode.COMPILE).to_native()
+        self.assertNotIn('/release', args)
+        self.assertNotIn('/link', args)
+
+    def test_compiler_check_args_os2(self):
+        # the linker's always args (-Zomf on OS/2) must reach link mode checks
+        cc = self._fake_gnu_cc(linker_cls=linkers.OS2OmfDynamicLinker)
+        args = cc.build_wrapper_args(None, None, CompileCheckMode.LINK)
+        self.assertEqual(list(args).count('-Zomf'), 1, args)
+        self.assertNotIn('-Zomf', cc.build_wrapper_args(None, None, CompileCheckMode.COMPILE))
+
+    def test_find_library_args_msvc(self):
+        cc = self._fake_msvc_cc()
+
+        def fake_links(code, *, extra_args=None, **kwargs):
+            args = cc.build_wrapper_args(extra_args, None, CompileCheckMode.LINK).to_native()
+            self.assertAfterLink(args, '/release')
+            return (True, False)
+
+        with mock.patch.object(cc, 'links', fake_links):
+            cc.find_library('foo', [])
 
     def test_compiler_args_class_gnuld(self):
         ## Test --start/end-group
@@ -1288,7 +1497,7 @@ Thread model: posix'''), '21.9.0')
 
         with self.assertRaises(InvalidArguments) as cm:
             _(None, mock.Mock(), ['string', 1.0, False], None)
-        self.assertEqual(str(cm.exception), 'foo argument 2 was of type "float" but should have been "int"')
+        self.assertEqual(str(cm.exception), '"foo" positional argument "2" was of type "float" but should have been "int"')
 
     def test_typed_pos_args_types_wrong_number(self) -> None:
         @typed_pos_args('foo', str, int, bool)
@@ -1297,11 +1506,11 @@ Thread model: posix'''), '21.9.0')
 
         with self.assertRaises(InvalidArguments) as cm:
             _(None, mock.Mock(), ['string', 1], None)
-        self.assertEqual(str(cm.exception), 'foo takes exactly 3 arguments, but got 2.')
+        self.assertEqual(str(cm.exception), '"foo" takes exactly 3 arguments, but got 2.')
 
         with self.assertRaises(InvalidArguments) as cm:
             _(None, mock.Mock(), ['string', 1, True, True], None)
-        self.assertEqual(str(cm.exception), 'foo takes exactly 3 arguments, but got 4.')
+        self.assertEqual(str(cm.exception), '"foo" takes exactly 3 arguments, but got 4.')
 
     def test_typed_pos_args_varargs(self) -> None:
         @typed_pos_args('foo', str, varargs=str)
@@ -1331,7 +1540,7 @@ Thread model: posix'''), '21.9.0')
 
         with self.assertRaises(InvalidArguments) as cm:
             _(None, mock.Mock(), ['string', 'var', 'args', 0], None)
-        self.assertEqual(str(cm.exception), 'foo argument 4 was of type "int" but should have been "str"')
+        self.assertEqual(str(cm.exception), '"foo" positional argument "4" was of type "int" but should have been "str"')
 
     def test_typed_pos_args_varargs_invalid_multiple_types(self) -> None:
         @typed_pos_args('foo', str, varargs=(str, list))
@@ -1340,7 +1549,7 @@ Thread model: posix'''), '21.9.0')
 
         with self.assertRaises(InvalidArguments) as cm:
             _(None, mock.Mock(), ['string', 'var', 'args', 0], None)
-        self.assertEqual(str(cm.exception), 'foo argument 4 was of type "int" but should have been one of: "str", "list"')
+        self.assertEqual(str(cm.exception), '"foo" positional argument "4" was of type "int" but should have been one of: "str", "list"')
 
     def test_typed_pos_args_max_varargs(self) -> None:
         @typed_pos_args('foo', str, varargs=str, max_varargs=5)
@@ -1360,7 +1569,7 @@ Thread model: posix'''), '21.9.0')
 
         with self.assertRaises(InvalidArguments) as cm:
             _(None, mock.Mock(), ['string', 'var', 'args'], None)
-        self.assertEqual(str(cm.exception), 'foo takes between 1 and 2 arguments, but got 3.')
+        self.assertEqual(str(cm.exception), '"foo" takes between 1 and 2 arguments, but got 3.')
 
     def test_typed_pos_args_min_varargs(self) -> None:
         @typed_pos_args('foo', varargs=str, max_varargs=2, min_varargs=1)
@@ -1379,7 +1588,7 @@ Thread model: posix'''), '21.9.0')
 
         with self.assertRaises(InvalidArguments) as cm:
             _(None, mock.Mock(), ['string'], None)
-        self.assertEqual(str(cm.exception), 'foo takes at least 2 arguments, but got 1.')
+        self.assertEqual(str(cm.exception), '"foo" takes at least 2 arguments, but got 1.')
 
     def test_typed_pos_args_min_and_max_varargs_exceeded(self) -> None:
         @typed_pos_args('foo', str, varargs=str, min_varargs=1, max_varargs=2)
@@ -1388,7 +1597,7 @@ Thread model: posix'''), '21.9.0')
 
         with self.assertRaises(InvalidArguments) as cm:
             _(None, mock.Mock(), ['string', 'var', 'args', 'bar'], None)
-        self.assertEqual(str(cm.exception), 'foo takes between 2 and 3 arguments, but got 4.')
+        self.assertEqual(str(cm.exception), '"foo" takes between 2 and 3 arguments, but got 4.')
 
     def test_typed_pos_args_min_and_max_varargs_not_met(self) -> None:
         @typed_pos_args('foo', str, varargs=str, min_varargs=1, max_varargs=2)
@@ -1397,7 +1606,7 @@ Thread model: posix'''), '21.9.0')
 
         with self.assertRaises(InvalidArguments) as cm:
             _(None, mock.Mock(), ['string'], None)
-        self.assertEqual(str(cm.exception), 'foo takes between 2 and 3 arguments, but got 1.')
+        self.assertEqual(str(cm.exception), '"foo" takes between 2 and 3 arguments, but got 1.')
 
     def test_typed_pos_args_variadic_and_optional(self) -> None:
         @typed_pos_args('foo', str, optargs=[str], varargs=str, min_varargs=0)
@@ -1417,7 +1626,7 @@ Thread model: posix'''), '21.9.0')
 
         with self.assertRaises(InvalidArguments) as cm:
             _(None, mock.Mock(), ['string'], None)
-        self.assertEqual(str(cm.exception), 'foo takes at least 2 arguments, but got 1.')
+        self.assertEqual(str(cm.exception), '"foo" takes at least 2 arguments, but got 1.')
 
     def test_typed_pos_args_min_optargs_max_exceeded(self) -> None:
         @typed_pos_args('foo', str, optargs=[str])
@@ -1426,7 +1635,7 @@ Thread model: posix'''), '21.9.0')
 
         with self.assertRaises(InvalidArguments) as cm:
             _(None, mock.Mock(), ['string', '1', '2'], None)
-        self.assertEqual(str(cm.exception), 'foo takes at most 2 arguments, but got 3.')
+        self.assertEqual(str(cm.exception), '"foo" takes at most 2 arguments, but got 3.')
 
     def test_typed_pos_args_optargs_not_given(self) -> None:
         @typed_pos_args('foo', str, optargs=[str])
@@ -1481,7 +1690,7 @@ Thread model: posix'''), '21.9.0')
 
         with self.assertRaises(InvalidArguments) as cm:
             _(None, mock.Mock(), [], {})
-        self.assertEqual(str(cm.exception), 'testfunc is missing required keyword argument "input"')
+        self.assertEqual(str(cm.exception), '"testfunc" is missing required keyword argument "input"')
 
     def test_typed_kwarg_missing_optional(self) -> None:
         @typed_kwargs(
@@ -1523,7 +1732,7 @@ Thread model: posix'''), '21.9.0')
 
         with self.assertRaises(InvalidArguments) as cm:
             _(None, mock.Mock(), [], {'input': {}})
-        self.assertEqual(str(cm.exception), "testfunc keyword argument 'input' was of type dict[] but should have been array[str]")
+        self.assertEqual(str(cm.exception), '"testfunc" keyword argument "input" was of type "dict[]" but should have been "array[str]"')
 
     def test_typed_kwarg_contained_invalid(self) -> None:
         @typed_kwargs(
@@ -1535,7 +1744,7 @@ Thread model: posix'''), '21.9.0')
 
         with self.assertRaises(InvalidArguments) as cm:
             _(None, mock.Mock(), [], {'input': {'key': 1, 'bar': 2}})
-        self.assertEqual(str(cm.exception), "testfunc keyword argument 'input' was of type dict[int] but should have been dict[str]")
+        self.assertEqual(str(cm.exception), '"testfunc" keyword argument "input" was of type "dict[int]" but should have been "dict[str]"')
 
     def test_typed_kwarg_container_listify(self) -> None:
         @typed_kwargs(
@@ -1570,7 +1779,7 @@ Thread model: posix'''), '21.9.0')
 
         with self.assertRaises(MesonException) as cm:
             _(None, mock.Mock(), [], {'input': ['a']})
-        self.assertEqual(str(cm.exception), "testfunc keyword argument 'input' was of type array[str] but should have been array[str] that has even size")
+        self.assertEqual(str(cm.exception), '"testfunc" keyword argument "input" was of type "array[str]" but should have been "array[str]" that has even size')
 
     def test_typed_kwarg_since(self) -> None:
         @typed_kwargs(
@@ -1618,7 +1827,7 @@ Thread model: posix'''), '21.9.0')
 
         with self.assertRaises(MesonException) as cm:
             _(None, mock.Mock(), tuple(), dict(input='bar'))
-        self.assertEqual(str(cm.exception), "testfunc keyword argument \"input\" invalid!")
+        self.assertEqual(str(cm.exception), "\"testfunc\" keyword argument \"input\" invalid!")
 
     def test_typed_kwarg_convertor(self) -> None:
         @typed_kwargs(
@@ -1652,6 +1861,16 @@ Thread model: posix'''), '21.9.0')
                       deprecated_values={int: '0.8', ContainerTypeInfo(list, int): '0.9'}),
             KwargInfo('tuple', (ContainerTypeInfo(list, (str, int))), default=[], listify=True,
                       since_values={ContainerTypeInfo(list, str): '1.1', ContainerTypeInfo(list, int): '1.2'}),
+            KwargInfo(
+                'types_tuple_since',
+                (bool, int, str, NoneType),
+                since_values={(bool, int): '1.5'},
+            ),
+            KwargInfo(
+                'types_tuple_deprecated',
+                (bool, int, str, NoneType),
+                deprecated_values={(bool, int): '0.9'},
+            ),
         )
         def _(obj, node, args: T.Tuple, kwargs: T.Dict[str, str]) -> None:
             pass
@@ -1682,28 +1901,28 @@ Thread model: posix'''), '21.9.0')
 
         with self.subTest('new string type'), mock.patch('sys.stdout', io.StringIO()) as out:
             _(None, mock.Mock(subproject=''), [], {'foo': 'foo'})
-            self.assertRegex(out.getvalue(), r"""WARNING: Project targets '>= 1.0'.*introduced in '1.1': "testfunc" keyword argument "foo" of type str.*""")
+            self.assertRegex(out.getvalue(), r"""WARNING: Project targets '>= 1.0'.*introduced in '1.1': "testfunc" keyword argument "foo" of type "str".*""")
 
         with self.subTest('new array of string type'), mock.patch('sys.stdout', io.StringIO()) as out:
             _(None, mock.Mock(subproject=''), [], {'foo': ['foo']})
-            self.assertRegex(out.getvalue(), r"""WARNING: Project targets '>= 1.0'.*introduced in '1.2': "testfunc" keyword argument "foo" of type array\[str\].*""")
+            self.assertRegex(out.getvalue(), r"""WARNING: Project targets '>= 1.0'.*introduced in '1.2': "testfunc" keyword argument "foo" of type "array\[str\]".*""")
 
         with self.subTest('new dict of string type'), mock.patch('sys.stdout', io.StringIO()) as out:
             _(None, mock.Mock(subproject=''), [], {'foo': {'plop': 'foo'}})
-            self.assertRegex(out.getvalue(), r"""WARNING: Project targets '>= 1.0'.*introduced in '1.3': "testfunc" keyword argument "foo" of type dict\[str\].*""")
+            self.assertRegex(out.getvalue(), r"""WARNING: Project targets '>= 1.0'.*introduced in '1.3': "testfunc" keyword argument "foo" of type "dict\[str\]".*""")
 
         with self.subTest('deprecated int value'), mock.patch('sys.stdout', io.StringIO()) as out:
             _(None, mock.Mock(subproject=''), [], {'foo': 1})
-            self.assertRegex(out.getvalue(), r"""WARNING:.Project targets '>= 1.0'.*deprecated since '0.8': "testfunc" keyword argument "foo" of type int.*""")
+            self.assertRegex(out.getvalue(), r"""WARNING:.Project targets '>= 1.0'.*deprecated since '0.8': "testfunc" keyword argument "foo" of type "int".*""")
 
         with self.subTest('deprecated array int value'), mock.patch('sys.stdout', io.StringIO()) as out:
             _(None, mock.Mock(subproject=''), [], {'foo': [1]})
-            self.assertRegex(out.getvalue(), r"""WARNING:.Project targets '>= 1.0'.*deprecated since '0.9': "testfunc" keyword argument "foo" of type array\[int\].*""")
+            self.assertRegex(out.getvalue(), r"""WARNING:.Project targets '>= 1.0'.*deprecated since '0.9': "testfunc" keyword argument "foo" of type "array\[int\]".*""")
 
         with self.subTest('new list[str] value'), mock.patch('sys.stdout', io.StringIO()) as out:
             _(None, mock.Mock(subproject=''), [], {'tuple': ['foo', 42]})
-            self.assertRegex(out.getvalue(), r"""WARNING: Project targets '>= 1.0'.*introduced in '1.1': "testfunc" keyword argument "tuple" of type array\[str\].*""")
-            self.assertRegex(out.getvalue(), r"""WARNING: Project targets '>= 1.0'.*introduced in '1.2': "testfunc" keyword argument "tuple" of type array\[int\].*""")
+            self.assertRegex(out.getvalue(), r"""WARNING: Project targets '>= 1.0'.*introduced in '1.1': "testfunc" keyword argument "tuple" of type "array\[str\]".*""")
+            self.assertRegex(out.getvalue(), r"""WARNING: Project targets '>= 1.0'.*introduced in '1.2': "testfunc" keyword argument "tuple" of type "array\[int\]".*""")
 
         with self.subTest('deprecated array string value'), mock.patch('sys.stdout', io.StringIO()) as out:
             _(None, mock.Mock(subproject=''), [], {'input': 'foo'})
@@ -1727,15 +1946,23 @@ Thread model: posix'''), '21.9.0')
 
         with self.subTest('new container'), mock.patch('sys.stdout', io.StringIO()) as out:
             _(None, mock.Mock(subproject=''), [], {'dict': ['a=b']})
-            self.assertRegex(out.getvalue(), r"""WARNING:.Project targets '>= 1.0'.*introduced in '1.9': "testfunc" keyword argument "dict" of type list.*""")
+            self.assertRegex(out.getvalue(), r"""WARNING:.Project targets '>= 1.0'.*introduced in '1.9': "testfunc" keyword argument "dict" of type "list".*""")
 
         with self.subTest('new container set to default'), mock.patch('sys.stdout', io.StringIO()) as out:
             _(None, mock.Mock(subproject=''), [], {'new_dict': {}})
-            self.assertRegex(out.getvalue(), r"""WARNING:.Project targets '>= 1.0'.*introduced in '1.1': "testfunc" keyword argument "new_dict" of type dict.*""")
+            self.assertRegex(out.getvalue(), r"""WARNING:.Project targets '>= 1.0'.*introduced in '1.1': "testfunc" keyword argument "new_dict" of type "dict".*""")
 
         with self.subTest('new container default'), mock.patch('sys.stdout', io.StringIO()) as out:
             _(None, mock.Mock(subproject=''), [], {})
-            self.assertNotRegex(out.getvalue(), r"""WARNING:.Project targets '>= 1.0'.*introduced in '1.1': "testfunc" keyword argument "new_dict" of type dict.*""")
+            self.assertNotRegex(out.getvalue(), r"""WARNING:.Project targets '>= 1.0'.*introduced in '1.1': "testfunc" keyword argument "new_dict" of type "dict".*""")
+
+        with self.subTest('types tuple since'), mock.patch('sys.stdout', io.StringIO()) as out:
+            _(None, mock.Mock(subproject=''), [], {'types_tuple_since': False})
+            self.assertRegex(out.getvalue(), r"""WARNING:.Project targets '>= 1.0'.*introduced in '1.5': "testfunc" keyword argument "types_tuple_since" of type "bool".*""")
+
+        with self.subTest('types tuple deprecated'), mock.patch('sys.stdout', io.StringIO()) as out:
+            _(None, mock.Mock(subproject=''), [], {'types_tuple_deprecated': False})
+            self.assertNotRegex(out.getvalue(), r"""WARNING:.Project targets '>= 1.0'.*introduced in '0.9': "testfunc" keyword argument "types_tuple_deprecated" of type "bool".*""")
 
     def test_typed_kwarg_evolve(self) -> None:
         k = KwargInfo('foo', str, required=True, default='foo')
@@ -2407,3 +2634,14 @@ Thread model: posix'''), '21.9.0')
             with self.subTest(cuda_version=cuda_version, arch_list=arch_list):
                 with self.assertRaisesRegex(InvalidArguments, message):
                     flags(cuda_version, arch_list)
+
+    def test_depfixer_skips_install_name_tool_on_non_darwin(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            fname = os.path.join(tmpdir, 'libfoo.so')
+            with open(fname, 'wb') as f:
+                f.write(b'not an elf file')
+            with mock.patch('mesonbuild.scripts.depfixer.INSTALL_NAME_TOOL', True), \
+                 mock.patch('mesonbuild.scripts.depfixer.fix_darwin') as mock_fix_darwin:
+                mesonbuild.scripts.depfixer.fix_rpath(
+                    fname, set(), '', '', {}, system='linux', verbose=False)
+                mock_fix_darwin.assert_not_called()
