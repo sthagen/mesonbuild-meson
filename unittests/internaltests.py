@@ -33,7 +33,7 @@ from mesonbuild.compilers import Compiler
 from mesonbuild.compilers.c import ClangCCompiler, ClangClCCompiler, GnuCCompiler, VisualStudioCCompiler
 from mesonbuild.compilers.compilers import CompileCheckMode, ManyInOneLinkerOptionStyle
 from mesonbuild.compilers.cpp import VisualStudioCPPCompiler
-from mesonbuild.compilers.d import DmdDCompiler
+from mesonbuild.compilers.d import DmdDCompiler, LLVMDCompiler
 from mesonbuild.compilers.detect import detect_c_compiler
 from mesonbuild.compilers.mixins.visualstudio import MSVCCompiler, ClangClCompiler
 from mesonbuild.linkers import linkers
@@ -53,7 +53,7 @@ from mesonbuild import utils
 
 from run_tests import get_fake_env, get_fake_options
 
-from .helpers import *
+from .helpers import IS_CI, chdir, skipIfNoPkgconfig
 
 class InternalTests(unittest.TestCase):
 
@@ -489,6 +489,23 @@ Thread model: posix'''), '21.9.0')
         self.assertEqual(ClangClCompiler.unix_args_to_native(['-idirafter', 'foo']), ['/clang:-idirafterfoo'])
         self.assertEqual(ClangClCompiler.unix_args_to_native(['-iquote', 'foo']), ['/clang:-iquotefoo'])
 
+    def test_d_unix_args_to_native(self):
+        env = get_fake_env()
+        linker = linkers.GnuBFDDynamicLinker([], env, MachineChoice.HOST, ManyInOneLinkerOptionStyle('-Wl,', ','), [])
+        dmd = DmdDCompiler([], 'fake', MachineChoice.HOST, env, 'arch', linker=linker)
+        ldc = LLVMDCompiler([], 'fake', MachineChoice.HOST, env, 'arch', linker=linker)
+
+        for comp in (dmd, ldc):
+            with self.subTest(compiler=comp.id):
+                self.assertEqual(
+                    comp.unix_args_to_native(['/usr/lib/libfoo.so', 'libbar.so', 'libbaz.a', 'libqux.lib']),
+                    ['-L=/usr/lib/libfoo.so', '-L=libbar.so', '-L=libbaz.a', '-L=libqux.lib']
+                )
+                self.assertEqual(
+                    comp.unix_args_to_native(['-lfoo', '-L/usr/local/lib', '-pthread', '-Wl,-rpath=/foo']),
+                    ['-L=-lfoo', '-L=-L/usr/local/lib', '-L=-rpath=/foo']
+                )
+
     def _fake_msvc_cc(self, cflags='-DCFLAG', ldflags='/SUBSYSTEM:CONSOLE'):
         with mock.patch.dict(os.environ, {'CFLAGS': cflags, 'LDFLAGS': ldflags}):
             env = get_fake_env()
@@ -527,6 +544,18 @@ Thread model: posix'''), '21.9.0')
         self.assertIn('/Fet.exe', args)
         dll_args, _ = cc._sanity_check_compile_args('t.c', 't.dll')
         self.assertIn('/Fet.dll', dll_args)
+
+    def test_sanity_check_args_msvc_compile_only(self):
+        cc = self._fake_msvc_cc()
+        cc.is_cross = True
+        with mock.patch.object(cc.environment, 'has_exe_wrapper', lambda: False):
+            args, largs = cc._sanity_check_compile_args('t.c', 't.exe')
+        # not linking: no linker arguments at all, and the output is an object
+        self.assertEqual(largs, [])
+        self.assertNotIn('/link', args)
+        self.assertNotIn('/SUBSYSTEM:CONSOLE', args)
+        self.assertIn('/Fot.exe', args)
+        self.assertIn(cc.get_compile_only_args()[0], args)
 
     def test_sanity_check_args_gnu(self):
         cc = self._fake_gnu_cc()
@@ -1051,7 +1080,6 @@ Thread model: posix'''), '21.9.0')
             return
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            pkgbin = ExternalProgram('pkg-config', command=['pkg-config'], silent=True)
             env = get_fake_env()
             compiler = detect_c_compiler(env, MachineChoice.HOST)
             env.coredata.compilers.host = {'c': compiler}
@@ -1493,7 +1521,7 @@ Thread model: posix'''), '21.9.0')
     def test_typed_pos_args_types_invalid(self) -> None:
         @typed_pos_args('foo', str, int, bool)
         def _(obj, node, args: T.Tuple[str, int, bool], kwargs) -> None:
-            self.assertTrue(False)  # should not be reachable
+            self.fail('Should not be reachable')
 
         with self.assertRaises(InvalidArguments) as cm:
             _(None, mock.Mock(), ['string', 1.0, False], None)
@@ -1502,7 +1530,7 @@ Thread model: posix'''), '21.9.0')
     def test_typed_pos_args_types_wrong_number(self) -> None:
         @typed_pos_args('foo', str, int, bool)
         def _(obj, node, args: T.Tuple[str, int, bool], kwargs) -> None:
-            self.assertTrue(False)  # should not be reachable
+            self.fail('Should not be reachable')
 
         with self.assertRaises(InvalidArguments) as cm:
             _(None, mock.Mock(), ['string', 1], None)
@@ -1536,7 +1564,7 @@ Thread model: posix'''), '21.9.0')
     def test_typed_pos_args_varargs_invalid(self) -> None:
         @typed_pos_args('foo', str, varargs=str)
         def _(obj, node, args: T.Tuple[str, T.List[str]], kwargs) -> None:
-            self.assertTrue(False)  # should not be reachable
+            self.fail('Should not be reachable')
 
         with self.assertRaises(InvalidArguments) as cm:
             _(None, mock.Mock(), ['string', 'var', 'args', 0], None)
@@ -1545,7 +1573,7 @@ Thread model: posix'''), '21.9.0')
     def test_typed_pos_args_varargs_invalid_multiple_types(self) -> None:
         @typed_pos_args('foo', str, varargs=(str, list))
         def _(obj, node, args: T.Tuple[str, T.List[str]], kwargs) -> None:
-            self.assertTrue(False)  # should not be reachable
+            self.fail('Should not be reachable')
 
         with self.assertRaises(InvalidArguments) as cm:
             _(None, mock.Mock(), ['string', 'var', 'args', 0], None)
@@ -1565,7 +1593,7 @@ Thread model: posix'''), '21.9.0')
     def test_typed_pos_args_max_varargs_exceeded(self) -> None:
         @typed_pos_args('foo', str, varargs=str, max_varargs=1)
         def _(obj, node, args: T.Tuple[str, T.Tuple[str, ...]], kwargs) -> None:
-            self.assertTrue(False)  # should not be reachable
+            self.fail('Should not be reachable')
 
         with self.assertRaises(InvalidArguments) as cm:
             _(None, mock.Mock(), ['string', 'var', 'args'], None)
@@ -1584,7 +1612,7 @@ Thread model: posix'''), '21.9.0')
     def test_typed_pos_args_min_varargs_not_met(self) -> None:
         @typed_pos_args('foo', str, varargs=str, min_varargs=1)
         def _(obj, node, args: T.Tuple[str, T.List[str]], kwargs) -> None:
-            self.assertTrue(False)  # should not be reachable
+            self.fail('Should not be reachable')
 
         with self.assertRaises(InvalidArguments) as cm:
             _(None, mock.Mock(), ['string'], None)
@@ -1593,7 +1621,7 @@ Thread model: posix'''), '21.9.0')
     def test_typed_pos_args_min_and_max_varargs_exceeded(self) -> None:
         @typed_pos_args('foo', str, varargs=str, min_varargs=1, max_varargs=2)
         def _(obj, node, args: T.Tuple[str, T.Tuple[str, ...]], kwargs) -> None:
-            self.assertTrue(False)  # should not be reachable
+            self.fail('Should not be reachable')
 
         with self.assertRaises(InvalidArguments) as cm:
             _(None, mock.Mock(), ['string', 'var', 'args', 'bar'], None)
@@ -1602,7 +1630,7 @@ Thread model: posix'''), '21.9.0')
     def test_typed_pos_args_min_and_max_varargs_not_met(self) -> None:
         @typed_pos_args('foo', str, varargs=str, min_varargs=1, max_varargs=2)
         def _(obj, node, args: T.Tuple[str, T.Tuple[str, ...]], kwargs) -> None:
-            self.assertTrue(False)  # should not be reachable
+            self.fail('Should not be reachable')
 
         with self.assertRaises(InvalidArguments) as cm:
             _(None, mock.Mock(), ['string'], None)
@@ -1611,7 +1639,7 @@ Thread model: posix'''), '21.9.0')
     def test_typed_pos_args_variadic_and_optional(self) -> None:
         @typed_pos_args('foo', str, optargs=[str], varargs=str, min_varargs=0)
         def _(obj, node, args: T.Tuple[str, T.List[str]], kwargs) -> None:
-            self.assertTrue(False)  # should not be reachable
+            self.fail('Should not be reachable')
 
         with self.assertRaises(AssertionError) as cm:
             _(None, mock.Mock(), ['string'], None)
@@ -1622,7 +1650,7 @@ Thread model: posix'''), '21.9.0')
     def test_typed_pos_args_min_optargs_not_met(self) -> None:
         @typed_pos_args('foo', str, str, optargs=[str])
         def _(obj, node, args: T.Tuple[str, T.Optional[str]], kwargs) -> None:
-            self.assertTrue(False)  # should not be reachable
+            self.fail('Should not be reachable')
 
         with self.assertRaises(InvalidArguments) as cm:
             _(None, mock.Mock(), ['string'], None)
@@ -1631,7 +1659,7 @@ Thread model: posix'''), '21.9.0')
     def test_typed_pos_args_min_optargs_max_exceeded(self) -> None:
         @typed_pos_args('foo', str, optargs=[str])
         def _(obj, node, args: T.Tuple[str, T.Optional[str]], kwargs) -> None:
-            self.assertTrue(False)  # should not be reachable
+            self.fail('Should not be reachable')
 
         with self.assertRaises(InvalidArguments) as cm:
             _(None, mock.Mock(), ['string', '1', '2'], None)
@@ -1686,7 +1714,7 @@ Thread model: posix'''), '21.9.0')
             KwargInfo('input', str, required=True),
         )
         def _(obj, node, args: T.Tuple, kwargs: T.Dict[str, str]) -> None:
-            self.assertTrue(False)  # should be unreachable
+            self.fail('Should not be reachable')
 
         with self.assertRaises(InvalidArguments) as cm:
             _(None, mock.Mock(), [], {})
@@ -1728,7 +1756,7 @@ Thread model: posix'''), '21.9.0')
             KwargInfo('input', ContainerTypeInfo(list, str), required=True),
         )
         def _(obj, node, args: T.Tuple, kwargs: T.Dict[str, T.List[str]]) -> None:
-            self.assertTrue(False)  # should be unreachable
+            self.fail('Should not be reachable')
 
         with self.assertRaises(InvalidArguments) as cm:
             _(None, mock.Mock(), [], {'input': {}})
@@ -1740,7 +1768,7 @@ Thread model: posix'''), '21.9.0')
             KwargInfo('input', ContainerTypeInfo(dict, str), required=True),
         )
         def _(obj, node, args: T.Tuple, kwargs: T.Dict[str, T.Dict[str, str]]) -> None:
-            self.assertTrue(False)  # should be unreachable
+            self.fail('Should not be reachable')
 
         with self.assertRaises(InvalidArguments) as cm:
             _(None, mock.Mock(), [], {'input': {'key': 1, 'bar': 2}})
@@ -2645,3 +2673,17 @@ Thread model: posix'''), '21.9.0')
                 mesonbuild.scripts.depfixer.fix_rpath(
                     fname, set(), '', '', {}, system='linux', verbose=False)
                 mock_fix_darwin.assert_not_called()
+
+    def test_is_lib_filename(self) -> None:
+        from mesonbuild.utils.universal import is_lib_filename
+
+        self.assertTrue(is_lib_filename('libfoo.so'))
+        self.assertTrue(is_lib_filename('libfoo.so.1.2.3'))
+        self.assertTrue(is_lib_filename('libfoo.dylib'))
+        self.assertTrue(is_lib_filename('libfoo.a'))
+        self.assertTrue(is_lib_filename('foo.dll'))
+        self.assertTrue(is_lib_filename('foo.lib'))
+
+        self.assertFalse(is_lib_filename('libfoo.so.txt'))
+        self.assertFalse(is_lib_filename('foo.c'))
+        self.assertFalse(is_lib_filename('foo.exe'))

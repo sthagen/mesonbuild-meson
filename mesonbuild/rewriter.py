@@ -10,9 +10,8 @@
 from __future__ import annotations
 
 from .ast import IntrospectionInterpreter, BUILD_TARGET_FUNCTIONS, AstConditionLevel, AstIDGenerator, AstIndentationGenerator, AstPrinter
-from .ast.interpreter import IntrospectionBuildTarget, IntrospectionDependency, _symbol
+from .ast.interpreter import IntrospectionBuildTarget, IntrospectionDependency, IntrospectionFile, _symbol
 from .interpreterbase import UnknownValue
-from .interpreterbase.helpers import flatten
 from mesonbuild.mesonlib import MesonException, pathname_sort_key, relpath, setup_vsenv
 from . import mlog, environment
 from functools import wraps
@@ -35,6 +34,8 @@ if T.TYPE_CHECKING:
 
 class RewriterException(MesonException):
     pass
+
+_T = T.TypeVar('_T')
 
 # Note: when adding arguments, please also add them to the completion
 # scripts in $MESONSRC/data/shell-completions/
@@ -178,31 +179,36 @@ class MTypeID(MTypeBase):
     def supported_nodes(cls) -> T.List[type]:
         return [IdNode]
 
-class MTypeList(MTypeBase):
+class MTypeList(MTypeBase, T.Generic[_T]):
+    # FIXME: incorrect, any node can be passed to __init__
     node: ArrayNode
 
     def __init__(self, node: T.Optional[BaseNode] = None):
         super().__init__(node)
 
     @classmethod
-    def new_node(cls, value: T.Optional[T.List[T.Any]] = None) -> ArrayNode:
+    def new_node(cls, value: T.Union[_T, T.List[_T], None] = None) -> BaseNode:
         if value is None:
-            value = []
-        elif not isinstance(value, list):
-            return cls._new_element_node(value)
+            return cls._new_array_node([])
+        elif isinstance(value, list):
+            return cls._new_array_node(value)
+        return cls._new_element_node(value)
+
+    @classmethod
+    def _new_array_node(cls, value: T.List[_T]) -> ArrayNode:
         args = ArgumentNode(Token('', '', 0, 0, 0, None, ''))
         args.arguments = [cls._new_element_node(i) for i in value]
         return ArrayNode(_symbol('['), args, _symbol(']'))
 
     @classmethod
-    def _new_element_node(cls, value: T.Any) -> BaseNode:
+    def _new_element_node(cls, value: _T) -> BaseNode:
         # Overwrite in derived class
         raise RewriterException('Internal error: _new_element_node of MTypeList was called')
 
     def _ensure_array_node(self) -> None:
-        if not isinstance(self.node, ArrayNode):
+        if not isinstance(T.cast('BaseNode', self.node), ArrayNode):
             tmp = self.node
-            self.node = self.new_node()
+            self.node = self._new_array_node([])
             self.node.args.arguments = [tmp]
 
     @staticmethod
@@ -263,7 +269,7 @@ class MTypeList(MTypeBase):
     def remove_regex(self, regex: str) -> None:
         self._remove_helper(regex, self._check_regex_matches)
 
-class MTypeStrList(MTypeList):
+class MTypeStrList(MTypeList[str]):
     def __init__(self, node: T.Optional[BaseNode] = None):
         super().__init__(node)
 
@@ -287,7 +293,7 @@ class MTypeStrList(MTypeList):
     def supported_element_nodes(cls) -> T.List[T.Type]:
         return [StringNode]
 
-class MTypeIDList(MTypeList):
+class MTypeIDList(MTypeList[str]):
     def __init__(self, node: T.Optional[BaseNode] = None):
         super().__init__(node)
 
@@ -447,7 +453,7 @@ class Rewriter:
             return None
 
     def find_dependency(self, dependency: str) -> T.Optional[IntrospectionDependency]:
-        potential_deps = []
+        potential_deps: T.List[IntrospectionDependency] = []
         for i in self.interpreter.dependencies:
             if i.name == dependency:
                 potential_deps.append(i)
@@ -455,8 +461,10 @@ class Rewriter:
         checking_varnames = len(potential_deps) == 0
 
         if checking_varnames:
-            potential_deps1 = self.all_assignments(dependency)
-            potential_deps = [self.interpreter.node_to_runtime_value(el) for el in potential_deps1 if isinstance(el, FunctionNode) and el.func_name.value == 'dependency']
+            potential_deps1 = [self.interpreter.node_to_runtime_value(el)
+                               for el in self.all_assignments(dependency)
+                               if isinstance(el, FunctionNode) and el.func_name.value == 'dependency']
+            potential_deps = [el for el in potential_deps1 if isinstance(el, IntrospectionDependency)]
 
         if not potential_deps:
             return None
@@ -758,7 +766,6 @@ class Rewriter:
             tgt_function.args.kwargs[extra_files_idnode] = new_extra_files_node
 
         newfiles_relto = self.get_relto(target.node, chosen)
-        old_src_list: T.List[T.Any] = flatten([self.interpreter.node_to_runtime_value(sn) for sn in old])
 
         if op == 'src_add':
             name = 'Source'
@@ -768,7 +775,9 @@ class Rewriter:
         to_append = []
         added = []
 
-        old_src_list = [(target_dir_abs / x).resolve() if isinstance(x, str) else x.to_abs_path(source_root_abs) for x in old_src_list if not isinstance(x, UnknownValue)]
+        old_src_list = [(target_dir_abs / x).resolve() if isinstance(x, str) else x.to_abs_path(source_root_abs)
+                        for x in self.interpreter.flatten_args(list(old))
+                        if isinstance(x, (str, IntrospectionFile))]
         for _newf in sorted(set(newfiles)):
             newf = Path(_newf)
             if os.path.isabs(newf):

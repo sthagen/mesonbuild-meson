@@ -11,7 +11,6 @@ of this is to have mixin's, which are classes that are designed *not* to be
 standalone, they only work through inheritance.
 """
 
-import collections
 import functools
 import glob
 import itertools
@@ -64,7 +63,6 @@ class CLikeCompilerArgs(arglist.CompilerArgs):
     # NOTE: not thorough. A list of potential corner cases can be found in
     # https://github.com/mesonbuild/meson/pull/4593#pullrequestreview-182016038
     dedup1_prefixes = ('-l', '-Wl,-l', '-Wl,-rpath,', '-Wl,-rpath-link,')
-    dedup1_suffixes = ('.lib', '.dll', '.so', '.dylib', '.a')
     dedup1_args = ('-c', '-S', '-E', '-pipe', '-pthread', '-Wl,--export-dynamic')
 
     def to_native(self, copy: bool = False) -> T.List[str]:
@@ -276,12 +274,6 @@ class CLikeCompiler(Compiler):
     def gen_import_library_args(self, implibname: str) -> T.List[str]:
         return self.linker.import_library_args(implibname)
 
-    def _sanity_check_mode(self) -> CompileCheckMode:
-        # Cross-compiling is hard. For example, you might need -nostdlib, or to pass --target, etc.
-        if self.is_cross and not self.environment.has_exe_wrapper():
-            return CompileCheckMode.COMPILE
-        return CompileCheckMode.LINK
-
     def _sanity_check_compile_args(self, sourcename: str, binname: str
                                    ) -> T.Tuple[T.List[str], T.List[str]]:
         # _get_basic_compiler_args() already adds c_args/c_link_args (or
@@ -292,7 +284,7 @@ class CLikeCompiler(Compiler):
         b_cargs, b_largs = self._get_basic_compiler_args(mode)
         cargs = self.exelist_no_ccache + \
             self.get_compiler_check_args(CompileCheckMode.COMPILE) + \
-            self.get_output_args(binname) + \
+            self.get_output_args_for_mode(binname, mode) + \
             [sourcename] + \
             b_cargs
         if mode is CompileCheckMode.COMPILE:
@@ -393,9 +385,6 @@ class CLikeCompiler(Compiler):
 
         if dependencies is None:
             dependencies = []
-        elif not isinstance(dependencies, collections.abc.Iterable):
-            # TODO: we want to ensure the front end does the listifing here
-            dependencies = [dependencies]
         # Collect compiler arguments
         cargs: arglist.CompilerArgs = self.compiler_args()
         largs: T.List[str] = []
@@ -464,7 +453,7 @@ class CLikeCompiler(Compiler):
         # If no bounds are given, compute them in the limit of int32
         maxint = 0x7fffffff
         minint = -0x80000000
-        if not isinstance(low, int) or not isinstance(high, int):
+        if low is None or high is None:
             if self._compile_int(f'{expression} >= 0', prefix, extra_args, dependencies):
                 low = cur = 0
                 while self._compile_int(f'{expression} > {cur}', prefix, extra_args, dependencies):
@@ -1122,6 +1111,9 @@ class CLikeCompiler(Compiler):
     def _find_library_real(self, libname: str, extra_dirs: T.List[str], code: str, libtype: LibType,
                            lib_prefix_warning: bool, ignore_system_dirs: bool,
                            skip_link_check: bool = False) -> T.Optional[T.List[str]]:
+        largs = self.get_allow_undefined_link_args()
+        lcargs = self.linker_to_compiler_args(largs)
+
         # First try if we can just add the library as -l.
         # Gcc + co seem to prefer builtin lib dirs to -L dirs.
         # Only try to find std libs if no extra dirs specified.
@@ -1130,10 +1122,7 @@ class CLikeCompiler(Compiler):
         if ((not extra_dirs and libtype is LibType.PREFER_SHARED) or
                 libname in self.internal_libs):
             cargs = ['-l' + libname]
-            largs = self.get_allow_undefined_link_args()
-            extra_args = cargs + self.linker_to_compiler_args(largs)
-
-            if self.links(code, extra_args=extra_args, disable_cache=True)[0]:
+            if self.links(code, extra_args=cargs + lcargs, disable_cache=True)[0]:
                 return cargs
             # Don't do a manual search for internal libs
             if libname in self.internal_libs:
@@ -1152,8 +1141,6 @@ class CLikeCompiler(Compiler):
         except (mesonlib.MesonException, KeyError): # TODO evaluate if catching KeyError is wanted here
             elf_class = 0
         # Search in the specified dirs, and then in the system libraries
-        largs = self.get_allow_undefined_link_args()
-        lcargs = self.linker_to_compiler_args(largs)
         for d in itertools.chain(extra_dirs, [] if ignore_system_dirs else self.get_library_dirs(elf_class)):
             for p in patterns:
                 trials = self._get_trials_from_pattern(p, d, libname)
@@ -1219,8 +1206,6 @@ class CLikeCompiler(Compiler):
         # These libraries are either built-in or invalid
         if libname in self.ignore_libs:
             return []
-        if isinstance(extra_dirs, str):
-            extra_dirs = [extra_dirs]
         key = (tuple(self.exelist), libname, tuple(extra_dirs), code, libtype, ignore_system_dirs, skip_link_check)
         if key not in self.find_library_cache:
             value = self._find_library_real(libname, extra_dirs, code, libtype, lib_prefix_warning, ignore_system_dirs, skip_link_check)
@@ -1279,8 +1264,6 @@ class CLikeCompiler(Compiler):
 
     def _find_framework_impl(self, name: str, extra_dirs: T.List[str],
                              allow_system: bool) -> T.Optional[T.List[str]]:
-        if isinstance(extra_dirs, str):
-            extra_dirs = [extra_dirs]
         key = (tuple(self.exelist), name, tuple(extra_dirs), allow_system)
         if key in self.find_framework_cache:
             value = self.find_framework_cache[key]

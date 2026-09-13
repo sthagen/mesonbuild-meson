@@ -99,11 +99,6 @@ def _install_mode_validator(mode: T.List[T.Union[str, bool, int]]) -> T.Optional
         if perms[8] not in {'-', 'x', 't', 'T'}:
             return f'permission character 9 must be "-", "t", "T", or "x", not {perms[8]}'
 
-        if len(mode) >= 2 and not isinstance(mode[1], (int, str, bool)):
-            return 'second component can only be a string, number, or False'
-        if len(mode) >= 3 and not isinstance(mode[2], (int, str, bool)):
-            return 'third component can only be a string, number, or False'
-
     return None
 
 
@@ -201,8 +196,8 @@ REQUIRED_KW: KwargInfo[T.Union[bool, Feature]] = KwargInfo(
 
 DISABLER_KW: KwargInfo[bool] = KwargInfo('disabler', bool, default=False)
 
-def _env_validator(value: T.Union[EnvironmentVariables, T.List['TYPE_var'], T.Dict[str, 'TYPE_var'], str, None],
-                   only_dict_str: bool = True) -> T.Optional[str]:
+def env_validator(value: T.Union[EnvironmentVariables, T.List['TYPE_var'], T.Dict[str, 'TYPE_var'], str, None],
+                  only_dict_str: bool = True) -> T.Optional[str]:
     def _splitter(v: str) -> T.Optional[str]:
         split = v.split('=', 1)
         if len(split) == 1:
@@ -237,7 +232,7 @@ def _env_validator(value: T.Union[EnvironmentVariables, T.List['TYPE_var'], T.Di
 
 def _options_validator(value: T.Union[EnvironmentVariables, T.List['TYPE_var'], T.Dict[str, 'TYPE_var'], str, None]) -> T.Optional[str]:
     # Reusing the env validator is a little overkill, but nicer than duplicating the code
-    return _env_validator(value, only_dict_str=False)
+    return env_validator(value, only_dict_str=False)
 
 def split_equal_string(input: str) -> T.Tuple[str, str]:
     """Split a string in the form `x=y`
@@ -247,11 +242,9 @@ def split_equal_string(input: str) -> T.Tuple[str, str]:
     a, b = input.split('=', 1)
     return (a, b)
 
-# Split _env_convertor() and env_convertor_with_method() to make mypy happy.
-# It does not want extra arguments in KwargInfo convertor callable.
-def env_convertor_with_method(value: FullEnvInitValueType,
-                              init_method: Literal['set', 'prepend', 'append'] = 'set',
-                              separator: str = os.pathsep) -> EnvironmentVariables:
+def env_convertor(value: FullEnvInitValueType,
+                  init_method: Literal['set', 'prepend', 'append'] = 'set',
+                  separator: str = os.pathsep) -> EnvironmentVariables:
     if isinstance(value, str):
         return EnvironmentVariables(dict([split_equal_string(value)]), init_method, separator)
     elif isinstance(value, list):
@@ -262,14 +255,11 @@ def env_convertor_with_method(value: FullEnvInitValueType,
         return EnvironmentVariables()
     return value
 
-def _env_convertor(value: FullEnvInitValueType) -> EnvironmentVariables:
-    return env_convertor_with_method(value)
-
 ENV_KW: KwargInfo[T.Union[EnvironmentVariables, T.List, T.Dict, str, None]] = KwargInfo(
     'env',
     (EnvironmentVariables, list, dict, str, NoneType),
-    validator=_env_validator,
-    convertor=_env_convertor,
+    validator=env_validator,
+    convertor=env_convertor,
 )
 
 DEPFILE_KW: KwargInfo[T.Optional[str]] = KwargInfo(
@@ -618,7 +608,7 @@ BUILD_SUBDIR_KW: KwargInfo[str] = KwargInfo(
     since='1.10.0'
 )
 
-def _objects_validator(vals: T.List[ObjectTypes]) -> T.Optional[str]:
+def _objects_validator(vals: T.List[ObjectTypes | GeneratedTypes]) -> T.Optional[str]:
     non_objects: T.List[str] = []
 
     for val in vals:
@@ -1013,7 +1003,7 @@ SHARED_MOD_KWS = [
 _EXCLUSIVE_JAR_KWS: T.List[KwargInfo] = [
     KwargInfo('main_class', str, default=''),
     KwargInfo('java_resources', (StructuredSources, NoneType), since='0.62.0'),
-    _JAVA_LANG_KW.evolve(deprecated=None, deprecated_message=None),
+    _JAVA_LANG_KW.evolve(deprecated=None),
 ]
 
 # The total list of arguments used by JAR

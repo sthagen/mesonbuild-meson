@@ -24,19 +24,17 @@ TV_func = T.TypeVar('TV_func', bound=T.Callable[..., T.Any])
 
 TYPE_elementary: TypeAlias = T.Union[str, int, bool, T.Sequence['TYPE_elementary'], T.Dict[str, 'TYPE_elementary']]
 TYPE_var: TypeAlias = T.Union[TYPE_elementary, HoldableObject, 'MesonInterpreterObject', T.Sequence['TYPE_var'], T.Dict[str, 'TYPE_var']]
-TYPE_nvar = T.Union[TYPE_var, mparser.BaseNode]
 TYPE_kwargs = T.Dict[str, TYPE_var]
-TYPE_nkwargs = T.Dict[str, TYPE_nvar]
 TYPE_key_resolver = T.Callable[[mparser.BaseNode], str]
 TYPE_op_arg = T.TypeVar('TYPE_op_arg', bound='TYPE_var', contravariant=True)
 TYPE_op_func = T.Callable[[TYPE_op_arg, TYPE_op_arg], TYPE_var]
-TYPE_method_func = T.Callable[['InterpreterObject', T.List[TYPE_var], TYPE_kwargs], TYPE_var]
+TYPE_method_func = T.Callable[['InterpreterObject', T.List[TYPE_var], TYPE_kwargs], TYPE_var | None]
 
 class InterpreterObject:
     TRIVIAL_OPERATORS: T.Dict[
         MesonOperator,
         T.Tuple[
-            T.Union[T.Type, T.Tuple[T.Type, ...]],
+            T.Type | T.Tuple[T.Type, ...] | None,
             TYPE_op_func
         ]
     ] = {}
@@ -101,7 +99,7 @@ class InterpreterObject:
     def __init__(self, *, subproject: T.Optional['SubProject'] = None) -> None:
         # Current node set during a method call. This can be used as location
         # when printing a warning message during a method call.
-        self.current_node:  mparser.BaseNode = None
+        self.current_node: mparser.BaseNode | None = None
         self.subproject = subproject or ROOT_SUBPROJECT
 
     # The type of the object that can be printed to the user
@@ -113,7 +111,7 @@ class InterpreterObject:
                 method_name: str,
                 args: T.List[TYPE_var],
                 kwargs: TYPE_kwargs
-            ) -> TYPE_var:
+            ) -> TYPE_var | None:
         if method_name in self.METHODS:
             method = self.METHODS[method_name]
             if not getattr(method, 'no-args-flattening', False):

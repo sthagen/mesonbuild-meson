@@ -99,15 +99,13 @@ class HotdocTargetBuilder:
             argname = option.strip("-").replace("-", "_")
 
         value = self.kwargs.pop(argname)  # type: ignore[misc]
-        if value is not None and value_processor:
+        if value is None:
+            return
+        if value_processor:
             value = value_processor(value)
-
         self.set_arg_value(option, value)
 
     def set_arg_value(self, option: str, value: TYPE_var) -> None:
-        if value is None:
-            return
-
         if isinstance(value, bool):
             if value:
                 self.cmd.append(option)
@@ -283,7 +281,7 @@ class HotdocTargetBuilder:
             if arg in self.kwargs:
                 raise InvalidArguments(f'Argument "{arg}" is forbidden.')
 
-    def make_targets(self) -> T.Tuple[HotdocTarget, mesonlib.ExecutableSerialisation]:
+    def make_targets(self) -> T.Tuple[HotdocTarget, mesonlib.ExecutableSerialisation | None]:
         self.check_forbidden_args()
         self.process_known_arg("--index", value_processor=self.ensure_file)
         self.process_known_arg("--project-version")

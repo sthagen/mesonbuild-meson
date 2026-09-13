@@ -47,19 +47,25 @@ known_cpu_families = (
     'csky',
     'dspic',
     'e2k',
+    'f8',
     'ft32',
+    'hc08',
     'ia64',
     'loongarch64',
     'm68k',
+    'mcs51',
     'microblaze',
     'mips',
     'mips64',
+    'mos6502',
     'msp430',
+    'padauk',
     'parisc',
     'pic24',
     'pic32',
     'ppc',
     'ppc64',
+    'rabbit',
     'riscv32',
     'riscv64',
     'rl78',
@@ -67,13 +73,17 @@ known_cpu_families = (
     's390',
     's390x',
     'sh4',
+    'sm83',
     'sparc',
     'sparc64',
+    'stm8',
     'sw_64',
+    'tlcs90',
     'wasm32',
     'wasm64',
     'x86',
     'x86_64',
+    'z80',
     'tricore'
 )
 
@@ -283,8 +293,8 @@ class Properties:
 @dataclass(unsafe_hash=True)
 class MachineInfo(HoldableObject):
     system: str
-    cpu_family: str | None
-    cpu: str | None
+    cpu_family: str
+    cpu: str
     endian: str
     kernel: T.Optional[str]
     subsystem: T.Optional[str]
@@ -770,16 +780,16 @@ def detect_msys2_arch() -> T.Optional[str]:
 def detect_machine_info(compilers: T.Optional[CompilerDict] = None) -> MachineInfo:
     """Detect the machine we're running on
 
-    If compilers are not provided, we cannot know as much. None out those
-    fields to avoid accidentally depending on partial knowledge. The
+    If compilers are not provided, we cannot know as much. Write a dummy
+    value to avoid accidentally depending on partial knowledge. The
     underlying ''detect_*'' method can be called to explicitly use the
     partial information.
     """
     system = detect_system()
     return MachineInfo(
         system,
-        detect_cpu_family(compilers) if compilers is not None else None,
-        detect_cpu(compilers) if compilers is not None else None,
+        detect_cpu_family(compilers) if compilers is not None else 'unknown',
+        detect_cpu(compilers) if compilers is not None else 'unknown',
         sys.byteorder,
         detect_kernel(system),
         detect_subsystem(system))

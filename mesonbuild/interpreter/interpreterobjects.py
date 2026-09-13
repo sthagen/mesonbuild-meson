@@ -35,7 +35,7 @@ if T.TYPE_CHECKING:
     from ..cmake.interpreter import CMakeInterpreter
     from ..dependencies.base import IncludeType
     from ..envconfig import MachineInfo
-    from ..interpreterbase import FeatureCheckBase, TYPE_var, TYPE_kwargs, TYPE_nvar, TYPE_nkwargs
+    from ..interpreterbase import FeatureCheckBase, TYPE_var, TYPE_kwargs
     from ..mesonlib import SubProject
     from .interpreter import Interpreter
 
@@ -560,7 +560,7 @@ class DependencyHolder(ObjectHolder[Dependency]):
     @noPosargs
     @typed_kwargs('dependency.partial_dependency', *_PARTIAL_DEP_KWARGS)
     @InterpreterObject.method('partial_dependency')
-    def partial_dependency_method(self, args: T.List[TYPE_nvar], kwargs: 'kwargs.DependencyMethodPartialDependency') -> Dependency:
+    def partial_dependency_method(self, args: T.List[TYPE_var], kwargs: 'kwargs.DependencyMethodPartialDependency') -> Dependency:
         pdep = self.held_object.get_partial_dependency(**kwargs)
         return pdep
 
@@ -733,7 +733,7 @@ class ExternalLibraryHolder(ObjectHolder[ExternalLibrary]):
     @noPosargs
     @typed_kwargs('dependency.partial_dependency', *_PARTIAL_DEP_KWARGS)
     @InterpreterObject.method('partial_dependency')
-    def partial_dependency_method(self, args: T.List[TYPE_nvar], kwargs: 'kwargs.DependencyMethodPartialDependency') -> Dependency:
+    def partial_dependency_method(self, args: T.List[TYPE_var], kwargs: 'kwargs.DependencyMethodPartialDependency') -> Dependency:
         pdep = self.held_object.get_partial_dependency(**kwargs)
         return pdep
 
@@ -937,7 +937,7 @@ class SubprojectHolder(MesonInterpreterObject):
         return self.get_variable(args, kwargs)
 
 class ModuleObjectHolder(ObjectHolder[ModuleObject]):
-    def method_call(self, method_name: str, args: T.List[TYPE_var], kwargs: TYPE_kwargs) -> TYPE_var:
+    def method_call(self, method_name: str, args: T.List[TYPE_var], kwargs: TYPE_kwargs) -> TYPE_var | None:
         modobj = self.held_object
         method = modobj.methods.get(method_name)
         if not method:
@@ -1033,7 +1033,7 @@ class BuildTargetHolder(ObjectHolder[_BuildTarget]):
     @noKwargs
     @typed_pos_args('extract_objects', varargs=(mesonlib.File, str, build.CustomTarget, build.CustomTargetIndex, build.GeneratedList))
     @InterpreterObject.method('extract_objects')
-    def extract_objects_method(self, args: T.Tuple[T.List[str | build.TargetSources]], kwargs: TYPE_nkwargs) -> build.ExtractedObjects:
+    def extract_objects_method(self, args: T.Tuple[T.List[str | build.TargetSources]], kwargs: TYPE_kwargs) -> build.ExtractedObjects:
         if self.subproject != self.held_object.subproject:
             raise InterpreterException('Tried to extract objects from a different subproject.')
         tobj = self._target_object
@@ -1066,7 +1066,7 @@ class BuildTargetHolder(ObjectHolder[_BuildTarget]):
         )
     )
     @InterpreterObject.method('extract_all_objects')
-    def extract_all_objects_method(self, args: T.List[TYPE_nvar], kwargs: 'kwargs.BuildTargeMethodExtractAllObjects') -> build.ExtractedObjects:
+    def extract_all_objects_method(self, args: T.List[TYPE_var], kwargs: 'kwargs.BuildTargeMethodExtractAllObjects') -> build.ExtractedObjects:
         return self._target_object.extract_all_objects(kwargs['recursive'])
 
     @noPosargs
@@ -1198,7 +1198,6 @@ class _CustomTargetHolder(ObjectHolder[_CT]):
     def to_list_method(self, args: T.List[TYPE_var], kwargs: TYPE_kwargs) -> T.List[build.CustomTargetIndex]:
         return list(self.held_object)
 
-    @noKwargs
     @typed_operator(MesonOperator.INDEX, int)
     @InterpreterObject.operator(MesonOperator.INDEX)
     def op_index(self, other: int) -> build.CustomTargetIndex:

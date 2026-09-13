@@ -98,7 +98,8 @@ from .type_checking import (
     TEST_KWS,
     NoneType,
     in_set_validator,
-    env_convertor_with_method
+    env_convertor,
+    env_validator,
 )
 from . import primitives as P_OBJ
 
@@ -3226,13 +3227,13 @@ class Interpreter(InterpreterBase, HoldableObject):
         init = args[0]
         if init is not None:
             FeatureNew.single_use('environment positional arguments', '0.52.0', self.subproject, location=node)
-            msg = ENV_KW.validator(init)
+            msg = env_validator(init)
             if msg:
                 raise InvalidArguments(f'"environment": {msg}')
             if isinstance(init, dict) and any(i for i in init.values() if isinstance(i, list)):
                 FeatureNew.single_use('List of string in dictionary value', '0.62.0', self.subproject, location=node)
             # the validator call above ensured that we have the correct type
-            return env_convertor_with_method(T.cast('FullEnvInitValueType', init), kwargs['method'], kwargs['separator'])
+            return env_convertor(T.cast('FullEnvInitValueType', init), kwargs['method'], kwargs['separator'])
         return EnvironmentVariables()
 
     @typed_pos_args('join_paths', varargs=str, min_varargs=1)
@@ -4030,9 +4031,7 @@ class Interpreter(InterpreterBase, HoldableObject):
                 outputs: T.Set[str] = set()
                 for f in v:
                     o: T.List[str]
-                    if isinstance(f, str):
-                        o = [os.path.basename(f)]
-                    elif isinstance(f, mesonlib.File):
+                    if isinstance(f, mesonlib.File):
                         o = [f.fname]
                     else:
                         o = f.get_outputs()
@@ -4045,6 +4044,7 @@ class Interpreter(InterpreterBase, HoldableObject):
 
         if targetclass is not build.Jar:
             self.check_for_jar_sources(sources, targetclass)
+            self.check_for_jar_link_with(kwargs.get('link_with', []), targetclass)
 
         target: build.BuildTarget
         if targetclass is build.Executable:
@@ -4097,6 +4097,12 @@ class Interpreter(InterpreterBase, HoldableObject):
                 self.check_for_jar_sources(s.as_list(), targetclass)
             elif isinstance(s, (build.GeneratedList, build.CustomTarget, build.CustomTargetIndex)):
                 self.check_for_jar_sources(s.get_outputs(), targetclass)
+
+    def check_for_jar_link_with(self, link_with: T.Sequence[object], targetclass: T.Type[build.BuildTarget]) -> None:
+        for t in link_with:
+            if isinstance(t, build.Jar):
+                raise InvalidArguments(f'Build target of type "{targetclass.typename}" cannot link with jar target "{t.name}". '
+                                       f'Jar targets can only be linked into other jar targets.')
 
     def is_subproject(self) -> bool:
         return self.subproject != ''

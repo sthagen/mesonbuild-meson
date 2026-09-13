@@ -1226,7 +1226,7 @@ class Vs2010Backend(backends.Backend):
                                                platform: str,
                                                target_ext: str,
                                                vslite_ctx: _VSLITE_CTX,
-                                               target: build.AnyTargetType,
+                                               target: build.Target,
                                                proj_to_build_root: str,
                                                primary_src_lang: T.Optional[Language]) -> None:
         ET.SubElement(root, 'ImportGroup', Label='ExtensionSettings')
@@ -1578,7 +1578,7 @@ class Vs2010Backend(backends.Backend):
     # once a build/compile has generated these sources.
     #
     # This modifies the paths in 'gen_files' in place, as opposed to returning a new list of modified paths.
-    def relocate_generated_file_paths_to_concrete_build_dir(self, gen_files: T.List[str], target: build.AnyTargetType) -> None:
+    def relocate_generated_file_paths_to_concrete_build_dir(self, gen_files: T.List[str], target: build.BuildTarget) -> None:
         (_, build_dir_tail) = os.path.split(self.src_to_build)
         meson_build_dir_for_buildtype = build_dir_tail[:-2] + coredata.get_genvs_default_buildtype_list()[0] # Get the first buildtype suffixed dir (i.e. '[builddir]_debug') from '[builddir]_vs'
         # Relative path from this .vcxproj to the directory containing the set of '..._[debug/debugoptimized/release]' setup meson build dirs.
@@ -2125,7 +2125,8 @@ class Vs2010Backend(backends.Backend):
         i = 0
         file = prefix
         while os.path.exists(file):
-            file = '%s%d' % (prefix, i)
+            file = f'{prefix}{i}'
+            i += 1
         return file
 
     def generate_debug_information(self, link: ET.Element) -> None:
@@ -2169,19 +2170,10 @@ class Vs2010Backend(backends.Backend):
     #
     # For now, assume it's the native ones. (same behavior as ninja backend)
     def get_masm_type(self, target: build.BuildTarget) -> T.Literal['marmasm', 'masm'] | None:
-        if not isinstance(target, build.BuildTarget):
-            return None
-
         if 'masm' not in target.compilers:
             return None
 
-        if target.for_machine == MachineChoice.BUILD:
-            platform = self.build_platform
-        elif target.for_machine == MachineChoice.HOST:
-            platform = self.platform
-        else:
-            return None
-
+        platform = self.build_platform if target.for_machine is MachineChoice.BUILD else self.platform
         if platform in {'ARM', 'arm64', 'arm64ec'}:
             return 'marmasm'
         else:

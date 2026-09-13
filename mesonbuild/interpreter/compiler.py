@@ -79,7 +79,7 @@ if T.TYPE_CHECKING:
 
         disabler: bool
         has_headers: T.List[str]
-        static: bool
+        static: bool | None
 
         # This list must be all of the `HeaderKW` values with `header_`
         # prepended to the key
@@ -153,12 +153,16 @@ _DEPENDS_KW: KwargInfo[T.List[build.BuildTargetTypes]] = KwargInfo(
     listify=True,
     default=[],
 )
+
+def _prefix_convertor(x: T.List[str] | str) -> str:
+    return '\n'.join(x) if isinstance(x, list) else x
+
 _PREFIX_KW: KwargInfo[str] = KwargInfo(
     'prefix',
     (str, ContainerTypeInfo(list, str)),
     default='',
     since_values={list: '1.0.0'},
-    convertor=lambda x: '\n'.join(x) if isinstance(x, list) else x)
+    convertor=_prefix_convertor)
 
 _NO_BUILTIN_ARGS_KW = KwargInfo('no_builtin_args', bool, default=False)
 _NAME_KW = KwargInfo('name', str, default='')
@@ -703,7 +707,9 @@ class CompilerHolder(ObjectHolder['Compiler']):
             libtype = mesonlib.LibType.STATIC
         elif kwargs['static'] is False:
             libtype = mesonlib.LibType.SHARED
-        elif prefer_static:
+        # kwargs['static']'s "| None" is invisible until this module is compiled
+        # with strict_optional.
+        elif prefer_static: # type: ignore[unreachable]
             libtype = mesonlib.LibType.PREFER_STATIC
         else:
             libtype = mesonlib.LibType.PREFER_SHARED

@@ -49,7 +49,7 @@ if T.TYPE_CHECKING:
         profile: bool
         quiet: bool
         wd: str
-        destdir: str
+        destdir: str | None
         dry_run: bool
         skip_subprojects: str
         tags: str
@@ -419,8 +419,8 @@ class Installer:
         # allow overwriting a previous install. If the target is not a file, we
         # want to give a readable error.
         if os.path.exists(to_file):
-            if not os.path.isfile(to_file):
-                raise MesonException(f'Destination {to_file!r} already exists and is not a file')
+            if not os.path.isfile(to_file) and not os.path.islink(to_file):
+                raise MesonException(f'Destination {to_file!r} already exists and is not a file or a link')
             if self.should_preserve_existing_file(from_file, to_file):
                 append_to_log(self.lf, f'# Preserving old file {to_file}\n')
                 self.preserved_file_count += 1
@@ -507,13 +507,13 @@ class Installer:
             exclude_dirs = {os.path.normpath(x) for x in exclude_dirs}
         else:
             exclude_files = exclude_dirs = set()
-        for root, dirs, files in os.walk(src_dir):
+        for root, dirs, files in os.walk(src_dir, followlinks=bool(follow_symlinks)):
             assert os.path.isabs(root)
             for d in dirs[:]:
                 abs_src = os.path.join(root, d)
                 filepart = os.path.relpath(abs_src, start=src_dir)
                 abs_dst = os.path.join(dst_dir, filepart)
-                if os.path.islink(abs_src):
+                if not follow_symlinks and os.path.islink(abs_src):
                     files.append(d)
                     continue
                 # Remove these so they aren't visited by os.walk at all.

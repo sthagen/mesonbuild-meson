@@ -25,10 +25,10 @@ from .. import programs
 from .. import mesonlib
 from .. import mlog
 from .. import compilers
-from ..compilers import detect, lang_suffixes
+from ..compilers import detect
 from ..mesonlib import (
     File, MachineChoice, MesonException, MesonBugException, OrderedSet,
-    ExecutableSerialisation, EnvironmentException, FileMode, InstallScriptFailure,
+    ExecutableSerialisation, FileMode, InstallScriptFailure,
     classify_unity_sources, get_compiler_for_source,
     get_rsp_threshold, unique_list
 )
@@ -207,7 +207,7 @@ class TestSerialisation:
     needs_exe_wrapper: bool
     is_parallel: bool
     cmd_args: T.List[str]
-    env: mesonlib.EnvironmentVariables
+    env: T.Optional[mesonlib.EnvironmentVariables]
     expected_fail: bool
     expected_exitcode: T.Optional[int]
     timeout: T.Optional[int]
@@ -561,9 +561,6 @@ class Backend:
                     add_dependency(nested)
 
         for target in targets.values():
-            if isinstance(target, build.CustomTargetIndex):
-                # Just transfer it to the CustomTarget code.
-                target = target.target
             if isinstance(target, build.CustomTarget):
                 for dep in target.get_target_dependencies():
                     add_dependency(dep)
@@ -943,17 +940,7 @@ class Backend:
             else:
                 gen_source = os.path.relpath(os.path.join(build_dir, rel_src),
                                              os.path.join(self.environment.get_source_dir(), target.get_subdir()))
-        machine = self.environment.machines[target.for_machine]
-        object_suffix = machine.get_object_suffix()
-        # For the TASKING compiler, in case of LTO or prelinking the object suffix has to be .mil
-        if compiler.get_id() == 'tasking':
-            use_lto = self.get_target_option(target, 'b_lto')
-            if use_lto or (isinstance(target, build.StaticLibrary) and target.prelink):
-                if not source.rsplit('.', 1)[1] in lang_suffixes['c']:
-                    if isinstance(target, build.StaticLibrary) and not target.prelink:
-                        raise EnvironmentException('Tried using MIL linking for a static library with a assembly file. This can only be done if the static library is prelinked or disable \'b_lto\'.')
-                else:
-                    object_suffix = 'mil'
+        object_suffix = compiler.get_object_suffix(target, source.fname)
         ret = self.canonicalize_filename(gen_source) + '.' + object_suffix
         if targetdir is not None:
             return os.path.join(targetdir, ret)
@@ -1591,9 +1578,7 @@ class Backend:
         for i in target.get_sources():
             if isinstance(i, build.LocalProgram):
                 i = i.program
-            if isinstance(i, str):
-                fname = [os.path.join(self.build_to_src, target.subdir, i)]
-            elif isinstance(i, build.BuildTarget):
+            if isinstance(i, build.BuildTarget):
                 fname = [self.get_target_filename(i)]
             elif isinstance(i, (build.CustomTarget, build.CustomTargetIndex)):
                 fname = [os.path.join(self.get_custom_target_output_dir(i), p) for p in i.get_outputs()]
@@ -1699,7 +1684,7 @@ class Backend:
             if isinstance(i, build.BuildTarget):
                 cmd += self.build_target_to_cmd_array(i)
                 continue
-            elif isinstance(i, build.CustomTarget):
+            elif isinstance(i, (build.CustomTarget, build.CustomTargetIndex)):
                 # GIR scanner will attempt to execute this binary but
                 # it assumes that it is in path, so always give it a full path.
                 tmp = i.get_outputs()[0]
@@ -2141,7 +2126,7 @@ class Backend:
                         compiler += [k.absolute_path(self.source_dir, self.build_dir)]
                     elif isinstance(k, str):
                         compiler += [k]
-                    elif isinstance(k, (build.BuildTarget, build.CustomTarget)):
+                    elif isinstance(k, (build.BuildTarget, build.CustomTarget, build.CustomTargetIndex)):
                         compiler += k.get_outputs()
                     elif isinstance(k, programs.Program):
                         compiler += k.get_command()

@@ -991,8 +991,8 @@ class BuildTarget(Target):
         # we have to call process_compilers() first and we need to process libraries
         # from link_with and link_whole first.
         # See https://github.com/mesonbuild/meson/pull/11957#issuecomment-1629243208.
-        link_targets = self._extract_link_with(kwargs)
-        link_whole_targets = self._extract_link_whole(kwargs)
+        link_targets = self._extract_link_with(kwargs.get('link_with', []))
+        link_whole_targets = self._extract_link_whole(kwargs.get('link_whole', []))
         self.link_targets.clear()
         self.link_whole_targets.clear()
         self.link(link_targets)
@@ -1815,20 +1815,23 @@ class BuildTarget(Target):
         assert isinstance(bl_type, str), 'for mypy'
         return T.cast('_LibraryType', bl_type)
 
-    def _extract_link_with(self, kwargs: BuildTargetKeywordArguments) -> list[LinkableTargetTypes]:
+    def _extract_link_with(self, link_with: list[LinkableTargetTypes]) -> list[LinkableTargetTypes]:
         bl_type = self._default_library_type()
 
         lib_list: list[LinkableTargetTypes] = []
-        for lib in itertools.chain(kwargs.get('link_with', []), self.link_targets):
+        for lib in itertools.chain(link_with, self.link_targets):
             if isinstance(lib, (CustomTarget, CustomTargetIndex)):
                 lib_list.append(lib)
+            elif isinstance(lib, Jar):
+                raise MesonBugException(f'Build target of type "{self.typename}" cannot link with jar target "{lib.name}". '
+                                        f'Jar targets can only be linked into other jar targets.')
             else:
                 lib_list.append(lib.get(bl_type))
         return lib_list
 
-    def _extract_link_whole(self, kwargs: BuildTargetKeywordArguments) -> list[StaticTargetTypes]:
+    def _extract_link_whole(self, link_whole: list[StaticTargetTypes]) -> list[StaticTargetTypes]:
         lib_list: list[StaticTargetTypes] = []
-        for lib in itertools.chain(kwargs.get('link_whole', []), self.link_whole_targets):
+        for lib in itertools.chain(link_whole, self.link_whole_targets):
             if isinstance(lib, BothLibraries):
                 lib = lib.get('static')
                 if not isinstance(lib, StaticLibrary):
@@ -2242,6 +2245,8 @@ class Executable(BuildTarget, LinkableTarget):
                 self.suffix = 'nef'
             elif ('c' in self.compilers and self.compilers['c'].get_id() == 'tasking'):
                 self.suffix = 'elf'
+            elif ('c' in self.compilers and self.compilers['c'].get_id() == 'sdcc'):
+                self.suffix = 'ihx'
             else:
                 self.suffix = machine.get_exe_suffix()
         self.filename = self.name
@@ -2406,6 +2411,8 @@ class StaticLibrary(BuildTarget, LinkableTarget):
                 elif self.rust_crate_type == 'staticlib':
                     suffix = 'a'
             elif self.environment.machines[self.for_machine].is_os2() and self.environment.coredata.optstore.get_value_for(OptionKey('os2_emxomf')):
+                suffix = 'lib'
+            elif 'c' in self.compilers and self.compilers['c'].get_id() == 'sdcc':
                 suffix = 'lib'
             else:
                 suffix = 'a'
@@ -2892,19 +2899,18 @@ class BothLibraries(SecondLevelHolder, LinkableTarget):
 
 
 def flatten_command(cmd: T.Iterable[CommandTypes],
-                    subproject: SubProject) -> tuple[list[str | File | BuildTarget | CustomTarget | programs.Program],
+                    subproject: SubProject) -> tuple[list[CommandTypes],
                                                      list[File], list[BuildTarget | CustomTarget]]:
-    final_cmd: list[str | File | programs.Program | BuildTarget | CustomTarget] = []
+    final_cmd: list[CommandTypes] = []
     depend_files: list[File] = []
     dependencies: list[BuildTarget | CustomTarget] = []
     for c in cmd:
         if isinstance(c, LocalProgram):
             c = c.program
         if isinstance(c, str):
-            final_cmd.append(c)
+            pass
         elif isinstance(c, File):
             depend_files.append(c)
-            final_cmd.append(c)
         elif isinstance(c, programs.Program):
             if not c.found():
                 raise InvalidArguments('Tried to use not-found external program in "command"')
@@ -2914,26 +2920,15 @@ def flatten_command(cmd: T.Iterable[CommandTypes],
                 # Can only add a dependency on an external program which we
                 # know the absolute path of
                 depend_files.append(File.from_absolute_file(path))
-            # Do NOT flatten -- it is needed for later parsing
-            final_cmd.append(c)
+            # Add c, not path -- it is needed for later parsing
         elif isinstance(c, (BuildTarget, CustomTarget)):
             dependencies.append(c)
-            final_cmd.append(c)
         elif isinstance(c, CustomTargetIndex):
             FeatureNew.single_use('CustomTargetIndex for command argument', '0.60', subproject)
             dependencies.append(c.target)
-            c, df, d = flatten_command([File.from_built_file(c.get_subdir(), c.get_filename())], subproject)
-            final_cmd.extend(c)
-            depend_files.extend(df)
-            dependencies.extend(d)
-        elif isinstance(c, list):
-            # TODO: is this case even reachable?
-            c, df, d = flatten_command(c, subproject)
-            final_cmd.extend(c)
-            depend_files.extend(df)
-            dependencies.extend(d)
         else:
-            raise InvalidArguments(f'Argument {c!r} in "command" is invalid')
+            raise MesonBugException(f'Argument {c!r} in "command" is invalid')
+        final_cmd.append(c)
     return final_cmd, depend_files, dependencies
 
 
@@ -3266,7 +3261,7 @@ class RunTarget(Target):
     def __init__(self, name: str,
                  command: T.Sequence[CommandTypes],
                  # the RunTarget case is used by gnome.yelp()
-                 dependencies: T.Sequence[Target | CustomTargetIndex | GeneratedList | programs.Program],
+                 dependencies: T.Sequence[AnyTargetType | programs.Program],
                  subdir: str,
                  environment: Environment,
                  build_project: BuildProject,
@@ -3285,7 +3280,7 @@ class RunTarget(Target):
         repr_str = "<{0} {1}: {2}>"
         return repr_str.format(self.__class__.__name__, self.get_id(), self.command[0])
 
-    def get_dependencies(self) -> T.List[Target | CustomTargetIndex | GeneratedList | programs.Program]:
+    def get_dependencies(self) -> T.List[AnyTargetType | programs.Program]:
         return self.dependencies
 
     def get_generated_sources(self) -> T.List[GeneratedTypes]:
@@ -3343,8 +3338,8 @@ class Jar(BuildTarget):
         self.main_class = kwargs.get('main_class', '')
         self.java_resources: T.Optional[StructuredSources] = kwargs.get('java_resources', None)
 
-    def _extract_link_with(self, kwargs: BuildTargetKeywordArguments) -> list[LinkableTargetTypes]:
-        return kwargs['link_with']
+    def _extract_link_with(self, link_with: list[LinkableTargetTypes]) -> list[LinkableTargetTypes]:
+        return link_with
 
     def get_main_class(self) -> str:
         return self.main_class

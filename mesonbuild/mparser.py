@@ -8,7 +8,7 @@ import codecs
 import os
 import typing as T
 
-from .mesonlib import MesonException
+from .mesonlib import MesonException, unwrap
 from . import mlog
 
 if T.TYPE_CHECKING:
@@ -795,7 +795,6 @@ class Parser:
             value = self.e1()
             if not isinstance(left, IdNode):
                 raise ParseException('Plusassignment target must be an id.', self.getline(), left.lineno, left.colno)
-            assert isinstance(left.value, str)
             return self.create_node(PlusAssignmentNode, left, operator, value)
         elif self.accept('assign'):
             operator = self.create_node(SymbolNode, self.previous)
@@ -803,7 +802,6 @@ class Parser:
             if not isinstance(left, IdNode):
                 raise ParseException('Assignment target must be an id.',
                                      self.getline(), left.lineno, left.colno)
-            assert isinstance(left.value, str)
             return self.create_node(AssignmentNode, left, operator, value)
         elif self.accept('questionmark'):
             if self.in_ternary:
@@ -857,7 +855,8 @@ class Parser:
                     temp_node.append_whitespaces(w)
 
                 not_token.bytespan = (not_token.bytespan[0], in_token.bytespan[1])
-                not_token.value += temp_node.whitespaces.value + in_token.value
+                # whitespace between not and in must have been added above
+                not_token.value += unwrap(temp_node.whitespaces).value + in_token.value
                 operator = self.create_node(SymbolNode, not_token)
                 return self.create_node(ComparisonNode, 'not in', left, operator, self.e5())
         return left
@@ -904,7 +903,6 @@ class Parser:
             if not isinstance(left, IdNode):
                 raise ParseException('Function call must be applied to plain id',
                                      self.getline(), left.lineno, left.colno)
-            assert isinstance(left.value, str)
             left = self.create_node(FunctionNode, left, lpar, args, rpar)
         go_again = True
         while go_again:
@@ -1005,7 +1003,6 @@ class Parser:
                                      self.getline(), source_object.lineno, source_object.colno)
             raise ParseException('Method name must be plain id',
                                  self.getline(), self.current.lineno, self.current.colno)
-        assert isinstance(methodname.value, str)
         self.expect('lparen')
         lpar = self.create_node(SymbolNode, self.previous)
         args = self.args()
@@ -1026,14 +1023,12 @@ class Parser:
     def foreachblock(self) -> ForeachClauseNode:
         foreach_ = self.create_node(SymbolNode, self.previous)
         self.expect('id')
-        assert isinstance(self.previous.value, str)
         varnames = [self.create_node(IdNode, self.previous)]
         commas = []
 
         if self.accept('comma'):
             commas.append(self.create_node(SymbolNode, self.previous))
             self.expect('id')
-            assert isinstance(self.previous.value, str)
             varnames.append(self.create_node(IdNode, self.previous))
 
         self.expect('colon')

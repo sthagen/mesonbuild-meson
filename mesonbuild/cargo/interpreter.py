@@ -40,9 +40,10 @@ if T.TYPE_CHECKING:
     from .. import mparser
     from typing_extensions import Literal
 
-    from .manifest import Dependency
+    from .manifest import Dependency, Profile
     from ..environment import Environment
     from ..compilers.rust import RustCompiler
+    from ..options import ElementaryOptionValues
 
     RUST_ABI = Literal['rust', 'c', 'proc-macro']
 
@@ -282,6 +283,8 @@ class Interpreter:
         self.packages: T.Dict[PackageKey, PackageState] = {}
         # Map subdir to workspace
         self.workspaces: T.Dict[str, WorkspaceState] = {}
+        # [profile] tables from the top-level Cargo.toml
+        self.profiles: T.Dict[str, Profile] = {}
         # Files that should trigger a reconfigure if modified
         self.build_def_files: T.List[str] = []
         # Cargo packages
@@ -321,9 +324,8 @@ class Interpreter:
             # [patch] only takes effect in the top-level Cargo.toml
             for warning in validate_patch(ws.workspace.patch, ws.packages_to_member):
                 mlog.warning(warning)
-            if ws.workspace.profile:
-                mlog.warning('[profile] entries are not implemented yet')
 
+            self.profiles = ws.workspace.profile
             self._prepare_entry_point(ws)
         return ws
 
@@ -349,6 +351,45 @@ class Interpreter:
         if is_parent_path(self.subprojects_dir, path):
             raise MesonException('argument to package() cannot be a subproject')
         return ws.packages[path]
+
+    def _selected_profile(self, override: T.Optional[ElementaryOptionValues] = None) -> T.Optional[str]:
+        """Resolve the rust_cargo_profile selection to a Cargo profile name.
+           override takes precedence over the rust_cargo_profile option, and
+           comes from a target's own override_options."""
+        optstore = self.environment.coredata.optstore
+        if override is not None:
+            selection = override
+        else:
+            try:
+                selection = optstore.get_value_for('rust_cargo_profile')
+            except KeyError:
+                return None
+
+        assert isinstance(selection, str)
+        if selection == 'none':
+            return None
+        if selection != 'from_buildtype':
+            return selection
+
+        buildtype = optstore.get_value_for('buildtype')
+        if buildtype in {'plain', 'custom'}:
+            return None
+        return 'dev' if buildtype == 'debug' else 'release'
+
+    def get_override_options(self, pkg: PackageState, for_machine: MachineChoice,
+                             profile: str | None = None) -> T.Dict[str, ElementaryOptionValues]:
+        """Return override_options implied by the Cargo manifest: the package
+           edition (rust_std) and the options implied by a [profile], using
+           ``profile`` if not None or otherwise rust_cargo_profile selects."""
+        opts: T.Dict[str, ElementaryOptionValues] = {
+            'rust_std': pkg.manifest.package.edition,
+        }
+        profile_name = self._selected_profile(profile)
+        if profile_name is not None and self.profiles is not None:
+            if (profile_obj := self.profiles.get(profile_name)) is not None:
+                opts.update(profile_obj.to_meson_options(for_machine))
+
+        return opts
 
     def interpret(self, subdir: str, project_root: T.Optional[str] = None) -> mparser.CodeBlockNode:
         filename = os.path.join(self.environment.source_dir, subdir, 'Cargo.toml')
@@ -422,7 +463,8 @@ class Interpreter:
                     dep = pkg.manifest.dependencies[depname]
                     if dep.path:
                         dep_member = os.path.normpath(os.path.join(pkg.ws_member, dep.path))
-                        _process_member(dep_member)
+                        if not ws.workspace.is_excluded(dep_member):
+                            _process_member(dep_member)
                 found = True
             if not found:
                 raise MesonException(f'Package {pkg.manifest.package.name!r} is not enabled for this build '
@@ -449,7 +491,14 @@ class Interpreter:
         # Load member's manifest
         m_subdir = os.path.join(ws.subdir, m)
         manifest_, _ = self._load_manifest(m_subdir, ws.workspace, m)
-        assert isinstance(manifest_, Manifest)
+        if not isinstance(manifest_, Manifest):
+            # Cargo calls this "multiple workspace roots found in the same workspace".
+            # Meson supports excluding them but only if they are subprojects.
+            msg = (f'"{os.path.normpath(m_subdir)}" is itself a workspace, therefore it cannot be a member '
+                   f'of the workspace at "{ws.subdir}"')
+            if is_parent_path(self.subprojects_dir, m):
+                msg += f'; add "{m}" to the "exclude" list to build it as a separate subproject'
+            raise MesonException(msg)
         self._add_workspace_member(manifest_, ws, m)
 
     def _add_workspace_member(self, manifest_: Manifest, ws: WorkspaceState, m: str) -> None:
@@ -551,6 +600,8 @@ class Interpreter:
             self.environment.wrap_resolver.wraps[subp_name].type is not None
 
         ws = self._get_workspace(manifest, subdir, None, downloaded=downloaded)
+        if package_name not in ws.packages_to_member:
+            raise MesonException(f'{subdir}/Cargo.toml does not provide package "{package_name}"')
         member = ws.packages_to_member[package_name]
         pkg = self._require_workspace_member(ws, member)
         pkg.subproject_name = subp_name
@@ -596,8 +647,17 @@ class Interpreter:
             if is_parent_path(self.subprojects_dir, dep_member):
                 if len(pathlib.PurePath(dep_member).parts) != 2:
                     raise MesonException('found "{self.subprojects_dir}" in path but it is not a valid subproject path')
-            self._load_workspace_member(ws, dep_member)
-            dep_pkg = self._require_workspace_member(ws, dep_member)
+            if ws.workspace.is_excluded(dep_member):
+                # An excluded package is not a member of the workspace, so it is
+                # built as a separate project.  This is only supported for
+                # subprojects, so that each project has a single Cargo.lock.
+                if not is_parent_path(self.subprojects_dir, dep_member):
+                    raise MesonException(f'package "{dep.package}" excluded from the workspace '
+                                         f'must be under "{self.subprojects_dir}"')
+                dep_pkg = self._fetch_package_from_subproject(dep.package, os.path.basename(dep_member))
+            else:
+                self._load_workspace_member(ws, dep_member)
+                dep_pkg = self._require_workspace_member(ws, dep_member)
         elif dep.git:
             _, _, directory = _parse_git_url(dep.git, dep.branch)
             dep_pkg = self._fetch_package_from_subproject(dep.package, directory)

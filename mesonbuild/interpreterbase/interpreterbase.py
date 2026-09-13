@@ -89,7 +89,6 @@ class InterpreterBase:
         self.coredata = env.get_coredata()
         self.variables: T.Dict[str, InterpreterObject] = {}
         self.argument_depth = 0
-        self.current_lineno = -1
         # Current node set during a function call. This can be used as location
         # when printing a warning message during a method call.
         self.current_node = mparser.BaseNode(-1, -1, 'sentinel')
@@ -185,11 +184,6 @@ class InterpreterBase:
     def evaluate_codeblock(self, node: mparser.CodeBlockNode, start: int = 0, end: T.Optional[int] = None) -> None:
         if node is None:
             return
-        if not isinstance(node, mparser.CodeBlockNode):
-            e = InvalidCode('Tried to execute a non-codeblock. Possibly a bug in the parser.')
-            e.lineno = node.lineno
-            e.colno = node.colno
-            raise e
         statements = node.lines[start:end]
         i = 0
         while i < len(statements):
@@ -312,8 +306,10 @@ class InterpreterBase:
             if not isinstance(res, bool):
                 raise InvalidCode(f'If clause {result!r} does not evaluate to true or false.')
             prev_meson_version = mesonlib.project_meson_versions[self.subproject]
-            if self.tmp_meson_version and isinstance(prev_meson_version, mesonlib.Range):
-                always = prev_meson_version.always(self.tmp_meson_version)
+            # mypy does not know that evaluating the condition can set
+            # self.tmp_meson_version.
+            if self.tmp_meson_version and isinstance(prev_meson_version, mesonlib.Range): # type: ignore[unreachable]
+                always = prev_meson_version.always(self.tmp_meson_version) # type: ignore[unreachable]
                 if always is not None:
                     mlog.warning(f"Conditional on version '{self.tmp_meson_version}' always evaluates to {str(always).lower()}",
                                  location=self.current_node)
@@ -598,7 +594,6 @@ class InterpreterBase:
         reduced_kw: T.Dict[str, InterpreterObject] = {}
         for key, val in args.kwargs.items():
             reduced_key = key_resolver(key)
-            assert isinstance(val, mparser.BaseNode)
             reduced_val = self.evaluate_statement(val)
             if reduced_val is None:
                 raise InvalidArguments(f'Value of key {reduced_key} is void.')

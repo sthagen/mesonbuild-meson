@@ -24,6 +24,7 @@ if T.TYPE_CHECKING:
     from ..compilers.compilers import Language
     from ..interpreterbase import TYPE_var
     from ..options import ElementaryOptionValues, OptionDict
+    from .interpreter import TYPE_nkwargs, TYPE_nvar
     from .visitor import AstVisitor
 
 
@@ -148,7 +149,7 @@ class IntrospectionInterpreter(AstInterpreter):
             proj_vers = proj_vers.value
         if not isinstance(proj_vers, str):
             proj_vers = 'undefined'
-        proj_langs = self.flatten_args(args[1:])
+        proj_langs = self.flatten_args_hack(args[1:])
         # Match the value returned by ``meson.project_license()`` when
         # no ``license`` argument is specified in the ``project()`` call.
         proj_license = _str_list(kwargs.get('license', None)) or ['unknown']
@@ -173,9 +174,9 @@ class IntrospectionInterpreter(AstInterpreter):
             )
 
         if not self.is_subproject() and 'subproject_dir' in kwargs:
-            spdirname = kwargs['subproject_dir']
+            # Like flatten_args_hack(), the values are really TYPE_nvar.
+            spdirname = T.cast('TYPE_nvar', kwargs['subproject_dir'])
             if isinstance(spdirname, StringNode):
-                assert isinstance(spdirname.value, str)
                 self.subproject_dir = spdirname.value
         if not self.is_subproject():
             self.project_data['subprojects'] = []
@@ -227,7 +228,7 @@ class IntrospectionInterpreter(AstInterpreter):
 
     def _add_languages(self, raw_langs: T.List[TYPE_var], required: T.Union[bool, UnknownValue], for_machine: MachineChoice) -> None:
         langs: T.List[Language] = []
-        for l in self.flatten_args(raw_langs):
+        for l in self.flatten_args_hack(raw_langs):
             # we need to call .lower() here because `project('foo', 'CpP')` is valid.
             if isinstance(l, str):
                 langs.append(T.cast('Language', l.lower()))
@@ -247,7 +248,7 @@ class IntrospectionInterpreter(AstInterpreter):
 
     def func_dependency(self, node: BaseNode, args: T.List[TYPE_var], kwargs: T.Dict[str, TYPE_var]) -> T.Optional[IntrospectionDependency]:
         assert isinstance(node, FunctionNode)
-        args = self.flatten_args(args)
+        args = self.flatten_args_hack(args)
         kwargs = self.flatten_kwargs(kwargs)
         if not args:
             return None
@@ -277,7 +278,7 @@ class IntrospectionInterpreter(AstInterpreter):
 
     def build_target(self, node: BaseNode, args: T.List[TYPE_var], kwargs_raw: T.Dict[str, TYPE_var], targetclass: T.Type[BuildTarget]) -> T.Union[IntrospectionBuildTarget, UnknownValue]:
         assert isinstance(node, FunctionNode)
-        args = self.flatten_args(args)
+        args = self.flatten_args_hack(args)
         if not args or not isinstance(args[0], str):
             return UnknownValue()
         name = args[0]
@@ -437,12 +438,13 @@ class IntrospectionInterpreter(AstInterpreter):
         return None
 
     def flatten_kwargs(self, kwargs: T.Dict[str, TYPE_var], include_unknown_args: bool = False) -> T.Dict[str, TYPE_var]:
-        flattened_kwargs = {}
-        for key, val in kwargs.items():
+        # Like flatten_args_hack(), the values are really TYPE_nvar.
+        flattened_kwargs: TYPE_nkwargs = {}
+        for key, val in T.cast('TYPE_nkwargs', kwargs).items():
             if isinstance(val, BaseNode):
                 resolved = self.node_to_runtime_value(val)
                 if resolved is not None:
                     flattened_kwargs[key] = resolved
             elif isinstance(val, (str, bool, int, float)) or include_unknown_args:
                 flattened_kwargs[key] = val
-        return flattened_kwargs
+        return T.cast('T.Dict[str, TYPE_var]', flattened_kwargs)

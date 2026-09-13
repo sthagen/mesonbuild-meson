@@ -15,7 +15,9 @@ from mesonbuild.mesonlib import MesonException
 
 
 from .baseplatformtests import BasePlatformTests
-from .helpers import *
+from .helpers import (
+    skipIfNoPkgconfig, skipIfNoExecutable
+)
 
 class BaseLinuxCrossTests(BasePlatformTests):
     # Don't pass --libdir when cross-compiling. We have tests that
@@ -120,7 +122,7 @@ class LinuxCrossArmTests(BaseLinuxCrossTests):
             if i['name'] == 'libdir':
                 self.assertEqual(i['value'], 'lib')
                 return
-        self.assertTrue(False, 'Option libdir not in introspect data.')
+        self.fail('Option libdir not in introspect data.')
 
     def test_cross_libdir_subproject(self):
         # Guard against a regression where calling "subproject"
@@ -131,7 +133,7 @@ class LinuxCrossArmTests(BaseLinuxCrossTests):
             if i['name'] == 'libdir':
                 self.assertEqual(i['value'], 'fuf')
                 return
-        self.assertTrue(False, 'Libdir specified on command line gets reset.')
+        self.fail('Libdir specified on command line gets reset.')
 
     def test_std_remains(self):
         # C_std defined in project options must be in effect also when cross compiling.

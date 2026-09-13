@@ -826,7 +826,7 @@ class OptionStore:
             key = key.as_host()
         return key
 
-    def get_pending_value(self, key: OptionKey, default: T.Optional[ElementaryOptionValues] = None) -> ElementaryOptionValues:
+    def get_pending_value(self, key: OptionKey, default: T.Optional[ElementaryOptionValues] = None) -> ElementaryOptionValues | None:
         key = self.ensure_and_validate_key(key)
         if key in self.options:
             return self.options[key].value
@@ -884,8 +884,6 @@ class OptionStore:
 
     def add_system_option_internal(self, key: OptionKey, valobj: AnyOptionType) -> None:
         assert isinstance(valobj, UserOption)
-        if not isinstance(valobj.name, str):
-            assert isinstance(valobj.name, str)
         if key in self.options:
             return
 
@@ -1212,11 +1210,7 @@ class OptionStore:
 
     def is_backend_option(self, key: OptionKey) -> bool:
         """Convenience method to check if this is a backend option."""
-        if isinstance(key, str):
-            name: str = key
-        else:
-            name = key.name
-        return name.startswith('backend_')
+        return key.name.startswith('backend_')
 
     def is_compiler_option(self, key: OptionKey) -> bool:
         """Convenience method to check if this is a compiler option."""

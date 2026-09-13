@@ -14,7 +14,7 @@ from mesonbuild.cargo.interpreter import load_cargo_lock
 from mesonbuild.cargo.manifest import Dependency, Lint, Manifest, Package, Workspace, validate_patch
 from mesonbuild.cargo.toml import load_toml
 from mesonbuild.cargo.version import api, cargo_parse, SemVer
-from mesonbuild.mesonlib import MesonException
+from mesonbuild.mesonlib import MachineChoice, MesonException
 
 
 class CargoVersionTest(unittest.TestCase):
@@ -386,6 +386,31 @@ class CargoTomlTest(unittest.TestCase):
         crate-type = ["lib"] # ignored
     ''')
 
+    CARGO_TOML_PROFILE = textwrap.dedent('''\
+        [package]
+        name = "demo"
+        version = "0.1.0"
+        edition = "2021"
+
+        [profile.release]
+        opt-level = 3
+        debug = false
+        strip = "symbols"
+        debug-assertions = false
+        overflow-checks = false
+        lto = "thin"
+        panic = "abort"
+        incremental = false
+        codegen-units = 16
+
+        [profile.release.build-override]
+        opt-level = 0
+        codegen-units = 256
+
+        [profile.dev]
+        opt-level = "s"
+    ''')
+
     CARGO_TOML_WS = textwrap.dedent('''\
         [workspace]
         resolver = "2"
@@ -424,6 +449,53 @@ class CargoTomlTest(unittest.TestCase):
 
         pkg = Manifest.from_raw({'package': {'name': 'bar'}}, 'Cargo.toml', workspace)
         self.assertEqual(pkg.lints, [])
+
+    @staticmethod
+    def _exclude_workspace(tmpdir: str, members: T.List[str], exclude: T.List[str],
+                           default_members: T.Optional[T.List[str]] = None,
+                           root_package: bool = False) -> Workspace:
+        for d in ['a', 'b', 'sub/c', 'sub/d']:
+            os.makedirs(os.path.join(tmpdir, d), exist_ok=True)
+        raw_ws: T.Dict[str, T.Any] = {'members': members, 'exclude': exclude}
+        if default_members is not None:
+            raw_ws['default-members'] = default_members
+        raw: T.Dict[str, T.Any] = {'workspace': raw_ws}
+        if root_package:
+            raw['package'] = {'name': 'root', 'version': '0.1.0'}
+        return Workspace.from_raw(raw, tmpdir)
+
+    def test_cargo_toml_ws_exclude(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # a literal member takes precedence over exclude
+            ws = self._exclude_workspace(tmpdir, ['a', 'b'], ['b'])
+            self.assertEqual(sorted(ws.members), ['a', 'b'])
+
+            # results of glob expansion do not
+            ws = self._exclude_workspace(tmpdir, ['*'], ['b'])
+            self.assertEqual(sorted(ws.members), ['a', 'sub'])
+
+            # exclude entries are not globs
+            ws = self._exclude_workspace(tmpdir, ['*'], ['b*'])
+            self.assertEqual(sorted(ws.members), ['a', 'b', 'sub'])
+
+            # excluding a directory excludes everything below it
+            ws = self._exclude_workspace(tmpdir, ['sub/*'], ['sub'])
+            self.assertEqual(ws.members, [])
+
+            # an excluded package is not built by default either
+            ws = self._exclude_workspace(tmpdir, ['a', 'sub/*'], ['sub/c'], ['a', 'sub/c'])
+            self.assertEqual(sorted(ws.members), ['a', 'sub/d'])
+            self.assertEqual(ws.default_members, ['a'])
+
+            # excluding the workspace directory excludes literal members too
+            ws = self._exclude_workspace(tmpdir, ['a', 'b'], ['.'])
+            self.assertEqual(ws.members, [])
+            self.assertEqual(ws.default_members, [])
+
+            # but the root package remains a member of the workspace
+            ws = self._exclude_workspace(tmpdir, ['a', 'b'], ['.'], root_package=True)
+            self.assertEqual(ws.members, ['.'])
+            self.assertEqual(ws.default_members, ['.'])
 
     def test_cargo_toml_ws_package(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -690,6 +762,58 @@ class CargoTomlTest(unittest.TestCase):
         self.assertEqual(manifest.features['v1_42'], ['pango-sys/v1_42'])
         self.assertEqual(manifest.features['v1_44'], ['v1_42', 'pango-sys/v1_44'])
         self.assertEqual(manifest.features['default'], [])
+
+    def test_cargo_toml_profile(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            fname = os.path.join(tmpdir, 'Cargo.toml')
+            with open(fname, 'w', encoding='utf-8') as f:
+                f.write(self.CARGO_TOML_PROFILE)
+            manifest_toml = load_toml(fname)
+            manifest = Manifest.from_raw(manifest_toml, 'Cargo.toml')
+
+        self.assertEqual(sorted(manifest.profile), ['dev', 'release'])
+        release = manifest.profile['release']
+        self.assertEqual(release.opt_level, '3')
+        self.assertEqual(release.debug, False)
+        self.assertEqual(release.strip, True)
+        self.assertEqual(release.debug_assertions, False)
+        self.assertEqual(release.overflow_checks, False)
+        self.assertEqual(release.lto, True)
+        self.assertEqual(release.lto_mode, 'thin')
+        self.assertEqual(release.panic, 'abort')
+        self.assertEqual(release.incremental, False)
+        self.assertEqual(release.codegen_units, 16)
+
+        build_override = release.build_override
+        assert build_override is not None
+        self.assertEqual(build_override.opt_level, '0')
+        self.assertEqual(build_override.codegen_units, 256)
+        self.assertIsNone(build_override.lto)
+        self.assertIsNone(build_override.lto_mode)
+
+        self.assertEqual(manifest.profile['dev'].opt_level, 's')
+
+    def test_cargo_toml_profile_to_meson_options(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            fname = os.path.join(tmpdir, 'Cargo.toml')
+            with open(fname, 'w', encoding='utf-8') as f:
+                f.write(self.CARGO_TOML_PROFILE)
+            manifest = Manifest.from_raw(load_toml(fname), 'Cargo.toml')
+
+        release = manifest.profile['release']
+        host = release.to_meson_options(MachineChoice.HOST)
+        self.assertEqual(host['optimization'], '3')
+        self.assertEqual(host['rust_codegen_units'], 16)
+        self.assertEqual(host['b_lto_mode'], 'thin')
+        self.assertEqual(host['rust_panic'], 'abort')
+
+        build = release.to_meson_options(MachineChoice.BUILD)
+        # On the build machine the [build-override] keys are layered on top.
+        self.assertEqual(build['optimization'], '0')
+        self.assertEqual(build['rust_codegen_units'], 256)
+        # keys not set by build-override stay from the base profile
+        self.assertEqual(build['b_lto_mode'], 'thin')
+        self.assertEqual(build['rust_panic'], 'abort')
 
     def test_validate_patch(self) -> None:
         # packages_to_member values are normalized with os.path.normpath (see

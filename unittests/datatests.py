@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2016-2021 The Meson development team
 
+import os
 import re
 import unittest
 from itertools import chain
@@ -8,6 +9,7 @@ from pathlib import Path
 from unittest import mock
 
 import mesonbuild.mlog
+import mesonbuild.mparser
 import mesonbuild.depfile
 import mesonbuild.dependencies.base
 import mesonbuild.dependencies.factory
@@ -30,7 +32,7 @@ from run_tests import (
     FakeBuild, get_fake_env
 )
 
-from .helpers import *
+from .helpers import is_tarball
 
 @unittest.skipIf(is_tarball(), 'Skipping because this is a tarball release')
 class DataTests(unittest.TestCase):
@@ -59,7 +61,7 @@ class DataTests(unittest.TestCase):
                 self.assertFalse(in_code_block, 'Unclosed code block.')
             else:
                 if f.name != 'add_release_note_snippets_here':
-                    self.assertTrue(False, 'A file without .md suffix in snippets dir: ' + f.name)
+                    self.fail('A file without .md suffix in snippets dir: ' + f.name)
 
     def test_compiler_options_documented(self):
         '''
@@ -248,3 +250,13 @@ class DataTests(unittest.TestCase):
         interp = Interpreter(FakeBuild(env))
         astint = AstInterpreter('.', '', '', '', env)
         self.assertEqual(set(interp.funcs.keys()), set(astint.funcs.keys()))
+
+    def test_ast_interpreter_unsupported_operators(self):
+        env = get_fake_env()
+        astint = AstInterpreter('.', '', '', '', env)
+
+        for code in ["'text' - 1", 'true * 2', '1[0]', '1 in 2']:
+            with self.subTest(code=code):
+                block = mesonbuild.mparser.Parser(code, 'meson.build').parse()
+                with self.assertRaises(mesonbuild.mesonlib.MesonException):
+                    astint.node_to_runtime_value(block.lines[0])
