@@ -6,12 +6,11 @@ from ...interpreterbase import (
     InterpreterObject,
     MesonOperator,
     ObjectHolder,
-    typed_pos_args,
-    noKwargs,
-    noPosargs,
+    TypedArgs,
 
     InvalidArguments
 )
+from ...interpreter.type_checking import STR_OARG
 
 import typing as T
 
@@ -29,14 +28,12 @@ class BooleanHolder(ObjectHolder[bool]):
     def display_name(self) -> str:
         return 'bool'
 
-    @noKwargs
-    @noPosargs
+    @TypedArgs('bool.to_int')
     @InterpreterObject.method('to_int')
     def to_int_method(self, args: T.List[TYPE_var], kwargs: TYPE_kwargs) -> int:
         return 1 if self.held_object else 0
 
-    @noKwargs
-    @typed_pos_args('bool.to_string', optargs=[str, str])
+    @TypedArgs('bool.to_string', opt_types=[STR_OARG, STR_OARG])
     @InterpreterObject.method('to_string')
     def to_string_method(self, args: T.Tuple[T.Optional[str], T.Optional[str]], kwargs: TYPE_kwargs) -> str:
         true_str = args[0] or 'true'

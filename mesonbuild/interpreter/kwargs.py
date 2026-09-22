@@ -21,7 +21,7 @@ from ..modules.cmake import CMakeSubprojectOptions
 from ..programs import Program, ExternalProgram
 from .type_checking import PkgConfigDefineType, SourcesVarargsType
 
-TargetDepends = T.Union[build.CustomTarget, build.CustomTargetIndex, build.BuildTarget, build.GeneratedList, Program]
+TargetDepends = T.Union[build.BuildTargetProto, build.GeneratedList, Program]
 CustomTargetInputs = T.Union[str, build.BuildTarget, build.GeneratedTypes,
                              build.ExtractedObjects, Program, File]
 BuildTargetObjects = T.Union[str, File, build.ExtractedObjects, build.GeneratedTypes]
@@ -201,7 +201,7 @@ class FuncAddLanguages(ExtractRequired):
 class RunTarget(TypedDict):
 
     command: T.List[build.CommandTypes]
-    depends: T.List[build.AnyTargetType | Program]
+    depends: T.List[build.AnyTargetProto | Program]
     env: EnvironmentVariables
 
 
@@ -379,10 +379,10 @@ class BaseBuildTarget(TypedDict):
     install_tag: T.Optional[str]
     install_rpath: str
     implicit_include_directories: bool
-    link_depends: T.List[T.Union[str, File, build.BuildTargetTypes]]
+    link_depends: T.List[T.Union[str, File, build.BuildTargetProto]]
     link_language: T.Optional[Language]
-    link_whole: T.List[build.StaticTargetTypes]
-    link_with: T.List[build.LinkableTargetTypes]
+    link_whole: T.List[build.StaticTypes]
+    link_with: T.List[build.LinkableTypes]
     name_prefix: T.Optional[str]
     name_suffix: T.Optional[str]
     native: MachineChoice
@@ -403,6 +403,7 @@ class BuildTarget(BaseBuildTarget):
     d_import_dirs: T.List[T.Union[str, build.IncludeDirs]]
     d_module_versions: T.List[T.Union[str, int]]
     d_unittest: bool
+    embed_directories: list[str | build.IncludeDirs]
     install_dir: T.List[T.Union[str, bool]]
     install_vala_header: T.Union[str, bool, None]
     install_vala_vapi: T.Union[str, bool, None]
@@ -540,11 +541,12 @@ class FuncDeclareDependency(TypedDict):
     d_import_dirs: T.List[T.Union[build.IncludeDirs, str]]
     d_module_versions: T.List[T.Union[str, int]]
     dependencies: T.List[Dependency]
+    embed_directories: list[str | build.IncludeDirs]
     extra_files: T.List[FileOrString]
     include_directories: T.List[T.Union[build.IncludeDirs, str]]
     link_args: T.List[str]
-    link_whole: T.List[build.StaticTargetTypes]
-    link_with: T.List[build.LinkableTargetTypes]
+    link_whole: T.List[build.StaticTypes]
+    link_with: T.List[build.LinkableTypes]
     objects: T.List[build.ExtractedObjects]
     sources: T.List[str | build.TargetSources]
     variables: T.Dict[str, str]

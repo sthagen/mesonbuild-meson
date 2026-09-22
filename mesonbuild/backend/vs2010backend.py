@@ -158,12 +158,12 @@ class Vs2010Backend(backends.Backend):
     def detect_toolset(self) -> None:
         pass
 
-    def get_target_private_dir(self, target: build.AnyTargetType) -> str:
+    def get_target_private_dir(self, target: build.BuildTargetProto) -> str:
         return os.path.join(self.get_target_dir(target), target.get_id())
 
     def generate_gensrc_for_target(
             self, genlist: build.GeneratedTypes,
-            target: build.BuildTarget | build.CustomTarget,
+            target: build.BuildTargetProto,
             parent_node: ET.Element,
             generator_output_files: T.List[str],
             custom_target_include_dirs: T.List[str],
@@ -183,7 +183,7 @@ class Vs2010Backend(backends.Backend):
 
     def generate_genlist_for_target(
             self, genlist: build.GeneratedList,
-            target: build.BuildTarget | build.CustomTarget,
+            target: build.BuildTargetProto,
             parent_node: ET.Element,
             generator_output_files: T.List[str]) -> None:
         for x in genlist.depends:
@@ -242,7 +242,7 @@ class Vs2010Backend(backends.Backend):
             ET.SubElement(cbs, 'AdditionalInputs').text = ';'.join(deps)
 
     def generate_custom_generator_commands(
-            self, target: build.BuildTarget | build.CustomTarget, parent_node: ET.Element
+            self, target: build.BuildTargetProto, parent_node: ET.Element
             ) -> tuple[list[str], list[str], list[str]]:
         generator_output_files: list[str] = []
         custom_target_include_dirs: list[str] = []
@@ -554,7 +554,7 @@ class Vs2010Backend(backends.Backend):
                 headers.append(i)
         return sources, headers, objects, languages
 
-    def target_to_build_root(self, target: build.AnyTargetType) -> str:
+    def target_to_build_root(self, target: build.BuildTargetProto) -> str:
         if self.get_target_dir(target) == '':
             return ''
 
@@ -1254,7 +1254,7 @@ class Vs2010Backend(backends.Backend):
             ET.SubElement(per_config_prop_group, 'OutDir').text = f'{proj_to_build_dir_for_buildtype}\\'
             ET.SubElement(per_config_prop_group, 'IntDir').text = f'{proj_to_build_dir_for_buildtype}\\'
             ET.SubElement(per_config_prop_group, 'NMakeBuildCommandLine').text = f'{nmake_base_meson_command} compile -C "{proj_to_build_dir_for_buildtype}"'
-            ET.SubElement(per_config_prop_group, 'NMakeOutput').text = f'$(OutDir){target.name}{target_ext}'
+            ET.SubElement(per_config_prop_group, 'NMakeOutput').text = f'$(OutDir){target.get_basename()}{target_ext}'
             captured_build_args = vslite_ctx[buildtype][target.get_id()]
             # 'captured_build_args' is a dictionary, mapping from each src file type to a list of compile args to use for that type.
             # Usually, there's just one but we could have multiple src types.  However, since there's only one field for the makefile
@@ -1299,7 +1299,8 @@ class Vs2010Backend(backends.Backend):
             target_args: list[str],
             target_defines: list[str],
             target_inc_dirs: list[str],
-            file_args: dict[Language, CompilerArgs]
+            file_args: dict[Language, CompilerArgs],
+            has_own_link_inputs: bool
             ) -> None:
         compiler = self._get_cl_compiler(target)
         buildtype_link_args = compiler.get_optimization_link_args(self.optimization)
@@ -1470,7 +1471,7 @@ class Vs2010Backend(backends.Backend):
                     # Expand our object lists manually if we are on pre-Visual Studio 2015 Update 2
                     if not isinstance(t, build.BuildTarget):
                         raise MesonException(
-                            f'Cannot extract objects from custom target {t.name!r} to '
+                            f'Cannot extract objects from custom target {t.get_basename()!r} to '
                             f'link_whole it into {target.name!r}: this is not supported '
                             'with versions of MSVC older than Visual Studio 2015 Update 2.')
                     l = t.extract_all_objects(False)
@@ -1502,7 +1503,11 @@ class Vs2010Backend(backends.Backend):
                 trelpath = self.get_target_dir_relative_to(t, target)
                 tvcxproj = os.path.join(trelpath, t.get_id() + '.vcxproj')
                 tid = self.environment.coredata.target_guids[t.get_id()]
-                self.add_project_reference(root, tvcxproj, tid, link_outputs=True)
+                # MSBuild skips the link step altogether if a project has no inputs of its
+                # own, so a target whose only inputs are link_whole libraries has to let
+                # the referenced projects' outputs be linked in automatically; see
+                # https://github.com/mesonbuild/meson/issues/2180.
+                self.add_project_reference(root, tvcxproj, tid, link_outputs=not has_own_link_inputs)
                 # Mark the dependency as already handled to not have
                 # multiple references to the same target.
                 self.handled_target_deps[target.get_id()].append(t.get_id())
@@ -1532,11 +1537,11 @@ class Vs2010Backend(backends.Backend):
             # Undocumented, but you can find a reference in WDK props
             minver = ET.SubElement(link, 'MinimumRequiredVersion')
             minver.text = version
-        if isinstance(target, (build.SharedLibrary, build.Executable)) and target.get_import_filename():
-            # DLLs built with MSVC always have an import library except when
-            # they're data-only DLLs, but we don't support those yet.
-            ET.SubElement(link, 'ImportLibrary').text = target.get_import_filename()
         if isinstance(target, (build.SharedLibrary, build.Executable)):
+            if target.get_import_filename():
+                # DLLs built with MSVC always have an import library except when
+                # they're data-only DLLs, but we don't support those yet.
+                ET.SubElement(link, 'ImportLibrary').text = target.get_import_filename()
             # Add module definitions file, if provided
             if target.vs_module_defs:
                 relpath = os.path.join(down, target.vs_module_defs.rel_to_builddir(self.build_to_src))
@@ -1677,7 +1682,10 @@ class Vs2010Backend(backends.Backend):
             primary_src_lang = get_primary_source_lang(target.sources, custom_src)
             self.add_gen_lite_makefile_vcxproj_elements(root, platform, tfilename[1], vslite_ctx, target, proj_to_build_root, primary_src_lang)
         else:
-            self.add_non_makefile_vcxproj_elements(root, type_config, target, platform, subsystem, version, build_args, target_args, target_defines, target_inc_dirs, file_args)
+            # Whether the project will have ClCompile or Object items of its own,
+            # see the ItemGroups generated below.
+            has_own_link_inputs = bool(sources or gen_src or objects or gen_objs or custom_objs or target.objects)
+            self.add_non_makefile_vcxproj_elements(root, type_config, target, platform, subsystem, version, build_args, target_args, target_defines, target_inc_dirs, file_args, has_own_link_inputs)
 
         meson_file_group = ET.SubElement(root, 'ItemGroup')
         ET.SubElement(meson_file_group, 'None', Include=os.path.join(proj_to_src_dir, build_filename))

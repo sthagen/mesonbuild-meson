@@ -14,7 +14,10 @@ from ..build import (CustomTarget, BuildTarget,
 from ..options import OptionKey
 from ..dependencies import Dependency, DependencyMethods, InternalDependency
 from ..interpreterbase import Feature
-from ..interpreterbase.decorators import KwargInfo, ContainerTypeInfo, FeatureBroken, FeatureDeprecated, FeatureNew
+from ..interpreterbase.decorators import (
+    KwargInfo, ContainerTypeInfo, FeatureBroken, FeatureDeprecated, FeatureNew,
+    PosArgInfo, OptArgInfo, VarArgInfo,
+)
 from ..mesonlib import (File, FileMode, MachineChoice, has_path_sep, listify, stringlistify,
                         EnvironmentVariables)
 from ..programs import Program, ExternalProgram
@@ -26,7 +29,7 @@ if T.TYPE_CHECKING:
     from typing_extensions import Literal
 
     from .kwargs import CustomTargetInputs
-    from ..build import ObjectTypes, GeneratedTypes, CommandTypes, TargetSources
+    from ..build import ObjectTypes, GeneratedTypes, CommandTypes, TargetSources, LinkableTypes, StaticTypes
     from ..interpreterbase import TYPE_var
     from ..options import ElementaryOptionValues
     from ..mesonlib import EnvInitValueType
@@ -61,7 +64,7 @@ def _language_validator(l: T.List[str]) -> T.Optional[str]:
     """
     diff = {a.lower() for a in l}.difference(compilers.all_languages)
     if diff:
-        return f'unknown languages: {", ".join(_quote(diff))}'
+        return f'unknown languages: {", ".join(_quote(diff))}. This may be a typing mistake, or a newer version of Meson is required.'
     return None
 
 
@@ -415,6 +418,11 @@ INCLUDE_DIRECTORIES: KwargInfo[T.List[T.Union[str, IncludeDirs]]] = KwargInfo(
     default=[],
 )
 
+EMBED_DIRECTORIES = INCLUDE_DIRECTORIES.evolve(
+    name='embed_directories',
+    since='1.13.0',
+)
+
 def _default_options_convertor(raw: T.Union[str, T.List[str], T.Dict[str, ElementaryOptionValues]]) -> T.Dict[OptionKey, ElementaryOptionValues]:
     d = _override_options_convertor(raw)
     return {OptionKey.from_string(k): v for k, v in d.items()}
@@ -450,10 +458,7 @@ D_MODULE_VERSIONS_KW: KwargInfo[T.List[T.Union[str, int]]] = KwargInfo(
 
 _LINK_WITH_ERROR = 'Dependency and external_library objects must go in the "dependencies" keyword argument'
 
-def _link_with_validator(values: T.List[T.Union[BothLibraries, SharedLibrary, StaticLibrary,
-                                                CustomTarget, CustomTargetIndex, Jar, Executable,
-                                                ]]
-                         ) -> T.Optional[str]:
+def _link_with_validator(values: T.List[LinkableTypes]) -> T.Optional[str]:
     for value in values:
         if not value.is_linkable_target():
             return f'Link target "{value!s}" is not linkable'
@@ -463,13 +468,14 @@ def _link_with_validator(values: T.List[T.Union[BothLibraries, SharedLibrary, St
 LINK_WITH_KW: KwargInfo[T.List[T.Union[BothLibraries, SharedLibrary, StaticLibrary, CustomTarget, CustomTargetIndex, Jar, Executable]]] = KwargInfo(
     'link_with',
     ContainerTypeInfo(list, (BothLibraries, SharedLibrary, StaticLibrary, CustomTarget, CustomTargetIndex, Jar, Executable)),
+    accept_second_level_holder=True,
     listify=True,
     default=[],
     extra_types={Dependency: lambda _: _LINK_WITH_ERROR},
     validator=_link_with_validator,
 )
 
-def link_whole_validator(values: T.List[T.Union[StaticLibrary, CustomTarget, CustomTargetIndex]]) -> T.Optional[str]:
+def link_whole_validator(values: T.List[StaticTypes]) -> T.Optional[str]:
     for l in values:
         if isinstance(l, (CustomTarget, CustomTargetIndex)) and l.links_dynamically():
             return f'{type(l).__name__} returning a shared library is not allowed'
@@ -480,6 +486,7 @@ def link_whole_validator(values: T.List[T.Union[StaticLibrary, CustomTarget, Cus
 LINK_WHOLE_KW: KwargInfo[T.List[T.Union[BothLibraries, StaticLibrary, CustomTarget, CustomTargetIndex]]] = KwargInfo(
     'link_whole',
     ContainerTypeInfo(list, (BothLibraries, StaticLibrary, CustomTarget, CustomTargetIndex)),
+    accept_second_level_holder=True,
     listify=True,
     default=[],
     validator=link_whole_validator,
@@ -790,6 +797,7 @@ _BUILD_TARGET_KWS: T.List[KwargInfo] = [
     *_LANGUAGE_KWS,
     BT_SOURCES_KW,
     INCLUDE_DIRECTORIES.evolve(name='d_import_dirs'),
+    EMBED_DIRECTORIES,
     LINK_ARGS_KW,
     LINK_WHOLE_KW.evolve(
         since='0.40.0',
@@ -1091,12 +1099,16 @@ PKGCONFIG_DEFINE_KW: KwargInfo[list[str]] = KwargInfo(
     feature_validator=_pkgconfig_define_feature_validator,
 )
 
+
+INCLUDE_TYPE_VALIDATOR = in_set_validator({'system', 'non-system', 'preserve'})
+
+
 INCLUDE_TYPE = KwargInfo(
     'include_type',
     str,
     default='preserve',
     since='0.52.0',
-    validator=in_set_validator({'system', 'non-system', 'preserve'})
+    validator=INCLUDE_TYPE_VALIDATOR,
 )
 
 
@@ -1151,3 +1163,28 @@ DEPENDENCY_KWS: T.List[KwargInfo] = [
     KwargInfo('static', (bool, NoneType)),
     KwargInfo('version', ContainerTypeInfo(list, str), listify=True, default=[]),
 ]
+
+_TGT_VALUES = (str, File, CustomTarget, CustomTargetIndex, GeneratedList)
+
+STR_PARG = PosArgInfo(str)
+STR_FILE_PARG = PosArgInfo((str, File))
+INT_PARG = PosArgInfo(int)
+BOOL_PARG = PosArgInfo(bool)
+OBJ_PARG = PosArgInfo(object)
+ENV_PARG = PosArgInfo((str, list, dict, EnvironmentVariables), validator=env_validator)
+LANG_PARG = STR_PARG.evolve(validator=lambda x: _language_validator([x]))
+TGT_PARG = PosArgInfo(ContainerTypeInfo(list, _TGT_VALUES), listify=True)
+
+STR_OARG = OptArgInfo(str)
+INT_OARG = OptArgInfo(int)
+BOOL_OARG = OptArgInfo(bool)
+OBJ_OARG = OptArgInfo(object)
+
+STR_VARG = VarArgInfo(str)
+STR_VARG_1 = VarArgInfo(str, min_args=1)
+STR_FILE_VARG = VarArgInfo((str, File))
+INT_VARG = VarArgInfo(int)
+BOOL_VARG = VarArgInfo(bool)
+OBJ_VARG = VarArgInfo(object)
+SRC_VARG = VarArgInfo(SOURCES_VARARGS)
+TGT_VARG = VarArgInfo(_TGT_VALUES)

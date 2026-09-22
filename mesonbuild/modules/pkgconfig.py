@@ -21,7 +21,9 @@ from ..dependencies.pkgconfig import PkgConfigDependency, PkgConfigInterface
 from ..interpreter.primitives import OptionString
 from ..interpreter.type_checking import D_MODULE_VERSIONS_KW, INSTALL_DIR_KW, VARIABLES_KW, NoneType
 from ..interpreterbase import FeatureNew, FeatureDeprecated, FeatureBroken
-from ..interpreterbase.decorators import ContainerTypeInfo, KwargInfo, typed_kwargs, typed_pos_args
+from ..interpreterbase.decorators import (
+    ContainerTypeInfo, KwargInfo, TypedArgs, OptArgInfo,
+)
 
 if T.TYPE_CHECKING:
     from typing_extensions import TypedDict
@@ -30,9 +32,9 @@ if T.TYPE_CHECKING:
     from .. import mparser
     from ..interpreter import Interpreter
 
-    ANY_DEP = T.Union[dependencies.Dependency, build.LinkableTargetTypes, str]
-    REQS = T.Union[dependencies.Dependency, build.LibTypes, str]
-    LIBS = T.Union[build.LibTypes, str]
+    ANY_DEP = T.Union[dependencies.Dependency, build.LinkableTargetProto, str]
+    REQS = T.Union[dependencies.Dependency, build.LibTargetProto, str]
+    LIBS = T.Union[build.LibTargetProto, str]
 
     class GenerateKw(TypedDict):
 
@@ -98,8 +100,8 @@ class _LibDeps:
     '''One pending step of the target graph walk in DependenciesHelper.'''
 
     source: object
-    link_targets: T.Sequence[build.LinkableTargetTypes]
-    link_whole_targets: T.Sequence[build.StaticTargetTypes]
+    link_targets: T.Sequence[build.LinkableTargetProto]
+    link_whole_targets: T.Sequence[build.StaticTargetProto]
     external_deps: T.List[dependencies.Dependency]
     public: bool
 
@@ -118,7 +120,7 @@ class DependenciesHelper:
         self.cflags: T.List[str] = []
         self.cflags_private: T.List[str] = []
         self.version_reqs: T.DefaultDict[str, T.Set[str]] = defaultdict(set)
-        self.link_whole_targets: T.List[build.StaticTargetTypes] = []
+        self.link_whole_targets: T.List[build.StaticTargetProto] = []
         self.uninstalled_incdirs: mesonlib.OrderedSet[str] = mesonlib.OrderedSet()
         # Libraries whose recursive dependencies still have to be added.
         self._dep_stack: T.List[_LibDeps] = []
@@ -141,13 +143,13 @@ class DependenciesHelper:
     def add_priv_reqs(self, reqs: T.List[REQS]) -> None:
         self.priv_reqs += self._process_reqs(reqs)
 
-    def _check_generated_pc_deprecation(self, obj: build.LibTypes) -> None:
+    def _check_generated_pc_deprecation(self, obj: build.LibTargetProto) -> None:
         if obj.get_id() in self.metadata:
             return
         data = self.metadata[obj.get_id()]
         if data.warned:
             return
-        mlog.deprecation('Library', mlog.bold(obj.name), 'was passed to the '
+        mlog.deprecation('Library', mlog.bold(str(obj)), 'was passed to the '
                          '"libraries" keyword argument of a previous call '
                          'to generate() method instead of first positional '
                          'argument.', 'Adding', mlog.bold(data.display_name),
@@ -252,7 +254,12 @@ class DependenciesHelper:
                     # because the stack is popped in LIFO order; the dependencies
                     # will be added *after* the libraries that need them.
                     self._dep_stack.append(_LibDeps(obj, [], [], obj.ext_deps, False))
-                    self._dep_stack.append(_LibDeps(obj, obj.libraries, obj.whole_libraries, [], public))
+                    # get_as_static()/get_as_shared() above already resolved away
+                    # any BothLibraries, but the InternalDependency type can't
+                    # express that in the type of obj.libraries/obj.whole_libraries
+                    libraries = T.cast('T.List[build.LinkableTargetProto]', obj.libraries)
+                    whole_libraries = T.cast('T.List[build.StaticTargetProto]', obj.whole_libraries)
+                    self._dep_stack.append(_LibDeps(obj, libraries, whole_libraries, [], public))
                     self._add_uninstalled_incdirs(obj.get_include_dirs())
             elif isinstance(obj, dependencies.Dependency):
                 if obj.found():
@@ -442,8 +449,8 @@ class PkgConfigModule(NewExtensionModule):
         if self.devenv is not None:
             b.devenv.append(self.devenv)
 
-    def _get_lname(self, l: build.LibTypes, msg: str, pcfile: str) -> str:
-        if isinstance(l, (build.CustomTargetIndex, build.CustomTarget)):
+    def _get_lname(self, l: build.LibTargetProto, msg: str, pcfile: str) -> str:
+        if not isinstance(l, build.BuildTarget):
             basename = os.path.basename(l.get_filename())
             name = os.path.splitext(basename)[0]
             if name.startswith('lib'):
@@ -459,7 +466,7 @@ class PkgConfigModule(NewExtensionModule):
             return l.name[3:]
         # If the library is imported via an import library which is always
         # named after the target name, '-lfoo' is correct.
-        if isinstance(l, build.SharedLibrary) and l.import_filename:
+        if l.get_import_filename():
             return l.name
         # In other cases, we can't guarantee that the compiler will be able to
         # find the library via '-lfoo', so tell the user that.
@@ -625,12 +632,15 @@ class PkgConfigModule(NewExtensionModule):
                                 install_dir = _i[0] if _i else ''
                         if install_dir is False:
                             continue
+                        lname = self._get_lname(l, msg, pcfile)
+                        lflag = f'-l{lname}'
                         if isinstance(l, build.BuildTarget) and 'cs' in l.compilers:
                             if custom_install_dir:
                                 Lflag = '-r{}/{}'.format(self._escape(self._make_relative(prefix, install_dir, pure_path_class)),
                                                          l.filename)
                             else:
                                 Lflag = '-r${libdir}/%s' % l.filename
+                            lflag = None
                         else:
                             if custom_install_dir:
                                 Lflag = '-L{}'.format(self._escape(self._make_relative(prefix, install_dir, pure_path_class)))
@@ -639,13 +649,12 @@ class PkgConfigModule(NewExtensionModule):
                         if Lflag not in Lflags:
                             Lflags.append(Lflag)
                             yield Lflag
-                        lname = self._get_lname(l, msg, pcfile)
                         # If using a custom suffix, the compiler may not be able to
                         # find the library
                         if isinstance(l, build.BuildTarget) and l.name_suffix_set:
                             mlog.warning(msg.format(l.name, 'name_suffix', lname, pcfile))
-                        if isinstance(l, (build.CustomTarget, build.CustomTargetIndex)) or 'cs' not in l.compilers:
-                            yield f'-l{lname}'
+                        if lflag is not None:
+                            yield lflag
 
             if deps.pub_libs:
                 ofile.write('Libs: {}\n'.format(' '.join(generate_libs_flags(deps.pub_libs))))
@@ -672,30 +681,32 @@ class PkgConfigModule(NewExtensionModule):
             if cflags_private and not dataonly:
                 ofile.write('Cflags.private: {}\n'.format(' '.join(cflags_private)))
 
-    @typed_pos_args('pkgconfig.generate', optargs=[(build.SharedLibrary, build.StaticLibrary)])
-    @typed_kwargs(
+    @TypedArgs(
         'pkgconfig.generate',
-        D_MODULE_VERSIONS_KW.evolve(since='0.43.0'),
-        INSTALL_DIR_KW,
-        KwargInfo('cflags_private', ContainerTypeInfo(list, str), default=[], listify=True, since='1.9.0'),
-        KwargInfo('conflicts', ContainerTypeInfo(list, str), default=[], listify=True),
-        KwargInfo('dataonly', bool, default=False, since='0.54.0'),
-        KwargInfo('description', (str, NoneType)),
-        KwargInfo('extra_cflags', ContainerTypeInfo(list, str), default=[], listify=True, since='0.42.0'),
-        KwargInfo('filebase', (str, NoneType), validator=lambda x: 'must not be an empty string' if x == '' else None),
-        KwargInfo('name', (str, NoneType), validator=lambda x: 'must not be an empty string' if x == '' else None),
-        KwargInfo('subdirs', ContainerTypeInfo(list, str), default=[], listify=True),
-        KwargInfo('url', str, default=''),
-        KwargInfo('license', str, default='', since='1.9.0'),
-        KwargInfo('version', (str, NoneType)),
-        VARIABLES_KW.evolve(name="unescaped_uninstalled_variables", since='0.59.0'),
-        VARIABLES_KW.evolve(name="unescaped_variables", since='0.59.0'),
-        VARIABLES_KW.evolve(name="uninstalled_variables", since='0.54.0', since_values={dict: '0.56.0'}),
-        VARIABLES_KW.evolve(since='0.41.0', since_values={dict: '0.56.0'}),
-        _PKG_LIBRARIES,
-        _PKG_LIBRARIES.evolve(name='libraries_private'),
-        _PKG_REQUIRES,
-        _PKG_REQUIRES.evolve(name='requires_private'),
+        opt_types=[OptArgInfo((build.SharedLibrary, build.StaticLibrary))],
+        kw_types=[
+            D_MODULE_VERSIONS_KW.evolve(since='0.43.0'),
+            INSTALL_DIR_KW,
+            KwargInfo('cflags_private', ContainerTypeInfo(list, str), default=[], listify=True, since='1.9.0'),
+            KwargInfo('conflicts', ContainerTypeInfo(list, str), default=[], listify=True),
+            KwargInfo('dataonly', bool, default=False, since='0.54.0'),
+            KwargInfo('description', (str, NoneType)),
+            KwargInfo('extra_cflags', ContainerTypeInfo(list, str), default=[], listify=True, since='0.42.0'),
+            KwargInfo('filebase', (str, NoneType), validator=lambda x: 'must not be an empty string' if x == '' else None),
+            KwargInfo('name', (str, NoneType), validator=lambda x: 'must not be an empty string' if x == '' else None),
+            KwargInfo('subdirs', ContainerTypeInfo(list, str), default=[], listify=True),
+            KwargInfo('url', str, default=''),
+            KwargInfo('license', str, default='', since='1.9.0'),
+            KwargInfo('version', (str, NoneType)),
+            VARIABLES_KW.evolve(name="unescaped_uninstalled_variables", since='0.59.0'),
+            VARIABLES_KW.evolve(name="unescaped_variables", since='0.59.0'),
+            VARIABLES_KW.evolve(name="uninstalled_variables", since='0.54.0', since_values={dict: '0.56.0'}),
+            VARIABLES_KW.evolve(since='0.41.0', since_values={dict: '0.56.0'}),
+            _PKG_LIBRARIES,
+            _PKG_LIBRARIES.evolve(name='libraries_private'),
+            _PKG_REQUIRES,
+            _PKG_REQUIRES.evolve(name='requires_private'),
+        ],
     )
     def generate(self, state: ModuleState,
                  args: T.Tuple[T.Optional[T.Union[build.SharedLibrary, build.StaticLibrary]]],

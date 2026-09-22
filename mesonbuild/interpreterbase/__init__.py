@@ -24,22 +24,20 @@ __all__ = [
 
     'default_resolve_key',
     'flatten',
-    'resolve_second_level_holders',
     'stringifyUserArguments',
     'Feature',
     'FeatureValue',
 
-    'noPosargs',
-    'noKwargs',
     'noArgsFlattening',
-    'noSecondLevelHolderResolving',
     'unholder_return',
     'disablerIfNotFound',
     'typed_operator',
-    'typed_pos_args',
     'ContainerTypeInfo',
     'KwargInfo',
-    'typed_kwargs',
+    'TypedArgs',
+    'PosArgInfo',
+    'OptArgInfo',
+    'VarArgInfo',
     'FeatureCheckBase',
     'FeatureNew',
     'FeatureDeprecated',
@@ -83,21 +81,20 @@ from .baseobjects import (
 )
 
 from .decorators import (
-    noPosargs,
-    noKwargs,
     noArgsFlattening,
-    noSecondLevelHolderResolving,
     unholder_return,
     disablerIfNotFound,
-    typed_pos_args,
     ContainerTypeInfo,
     KwargInfo,
     typed_operator,
-    typed_kwargs,
     FeatureCheckBase,
     FeatureNew,
     FeatureDeprecated,
     FeatureBroken,
+    TypedArgs,
+    PosArgInfo,
+    OptArgInfo,
+    VarArgInfo,
 )
 
 from .exceptions import (
@@ -113,7 +110,6 @@ from .disabler import Disabler, is_disabled
 from .helpers import (
     default_resolve_key,
     flatten,
-    resolve_second_level_holders,
     stringifyUserArguments,
     Feature,
     FeatureValue,

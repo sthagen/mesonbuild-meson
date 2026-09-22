@@ -340,6 +340,8 @@ def get_base_compile_args(target: 'BuildTarget', compiler: 'Compiler', env: 'Env
     # This does not need a try...except
     bitcode = option_enabled(compiler.base_options, target, env, 'b_bitcode')
     args.extend(compiler.get_embed_bitcode_args(bitcode, lto))
+    freestanding = option_enabled(compiler.base_options, target, env, 'b_freestanding')
+    args.extend(compiler.get_freestanding_args(freestanding))
     try:
         crt_val = env.coredata.get_option_for_target(target, 'b_vscrt')
         assert isinstance(crt_val, str)
@@ -645,6 +647,13 @@ class Compiler(HoldableObject, metaclass=SimpleABC):
                    dependencies: T.List['Dependency'],
                    disable_cache: bool = False) -> T.Tuple[str, bool]:
         raise EnvironmentException('%s does not support get_define ' % self.get_id())
+
+    def has_define(self, dname: str, prefix: str,
+                   extra_args: T.Union[T.List[str], T.Callable[[CompileCheckMode], T.List[str]]],
+                   dependencies: T.List['Dependency'],
+                   disable_cache: bool = False) -> T.Tuple[bool, bool]:
+        value, cached = self.get_define(dname, prefix, extra_args, dependencies, disable_cache)
+        return value is not None, cached
 
     def compute_int(self, expression: str, low: T.Optional[int], high: T.Optional[int],
                     guess: T.Optional[int], prefix: str, *,
@@ -1159,6 +1168,9 @@ class Compiler(HoldableObject, metaclass=SimpleABC):
         return ret
 
     def get_embed_bitcode_args(self, bitcode: bool, lto: bool) -> T.List[str]:
+        return []
+
+    def get_freestanding_args(self, freestanding: bool) -> T.List[str]:
         return []
 
     def get_lto_compile_args(self, *, target: T.Optional[BuildTarget] = None, threads: int = 0,
@@ -1750,3 +1762,7 @@ class Compiler(HoldableObject, metaclass=SimpleABC):
     def get_show_dep_args(self) -> T.List[str]:
         """Arguments for printing depfile information in MSVC compatible format"""
         return []
+
+    def get_embed_args(self, path: str) -> list[str]:
+        """Format arguments for C and C++ #embed statements."""
+        raise EnvironmentException(f'{self.get_id()} does not support embed search paths')

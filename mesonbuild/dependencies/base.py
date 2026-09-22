@@ -28,8 +28,8 @@ if T.TYPE_CHECKING:
     from ..environment import Environment
     from ..interpreterbase import FeatureCheckBase
     from ..build import (
-        CustomTarget, IncludeDirs, CustomTargetIndex, LinkableTargetTypes,
-        StaticLibrary, ExtractedObjects, TargetSources
+        IncludeDirs, LinkableTypes,
+        ExtractedObjects, TargetSources, StaticTypes,
     )
     from ..interpreter.type_checking import PkgConfigDefineType
 
@@ -307,10 +307,11 @@ class InternalDependency(Dependency):
     type_name = DependencyTypeName('internal')
 
     def __init__(self, version: str, incdirs: T.Optional[T.List['IncludeDirs']] = None,
+                 embed_dirs: list[IncludeDirs] | None = None,
                  compile_args: T.Optional[T.List[str]] = None,
                  link_args: T.Optional[T.List[str]] = None,
-                 libraries: T.Optional[T.List[LinkableTargetTypes]] = None,
-                 whole_libraries: T.Optional[T.List[T.Union[StaticLibrary, CustomTarget, CustomTargetIndex]]] = None,
+                 libraries: T.Optional[T.Sequence[LinkableTypes]] = None,
+                 whole_libraries: T.Optional[T.Sequence[StaticTypes]] = None,
                  sources: T.Optional[T.Sequence[TargetSources]] = None,
                  extra_files: T.Optional[T.Sequence[mesonlib.File]] = None,
                  ext_deps: T.Optional[T.List[Dependency]] = None, variables: T.Optional[T.Dict[str, str]] = None,
@@ -322,10 +323,11 @@ class InternalDependency(Dependency):
         self.version = version
         self.is_found = True
         self.include_directories = incdirs or []
+        self.embed_directories = embed_dirs or []
         self.compile_args = compile_args or []
         self.link_args = link_args or []
-        self.libraries = libraries or []
-        self.whole_libraries = whole_libraries or []
+        self.libraries = list(libraries or [])
+        self.whole_libraries = list(whole_libraries or [])
         self.sources = list(sources or [])
         self.extra_files = list(extra_files or [])
         self.ext_deps = ext_deps or []
@@ -372,11 +374,12 @@ class InternalDependency(Dependency):
         final_sources = self.sources.copy() if sources else []
         final_extra_files = self.extra_files.copy() if extra_files else []
         final_includes = self.get_include_dirs().copy() if includes else []
+        final_embed = self.embed_directories.copy() if includes else []
         final_deps = [d.get_partial_dependency(
             compile_args=compile_args, link_args=link_args, links=links,
             includes=includes, sources=sources) for d in self.ext_deps]
         return type(self)(
-            self.version, final_includes, final_compile_args,
+            self.version, final_includes, final_embed, final_compile_args,
             final_link_args, final_libraries, final_whole_libraries,
             final_sources, final_extra_files, final_deps, self.variables, [], [], [], self.name)
 
@@ -409,8 +412,7 @@ class InternalDependency(Dependency):
                                      'CustomTarget or CustomTargetIndex which is a shared library')
 
         # Mypy doesn't understand that the above is a TypeGuard
-        new_dep.whole_libraries += T.cast('T.List[T.Union[StaticLibrary, CustomTarget, CustomTargetIndex]]',
-                                          new_dep.libraries)
+        new_dep.whole_libraries += T.cast('T.List[StaticTypes]', new_dep.libraries)
         new_dep.libraries = []
         return new_dep
 
