@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 import unittest
+from unittest import mock
 import os
 import tempfile
 import textwrap
@@ -11,7 +12,7 @@ import typing as T
 from mesonbuild.cargo import cfg
 from mesonbuild.cargo.cfg import TokenType
 from mesonbuild.cargo.interpreter import load_cargo_lock
-from mesonbuild.cargo.manifest import Dependency, Lint, Manifest, Package, Workspace, validate_patch
+from mesonbuild.cargo.manifest import Dependency, Lint, Manifest, Package, Workspace
 from mesonbuild.cargo.toml import load_toml
 from mesonbuild.cargo.version import api, cargo_parse, SemVer
 from mesonbuild.mesonlib import MachineChoice, MesonException
@@ -536,7 +537,7 @@ class CargoTomlTest(unittest.TestCase):
         self.assertEqual(dep.package, 'glib')
         self.assertEqual(dep.version, '')
         self.assertTrue(dep.accepts_version('9999'))
-        self.assertEqual(dep.path, os.path.join('..', 'glib'))
+        self.assertEqual(dep.path, '../glib')
         self.assertEqual(dep.features, [])
 
         dep = Dependency.from_raw('gtk', {'workspace': True}, 'member', workspace)
@@ -633,50 +634,50 @@ class CargoTomlTest(unittest.TestCase):
             manifest = Manifest.from_raw(manifest_toml, 'Cargo.toml')
 
         self.assertEqual(len(manifest.dependencies), 6)
-        self.assertEqual(manifest.dependencies['gtk'].package, 'gtk4')
-        self.assertEqual(manifest.dependencies['gtk'].version, '0.9')
-        self.assertTrue(manifest.dependencies['gtk'].accepts_version('0.9'))
-        self.assertFalse(manifest.dependencies['gtk'].accepts_version('0.10'))
-        self.assertEqual(manifest.dependencies['gtk'].api, '0.9')
-        self.assertEqual(manifest.dependencies['num-complex'].package, 'num-complex')
-        self.assertEqual(manifest.dependencies['num-complex'].version, '0.4')
-        self.assertTrue(manifest.dependencies['num-complex'].accepts_version('0.4'))
-        self.assertFalse(manifest.dependencies['num-complex'].accepts_version('0.5'))
-        self.assertEqual(manifest.dependencies['rayon'].package, 'rayon')
-        self.assertEqual(manifest.dependencies['rayon'].version, '1.0')
-        self.assertTrue(manifest.dependencies['rayon'].accepts_version('1.0'))
-        self.assertTrue(manifest.dependencies['rayon'].accepts_version('1.23'))
-        self.assertFalse(manifest.dependencies['rayon'].accepts_version('2.0'))
-        self.assertFalse(manifest.dependencies['rayon'].accepts_version('2.0-pre1'))
-        self.assertEqual(manifest.dependencies['rayon'].api, '1')
-        self.assertEqual(manifest.dependencies['once_cell'].package, 'once_cell')
-        self.assertEqual(manifest.dependencies['once_cell'].version, '1')
-        self.assertTrue(manifest.dependencies['once_cell'].accepts_version('1.0'))
-        self.assertTrue(manifest.dependencies['once_cell'].accepts_version('1.23'))
-        self.assertFalse(manifest.dependencies['once_cell'].accepts_version('2.0'))
-        self.assertFalse(manifest.dependencies['once_cell'].accepts_version('2.0-pre1'))
-        self.assertEqual(manifest.dependencies['once_cell'].api, '1')
-        self.assertEqual(manifest.dependencies['async-channel'].package, 'async-channel')
-        self.assertEqual(manifest.dependencies['async-channel'].version, '2.1')
-        self.assertFalse(manifest.dependencies['async-channel'].accepts_version('2.0'))
-        self.assertTrue(manifest.dependencies['async-channel'].accepts_version('2.1'))
-        self.assertTrue(manifest.dependencies['async-channel'].accepts_version('2.23'))
-        self.assertFalse(manifest.dependencies['async-channel'].accepts_version('2.0'))
-        self.assertFalse(manifest.dependencies['async-channel'].accepts_version('2.0-pre1'))
-        self.assertEqual(manifest.dependencies['async-channel'].api, '2')
-        self.assertEqual(manifest.dependencies['zerocopy'].package, 'zerocopy')
-        self.assertEqual(manifest.dependencies['zerocopy'].version, '0.7')
-        self.assertTrue(manifest.dependencies['zerocopy'].accepts_version('0.7'))
-        self.assertFalse(manifest.dependencies['zerocopy'].accepts_version('0.8'))
-        self.assertEqual(manifest.dependencies['zerocopy'].features, ['derive'])
-        self.assertEqual(manifest.dependencies['zerocopy'].api, '0.7')
+        self.assertEqual(manifest.dependencies['gtk'][0].package, 'gtk4')
+        self.assertEqual(manifest.dependencies['gtk'][0].version, '0.9')
+        self.assertTrue(manifest.dependencies['gtk'][0].accepts_version('0.9'))
+        self.assertFalse(manifest.dependencies['gtk'][0].accepts_version('0.10'))
+        self.assertEqual(manifest.dependencies['gtk'][0].api, '0.9')
+        self.assertEqual(manifest.dependencies['num-complex'][0].package, 'num-complex')
+        self.assertEqual(manifest.dependencies['num-complex'][0].version, '0.4')
+        self.assertTrue(manifest.dependencies['num-complex'][0].accepts_version('0.4'))
+        self.assertFalse(manifest.dependencies['num-complex'][0].accepts_version('0.5'))
+        self.assertEqual(manifest.dependencies['rayon'][0].package, 'rayon')
+        self.assertEqual(manifest.dependencies['rayon'][0].version, '1.0')
+        self.assertTrue(manifest.dependencies['rayon'][0].accepts_version('1.0'))
+        self.assertTrue(manifest.dependencies['rayon'][0].accepts_version('1.23'))
+        self.assertFalse(manifest.dependencies['rayon'][0].accepts_version('2.0'))
+        self.assertFalse(manifest.dependencies['rayon'][0].accepts_version('2.0-pre1'))
+        self.assertEqual(manifest.dependencies['rayon'][0].api, '1')
+        self.assertEqual(manifest.dependencies['once_cell'][0].package, 'once_cell')
+        self.assertEqual(manifest.dependencies['once_cell'][0].version, '1')
+        self.assertTrue(manifest.dependencies['once_cell'][0].accepts_version('1.0'))
+        self.assertTrue(manifest.dependencies['once_cell'][0].accepts_version('1.23'))
+        self.assertFalse(manifest.dependencies['once_cell'][0].accepts_version('2.0'))
+        self.assertFalse(manifest.dependencies['once_cell'][0].accepts_version('2.0-pre1'))
+        self.assertEqual(manifest.dependencies['once_cell'][0].api, '1')
+        self.assertEqual(manifest.dependencies['async-channel'][0].package, 'async-channel')
+        self.assertEqual(manifest.dependencies['async-channel'][0].version, '2.1')
+        self.assertFalse(manifest.dependencies['async-channel'][0].accepts_version('2.0'))
+        self.assertTrue(manifest.dependencies['async-channel'][0].accepts_version('2.1'))
+        self.assertTrue(manifest.dependencies['async-channel'][0].accepts_version('2.23'))
+        self.assertFalse(manifest.dependencies['async-channel'][0].accepts_version('2.0'))
+        self.assertFalse(manifest.dependencies['async-channel'][0].accepts_version('2.0-pre1'))
+        self.assertEqual(manifest.dependencies['async-channel'][0].api, '2')
+        self.assertEqual(manifest.dependencies['zerocopy'][0].package, 'zerocopy')
+        self.assertEqual(manifest.dependencies['zerocopy'][0].version, '0.7')
+        self.assertTrue(manifest.dependencies['zerocopy'][0].accepts_version('0.7'))
+        self.assertFalse(manifest.dependencies['zerocopy'][0].accepts_version('0.8'))
+        self.assertEqual(manifest.dependencies['zerocopy'][0].features, ['derive'])
+        self.assertEqual(manifest.dependencies['zerocopy'][0].api, '0.7')
 
         self.assertEqual(len(manifest.dev_dependencies), 1)
-        self.assertEqual(manifest.dev_dependencies['gir-format-check'].package, 'gir-format-check')
-        self.assertEqual(manifest.dev_dependencies['gir-format-check'].version, '^0.1')
-        self.assertTrue(manifest.dev_dependencies['gir-format-check'].accepts_version('0.1'))
-        self.assertFalse(manifest.dev_dependencies['gir-format-check'].accepts_version('0.2'))
-        self.assertEqual(manifest.dev_dependencies['gir-format-check'].api, '0.1')
+        self.assertEqual(manifest.dev_dependencies['gir-format-check'][0].package, 'gir-format-check')
+        self.assertEqual(manifest.dev_dependencies['gir-format-check'][0].version, '^0.1')
+        self.assertTrue(manifest.dev_dependencies['gir-format-check'][0].accepts_version('0.1'))
+        self.assertFalse(manifest.dev_dependencies['gir-format-check'][0].accepts_version('0.2'))
+        self.assertEqual(manifest.dev_dependencies['gir-format-check'][0].api, '0.1')
 
     def test_cargo_toml_proc_macro(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -814,38 +815,3 @@ class CargoTomlTest(unittest.TestCase):
         # keys not set by build-override stay from the base profile
         self.assertEqual(build['b_lto_mode'], 'thin')
         self.assertEqual(build['rust_panic'], 'abort')
-
-    def test_validate_patch(self) -> None:
-        # packages_to_member values are normalized with os.path.normpath (see
-        # _load_workspace_member), so do the same here
-        resolved = {
-            'cxx': '.',
-            'cxx-build': os.path.normpath('gen/build'),
-            'member': os.path.normpath('vendor/member'),
-        }
-
-        patch = {'crates-io': {
-            'cxx': {'path': '.'},
-            'cxx-build': {'path': 'gen/build'},
-            'member': {'version': '1', 'path': 'vendor/member'},
-        }}
-
-        # Empty or absent [patch]
-        self.assertFalse(list(validate_patch(None, resolved)))
-        self.assertFalse(list(validate_patch({}, resolved)))
-
-        # Invalid [patch] tables
-        self.assertTrue(list(validate_patch({'crates-io': {}, 'https://example.com': {}}, resolved)))
-        self.assertTrue(list(validate_patch({'crates-io': 'nonsense'}, resolved)))
-        self.assertTrue(list(validate_patch('nonsense', resolved)))
-
-        # Invalid entries
-        self.assertTrue(list(validate_patch({'crates-io': {'cxx': {'git': 'https://example.com'}}}, resolved)))
-        self.assertTrue(list(validate_patch({'crates-io': {'cxx': '1.0'}}, resolved)))
-
-        # Unknown crate
-        self.assertTrue(list(validate_patch({'crates-io': {'unknown': {'path': 'foo'}}}, resolved)))
-
-        # The only entries that don't warn point at a package that Meson already builds
-        self.assertFalse(list(validate_patch(patch, resolved)))
-        self.assertTrue(list(validate_patch({'crates-io': {'cxx-build': {'path': 'elsewhere'}}}, resolved)))

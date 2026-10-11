@@ -38,7 +38,7 @@ from mesonbuild.mesonlib import (
     is_sunos, windows_proof_rmtree, python_command, version_compare, split_args, quote_arg,
     relpath, is_linux, git, search_version, do_conf_file, do_conf_str, default_prefix,
     SubProject, MesonException, EnvironmentException,
-    windows_proof_rm, first
+    as_posix, windows_proof_rm, first
 )
 from mesonbuild.options import OptionKey
 from mesonbuild.programs import ExternalProgram
@@ -738,6 +738,32 @@ class AllPlatformTests(BasePlatformTests):
         self.build()
         out = self._run(self.mtest_command + ['--suite', 'verbose'])
         self.assertIn('1/1 subtest 1', out)
+
+    def test_tap_subtest_skip_count(self):
+        testdir = os.path.join(self.common_test_dir, '206 tap tests')
+        self.init(testdir)
+        self.build()
+        out = self._run(self.mtest_command + ['partially skipped (real-world example)'])
+        self.assertIn('21 subtests passed, 5 skipped', out)
+
+    def test_tap_subtest_failure_summary(self):
+        testdir = os.path.join(self.unit_test_dir, '140 tap summary')
+        self.init(testdir)
+        with self.assertRaises(subprocess.CalledProcessError) as cm:
+            self._run(self.mtest_command + ['--print-errorlogs'])
+        # The summary lists the failed test's failing and skipped subtests, but not its passing ones.
+        summary = cm.exception.stdout.split('Summary of Failures:')[1]
+        self.assertIn('sub-fail', summary)
+        self.assertIn('sub-skip', summary)
+        self.assertNotIn('sub-pass-one', summary)
+        self.assertNotIn('sub-pass-two', summary)
+
+        with open(os.path.join(self.logdir, 'testlog.txt'), encoding='utf-8') as f:
+            summary = f.read().split('Summary of Failures:')[1]
+        self.assertIn('sub-fail', summary)
+        self.assertIn('sub-skip', summary)
+        self.assertNotIn('sub-pass-one', summary)
+        self.assertNotIn('sub-pass-two', summary)
 
     def test_long_output(self):
         testdir = os.path.join(self.common_test_dir, '254 long output')
@@ -2126,7 +2152,7 @@ class AllPlatformTests(BasePlatformTests):
                         Version: 1.0.0
                         Libs: {}
                         ''').format(
-                            Path(linkfile).as_posix().replace(' ', r'\ '),
+                            as_posix(linkfile).replace(' ', r'\ '),
                         ))
 
                 # Run the test
@@ -3781,6 +3807,24 @@ class AllPlatformTests(BasePlatformTests):
         self.assertIn('c_args', optnames)
         self.assertNotIn('build.c_args', optnames)
 
+    def test_introspect_buildoptions_subproject_augments(self):
+        testdir = os.path.join(self.unit_test_dir, '47 reconfigure')
+        self.init(testdir, extra_args=['-Dsub1:c_args=-DAUG', '-Dsub1:werror=true'])
+        res = self.introspect('--buildoptions')
+        opts = {o['name']: o for o in res}
+        self.assertEqual(opts['sub1:c_args']['value'], ['-DAUG'])
+        self.assertEqual(opts['sub1:werror']['value'], True)
+        # Non-yielding builtins get a row per subproject.
+        self.assertIn('sub1:warning_level', opts)
+        # The generated intro file matches the introspect command.
+        infofile = os.path.join(self.builddir, 'meson-info', 'intro-buildoptions.json')
+        with open(infofile, encoding='utf-8') as fp:
+            self.assertListEqual(json.load(fp), res)
+        # Source-only introspection takes the same path and must not crash.
+        testfile = os.path.join(testdir, 'meson.build')
+        res_nb = self.introspect_directory(testfile, ['--buildoptions'] + self.meson_args)
+        self.assertIn('sub1:warning_level', {o['name'] for o in res_nb})
+
     def test_introspect_json_flat(self):
         testdir = os.path.join(self.unit_test_dir, '56 introspection')
         self.init(testdir, extra_args=['-Dlayout=flat'])
@@ -4837,7 +4881,7 @@ class AllPlatformTests(BasePlatformTests):
         self.init(testdir)
         self.run_tests()
 
-    @skipUnless(is_linux() and (re.search('^i.86$|^x86$|^x64$|^x86_64$|^amd64$', platform.processor()) is not None),
+    @skipUnless(is_linux() and (re.search('^i.86$|^x86$|^x64$|^x86_64$|^amd64$', platform.processor() or platform.machine()) is not None),
         'Requires ASM compiler for x86 or x86_64 platform currently only available on Linux CI runners')
     def test_nostdlib(self):
         testdir = os.path.join(self.unit_test_dir, '77 nostdlib')
@@ -5666,6 +5710,48 @@ class AllPlatformTests(BasePlatformTests):
         if self.backend is Backend.ninja:
             self.assertIn('Generating file.txt with a custom command', out)
             self.assertIn('Generating subdir/file.txt with a custom command', out)
+
+    def test_custom_target_depfile_output_substitution(self):
+        '''depfile: '@OUTPUT@.d' in a subdirectory must not double the path.
+
+        https://github.com/mesonbuild/meson/issues/14140
+        '''
+        testdir = os.path.join(self.common_test_dir, '49 custom target')
+        self.init(testdir)
+        self.build()
+        output = os.path.join(self.builddir, 'outputdepfile', 'out.dat')
+        self.assertPathExists(output)
+        self.assertPathDoesNotExist(os.path.join(self.builddir, 'outputdepfile', 'outputdepfile', 'out.dat.d'))
+        with open(output + '.path', encoding='utf-8') as f:
+            depfile_arg = f.read().strip().replace('\\', '/')
+        # Ninja passes a builddir-relative path; Visual Studio uses an
+        # absolute path. Either is fine so long as the subdirectory is
+        # not doubled (issue #14140).
+        self.assertTrue(
+            depfile_arg == 'outputdepfile/out.dat.d'
+            or depfile_arg.endswith('/outputdepfile/out.dat.d'),
+            depfile_arg)
+        self.assertNotIn('outputdepfile/outputdepfile/', depfile_arg)
+
+        placed = os.path.join(self.builddir, 'outputdepfile', 'placed', 'out.dat')
+        self.assertPathExists(placed)
+        self.assertPathDoesNotExist(os.path.join(
+            self.builddir, 'outputdepfile', 'placed', 'outputdepfile', 'placed', 'out.dat.d'))
+        with open(placed + '.path', encoding='utf-8') as f:
+            placed_arg = f.read().strip().replace('\\', '/')
+        self.assertTrue(
+            placed_arg == 'outputdepfile/placed/out.dat.d'
+            or placed_arg.endswith('/outputdepfile/placed/out.dat.d'),
+            placed_arg)
+        self.assertNotIn('placed/outputdepfile/placed/', placed_arg)
+        if self.backend is Backend.ninja:
+            with open(os.path.join(self.builddir, 'build.ninja'), encoding='utf-8') as f:
+                contents = f.read().replace('\\', '/')
+            self.assertIn('outputdepfile/out.dat.d', contents)
+            self.assertNotIn('outputdepfile/outputdepfile/out.dat.d', contents)
+            self.assertIn('outputdepfile/placed/out.dat.d', contents)
+            self.assertNotIn('outputdepfile/placed/outputdepfile/placed/out.dat.d', contents)
+            self.assertNotIn('@OUTPUT@.d', contents)
 
     def test_symlinked_subproject(self):
         testdir = os.path.join(self.unit_test_dir, '107 subproject symlink')

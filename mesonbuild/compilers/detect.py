@@ -60,6 +60,11 @@ else:
         defaults['cpp'] = ['c++', 'g++', 'l++', 'clang++']
         defaults['objc'] = ['clang']
         defaults['objcpp'] = ['clang++']
+    elif platform.system().lower() == 'qnx':
+        defaults['c'] = ['cc', 'gcc', 'clang', 'qcc']
+        defaults['cpp'] = ['c++', 'g++', 'clang++', 'q++']
+        defaults['objc'] = ['clang']
+        defaults['objcpp'] = ['clang++']
     else:
         defaults['c'] = ['cc', 'gcc', 'clang', 'nvc', 'pgcc', 'icc', 'icx']
         defaults['cpp'] = ['c++', 'g++', 'clang++', 'nvc++', 'pgc++', 'icpc', 'icpx']
@@ -286,7 +291,6 @@ def detect_static_linker(env: 'Environment', compiler: Compiler) -> StaticLinker
         if p.returncode == 1 and err.startswith('emxomfar'):
             return linkers.EmxomfArLinker(compiler.for_machine, linker, env)
     _handle_exceptions(popen_exceptions, trials, 'linker')
-    raise EnvironmentException('Unreachable code (exception to make mypy happy)')
 
 
 # Compilers
@@ -374,6 +378,19 @@ def _detect_c_or_cpp_compiler(env: 'Environment', lang: str, for_machine: Machin
         if 'Microchip' in out:
             # this output has "Free Software Foundation" in its version
             guess_gcc_or_lcc = None
+        if compiler_name in {'qcc', 'q++', 'qcc.exe', 'q++.exe'}:
+            # qcc/q++ have no distinguishing banner text, so recognize them
+            # by driver name instead - but only for a target declared/
+            # detected as QNX, so an unrelated binary that happens to be
+            # named qcc/q++ isn't misidentified as the QNX driver.
+            if not env.machines[for_machine].is_qnx():
+                section = 'host_machine' if for_machine is MachineChoice.HOST else 'build_machine'
+                raise EnvironmentException(
+                    f"{compiler_name!r} looks like the QNX qcc/q++ compiler "
+                    f"driver, but the {for_machine.get_lower_case_name()} machine "
+                    f"is not declared as QNX. Set system = 'qnx' in the "
+                    f"[{section}] section of your cross/native file.")
+            guess_gcc_or_lcc = 'qcc'
 
         if guess_gcc_or_lcc:
             defines = _get_gnu_compiler_defines(compiler, lang)
@@ -381,14 +398,22 @@ def _detect_c_or_cpp_compiler(env: 'Environment', lang: str, for_machine: Machin
                 popen_exceptions[join_args(compiler)] = 'no pre-processor defines'
                 continue
 
+            extra_args: T.Optional[T.List[str]] = None
             if guess_gcc_or_lcc == 'lcc':
                 version = _get_lcc_version_from_defines(defines)
                 cls = c.ElbrusCCompiler if lang == 'c' else cpp.ElbrusCPPCompiler
+            elif guess_gcc_or_lcc == 'qcc':
+                version = _get_gnu_version_from_defines(defines)
+                cls = c.QccCCompiler if lang == 'c' else cpp.QccCPPCompiler
+                # Unlike gcc, qcc/q++ refuse to run '-Wl,--version' without a
+                # source file ('cc: no files to process'); the null device
+                # satisfies the driver without needing an actual file on disk.
+                extra_args = [os.devnull]
             else:
                 version = _get_gnu_version_from_defines(defines)
                 cls = c.GnuCCompiler if lang == 'c' else cpp.GnuCPPCompiler
 
-            linker = guess_nix_linker(env, compiler, cls, version, for_machine)
+            linker = guess_nix_linker(env, compiler, cls, version, for_machine, extra_args=extra_args)
 
             return cls(
                 ccache, compiler, version, for_machine,
@@ -688,7 +713,6 @@ def _detect_c_or_cpp_compiler(env: 'Environment', lang: str, for_machine: Machin
                 full_version=full_version, linker=linker)
 
     _handle_exceptions(popen_exceptions, compilers)
-    raise EnvironmentException(f'Unknown compiler {compilers}')
 
 def detect_c_compiler(env: 'Environment', for_machine: MachineChoice) -> Compiler:
     return _detect_c_or_cpp_compiler(env, 'c', for_machine)
@@ -746,7 +770,6 @@ def detect_cuda_compiler(env: 'Environment', for_machine: MachineChoice) -> Comp
         return cls(ccache, compiler, version, for_machine, cpp_compiler, env, linker=linker)
 
     _handle_exceptions(popen_exceptions, compilers)
-    raise EnvironmentException(f'Unknown compiler {compilers}')
 
 def detect_fortran_compiler(env: 'Environment', for_machine: MachineChoice) -> Compiler:
     from . import fortran
@@ -933,7 +956,6 @@ def detect_fortran_compiler(env: 'Environment', for_machine: MachineChoice) -> C
                     full_version=full_version, linker=linker)
 
     _handle_exceptions(popen_exceptions, compilers)
-    raise EnvironmentException('Unreachable code (exception to make mypy happy)')
 
 def detect_objc_compiler(env: 'Environment', for_machine: MachineChoice) -> 'Compiler':
     return _detect_objc_or_objcpp_compiler(env, 'objc', for_machine)
@@ -994,7 +1016,6 @@ def _detect_objc_or_objcpp_compiler(env: 'Environment', lang: str, for_machine: 
                 ccache, compiler, version, for_machine,
                 env, linker=linker, defines=defines)
     _handle_exceptions(popen_exceptions, compilers)
-    raise EnvironmentException('Unreachable code (exception to make mypy happy)')
 
 def detect_java_compiler(env: 'Environment', for_machine: MachineChoice) -> Compiler:
     from .java import JavaCompiler
@@ -1041,7 +1062,6 @@ def detect_cs_compiler(env: 'Environment', for_machine: MachineChoice) -> Compil
         return cls(comp, version, for_machine, env)
 
     _handle_exceptions(popen_exceptions, compilers)
-    raise EnvironmentException('Unreachable code (exception to make mypy happy)')
 
 def detect_cython_compiler(env: 'Environment', for_machine: MachineChoice) -> Compiler:
     """Search for a cython compiler."""
@@ -1068,7 +1088,6 @@ def detect_cython_compiler(env: 'Environment', for_machine: MachineChoice) -> Co
             env.add_lang_args(comp_class.language, comp_class, for_machine)
             return comp_class([], comp, version, for_machine, env)
     _handle_exceptions(popen_exceptions, compilers)
-    raise EnvironmentException('Unreachable code (exception to make mypy happy)')
 
 def detect_vala_compiler(env: 'Environment', for_machine: MachineChoice) -> Compiler:
     from .vala import ValaCompiler
@@ -1217,7 +1236,6 @@ def detect_rust_compiler(env: 'Environment', for_machine: MachineChoice) -> Rust
                 linker=linker, full_version=full_version)
 
     _handle_exceptions(popen_exceptions, compilers)
-    raise EnvironmentException('Unreachable code (exception to make mypy happy)')
 
 def detect_d_compiler(env: 'Environment', for_machine: MachineChoice) -> Compiler:
     from . import c, d
@@ -1333,7 +1351,6 @@ def detect_d_compiler(env: 'Environment', for_machine: MachineChoice) -> Compile
         raise EnvironmentException('Unknown compiler: ' + join_args(exelist))
 
     _handle_exceptions(popen_exceptions, compilers)
-    raise EnvironmentException('Unreachable code (exception to make mypy happy)')
 
 def detect_swift_compiler(env: 'Environment', for_machine: MachineChoice) -> Compiler:
     from .swift import SwiftCompiler
@@ -1404,7 +1421,6 @@ def detect_nasm_compiler(env: 'Environment', for_machine: MachineChoice) -> Comp
                 return comp_class_mwasmeppc([], comp, version, for_machine, env, cc.linker)
 
     _handle_exceptions(popen_exceptions, compilers)
-    raise EnvironmentException('Unreachable code (exception to make mypy happy)')
 
 def detect_masm_compiler(env: 'Environment', for_machine: MachineChoice) -> Compiler:
     # We need a C compiler to properly detect the machine info and linker
@@ -1444,7 +1460,6 @@ def detect_masm_compiler(env: 'Environment', for_machine: MachineChoice) -> Comp
     except OSError as e:
         popen_exceptions[' '.join(comp + [arg])] = e
     _handle_exceptions(popen_exceptions, [comp])
-    raise EnvironmentException('Unreachable code (exception to make mypy happy)')
 
 def detect_linearasm_compiler(env: Environment, for_machine: MachineChoice) -> Compiler:
     from .asm import TILinearAsmCompiler
@@ -1464,7 +1479,6 @@ def detect_linearasm_compiler(env: Environment, for_machine: MachineChoice) -> C
     except OSError as e:
         popen_exceptions[' '.join(comp + [arg])] = e
     _handle_exceptions(popen_exceptions, [comp])
-    raise EnvironmentException('Unreachable code (exception to make mypy happy)')
 
 # GNU/Clang defines and version
 # =============================

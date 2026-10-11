@@ -21,6 +21,7 @@ import unittest
 import mesonbuild.mlog
 import mesonbuild.depfile
 import mesonbuild.dependencies.base
+import mesonbuild.dependencies.dev
 import mesonbuild.dependencies.factory
 import mesonbuild.envconfig
 import mesonbuild.environment
@@ -28,11 +29,13 @@ import mesonbuild.modules.cuda
 import mesonbuild.modules.gnome
 import mesonbuild.scripts.depfixer
 import mesonbuild.scripts.env2mfile
+import mesonbuild.scripts.symbolextractor
 from mesonbuild import coredata
 from mesonbuild.compilers import Compiler
-from mesonbuild.compilers.c import ClangCCompiler, GnuCCompiler, VisualStudioCCompiler
+from mesonbuild.compilers.c import ClangCCompiler, GnuCCompiler, QccCCompiler, VisualStudioCCompiler
 from mesonbuild.compilers.compilers import CompileCheckMode, ManyInOneLinkerOptionStyle
-from mesonbuild.compilers.cpp import VisualStudioCPPCompiler
+from mesonbuild.compilers.cpp import ClangCPPCompiler, GnuCPPCompiler, VisualStudioCPPCompiler, QccCPPCompiler
+from mesonbuild.compilers.objcpp import ClangObjCPPCompiler, GnuObjCPPCompiler
 from mesonbuild.compilers.d import DmdDCompiler, LLVMDCompiler
 from mesonbuild.compilers.detect import detect_c_compiler
 from mesonbuild.compilers.mixins.visualstudio import MSVCCompiler, ClangClCompiler
@@ -42,14 +45,14 @@ from mesonbuild.interpreterbase import (
     KwargInfo, PosArgInfo, VarArgInfo,
 )
 from mesonbuild.mesonlib import (
-    LibType, MachineChoice, PerMachine, SimpleABC, Version, is_windows, is_osx,
+    FileMode, LibType, MachineChoice, PerMachine, SimpleABC, Version, is_windows, is_osx,
     is_cygwin, is_openbsd, search_version, MesonException, EnvironmentException, python_command,
     version_check_to_range,
 )
-from mesonbuild.options import OptionKey
+from mesonbuild.options import OptionKey, UserBooleanOption
 from mesonbuild.interpreter.type_checking import (
     STR_PARG, INT_PARG, BOOL_PARG, STR_OARG, INT_OARG, STR_VARG,
-    in_set_validator, NoneType,
+    INSTALL_MODE_KW, in_set_validator, NoneType,
 )
 from mesonbuild.dependencies.pkgconfig import PkgConfigDependency, PkgConfigInterface, PkgConfigCLI
 from mesonbuild.programs import ExternalProgram
@@ -395,6 +398,29 @@ Thread model: posix'''), '21.9.0')
         self.assertEqual(l, ['-Lfoodir', '-lfoo', '-Lbardir', '-lbar', '-lbar', abspath])
 
 
+    def test_objcpp_cpp_rtti(self) -> None:
+        # Objective-C++ shares the cpp_rtti option, so it must produce
+        # the same flags as the matching C++ compiler.
+        # https://github.com/mesonbuild/meson/issues/16189
+        key = OptionKey('cpp_rtti', machine=MachineChoice.HOST)
+        compilers = (
+            (GnuObjCPPCompiler, GnuCPPCompiler),
+            (ClangObjCPPCompiler, ClangCPPCompiler),
+        )
+        for objcpp_cls, cpp_cls in compilers:
+            for value in (True, False):
+                env = get_fake_env()
+                ref = cpp_cls([], ['c++'], 'fake', MachineChoice.HOST, env)
+                for k, o in ref.get_options().items():
+                    if k.name == 'rtti':
+                        o = UserBooleanOption('cpp_rtti', 'Enable RTTI', value)
+                    env.coredata.optstore.add_compiler_option('cpp', k, o)
+                comp = objcpp_cls([], ['c++'], 'fake', MachineChoice.HOST, env)
+                self.assertEqual(comp.form_compileropt_key('rtti'), key)
+                self.assertIn(key, comp.get_options())
+                self.assertEqual(comp.get_option_compile_args(None),
+                                 ref.get_option_compile_args(None))
+
     def test_compiler_args_class_visualstudio(self):
         env = get_fake_env()
         linker = linkers.MSVCDynamicLinker(env, MachineChoice.HOST, [])
@@ -579,47 +605,244 @@ Thread model: posix'''), '21.9.0')
 
     def test_compiler_args_class_gnuld(self):
         ## Test --start/end-group
-        env = get_fake_env()
-        linker = linkers.GnuBFDDynamicLinker([], env, MachineChoice.HOST, ManyInOneLinkerOptionStyle('-Wl,', ','), [])
-        gcc = GnuCCompiler([], [], 'fake', MachineChoice.HOST, env, linker=linker)
-        ## Ensure that the fake compiler is never called by overriding the relevant function
-        gcc.get_default_include_dirs = lambda: ['/usr/include', '/usr/share/include', '/usr/local/include']
-        ## Test that 'direct' append and extend works
-        l = gcc.compiler_args(['-Lfoodir', '-lfoo'])
-        self.assertEqual(l.to_native(copy=True), ['-Lfoodir', '-lfoo'])
-        # Direct-adding a library and a libpath appends both correctly
-        l.extend_direct(['-Lbardir', '-lbar'])
-        self.assertEqual(l.to_native(copy=True), ['-Lfoodir', '-Wl,--start-group', '-lfoo', '-Lbardir', '-lbar', '-Wl,--end-group'])
-        # Direct-adding the same library again still adds it
-        l.append_direct('-lbar')
-        self.assertEqual(l.to_native(copy=True), ['-Lfoodir', '-Wl,--start-group', '-lfoo', '-Lbardir', '-lbar', '-lbar', '-Wl,--end-group'])
-        # Direct-adding with absolute path deduplicates
-        abspath = str(Path('/libbaz.a').resolve())
-        l.append_direct(abspath)
-        self.assertEqual(l.to_native(copy=True), ['-Lfoodir', '-Wl,--start-group', '-lfoo', '-Lbardir', '-lbar', '-lbar', abspath, '-Wl,--end-group'])
-        # Adding libbaz again does nothing
-        l.append_direct(abspath)
-        self.assertEqual(l.to_native(copy=True), ['-Lfoodir', '-Wl,--start-group', '-lfoo', '-Lbardir', '-lbar', '-lbar', abspath, '-Wl,--end-group'])
-        # Adding a non-library argument doesn't include it in the group
-        l += ['-Lfoo', '-Wl,--export-dynamic']
-        self.assertEqual(l.to_native(copy=True), ['-Lfoo', '-Lfoodir', '-Wl,--start-group', '-lfoo', '-Lbardir', '-lbar', '-lbar', abspath, '-Wl,--end-group', '-Wl,--export-dynamic'])
-        # -Wl,-lfoo is detected as a library and gets added to the group
-        l.append('-Wl,-ldl')
-        self.assertEqual(l.to_native(copy=True), ['-Lfoo', '-Lfoodir', '-Wl,--start-group', '-lfoo', '-Lbardir', '-lbar', '-lbar', abspath, '-Wl,--export-dynamic', '-Wl,-ldl', '-Wl,--end-group'])
+        # QccCCompiler shares GnuCCompiler's GNU-linker group/dedup handling
+        # unmodified, so it must behave identically here.
+        for cls in (GnuCCompiler, QccCCompiler):
+            with self.subTest(compiler=cls.__name__):
+                env = get_fake_env()
+                linker = linkers.GnuBFDDynamicLinker([], env, MachineChoice.HOST, ManyInOneLinkerOptionStyle('-Wl,', ','), [])
+                gcc = cls([], [], 'fake', MachineChoice.HOST, env, linker=linker)
+                ## Ensure that the fake compiler is never called by overriding the relevant function
+                gcc.get_default_include_dirs = mock.Mock(return_value=['/usr/include', '/usr/share/include', '/usr/local/include'])
+                ## Test that 'direct' append and extend works
+                l = gcc.compiler_args(['-Lfoodir', '-lfoo'])
+                self.assertEqual(l.to_native(copy=True), ['-Lfoodir', '-lfoo'])
+                # Direct-adding a library and a libpath appends both correctly
+                l.extend_direct(['-Lbardir', '-lbar'])
+                self.assertEqual(l.to_native(copy=True), ['-Lfoodir', '-Wl,--start-group', '-lfoo', '-Lbardir', '-lbar', '-Wl,--end-group'])
+                # Direct-adding the same library again still adds it
+                l.append_direct('-lbar')
+                self.assertEqual(l.to_native(copy=True), ['-Lfoodir', '-Wl,--start-group', '-lfoo', '-Lbardir', '-lbar', '-lbar', '-Wl,--end-group'])
+                # Direct-adding with absolute path deduplicates
+                abspath = str(Path('/libbaz.a').resolve())
+                l.append_direct(abspath)
+                self.assertEqual(l.to_native(copy=True), ['-Lfoodir', '-Wl,--start-group', '-lfoo', '-Lbardir', '-lbar', '-lbar', abspath, '-Wl,--end-group'])
+                # Adding libbaz again does nothing
+                l.append_direct(abspath)
+                self.assertEqual(l.to_native(copy=True), ['-Lfoodir', '-Wl,--start-group', '-lfoo', '-Lbardir', '-lbar', '-lbar', abspath, '-Wl,--end-group'])
+                # Adding a non-library argument doesn't include it in the group
+                l += ['-Lfoo', '-Wl,--export-dynamic']
+                self.assertEqual(l.to_native(copy=True), ['-Lfoo', '-Lfoodir', '-Wl,--start-group', '-lfoo', '-Lbardir', '-lbar', '-lbar', abspath, '-Wl,--end-group', '-Wl,--export-dynamic'])
+                # -Wl,-lfoo is detected as a library and gets added to the group
+                l.append('-Wl,-ldl')
+                self.assertEqual(l.to_native(copy=True), ['-Lfoo', '-Lfoodir', '-Wl,--start-group', '-lfoo', '-Lbardir', '-lbar', '-lbar', abspath, '-Wl,--export-dynamic', '-Wl,-ldl', '-Wl,--end-group'])
 
     def test_compiler_args_remove_system(self):
         ## Test --start/end-group
-        env = get_fake_env()
-        linker = linkers.GnuBFDDynamicLinker([], env, MachineChoice.HOST, ManyInOneLinkerOptionStyle('-Wl,', ','), [])
-        gcc = GnuCCompiler([], [], 'fake', MachineChoice.HOST, env, linker=linker)
-        ## Ensure that the fake compiler is never called by overriding the relevant function
-        gcc.get_default_include_dirs = lambda: ['/usr/include', '/usr/share/include', '/usr/local/include']
-        ## Test that 'direct' append and extend works
-        l = gcc.compiler_args(['-Lfoodir', '-lfoo'])
-        self.assertEqual(l.to_native(copy=True), ['-Lfoodir', '-lfoo'])
-        ## Test that to_native removes all system includes
-        l += ['-isystem/usr/include', '-isystem=/usr/share/include', '-DSOMETHING_IMPORTANT=1', '-isystem', '/usr/local/include']
-        self.assertEqual(l.to_native(copy=True), ['-Lfoodir', '-lfoo', '-DSOMETHING_IMPORTANT=1'])
+        # See test_compiler_args_class_gnuld for why QccCCompiler is included
+        # here too.
+        for cls in (GnuCCompiler, QccCCompiler):
+            with self.subTest(compiler=cls.__name__):
+                env = get_fake_env()
+                linker = linkers.GnuBFDDynamicLinker([], env, MachineChoice.HOST, ManyInOneLinkerOptionStyle('-Wl,', ','), [])
+                gcc = cls([], [], 'fake', MachineChoice.HOST, env, linker=linker)
+                ## Ensure that the fake compiler is never called by overriding the relevant function
+                gcc.get_default_include_dirs = mock.Mock(return_value=['/usr/include', '/usr/share/include', '/usr/local/include'])
+                ## Test that 'direct' append and extend works
+                l = gcc.compiler_args(['-Lfoodir', '-lfoo'])
+                self.assertEqual(l.to_native(copy=True), ['-Lfoodir', '-lfoo'])
+                ## Test that to_native removes all system includes
+                l += ['-isystem/usr/include', '-isystem=/usr/share/include', '-DSOMETHING_IMPORTANT=1', '-isystem', '/usr/local/include']
+                self.assertEqual(l.to_native(copy=True), ['-Lfoodir', '-lfoo', '-DSOMETHING_IMPORTANT=1'])
+
+    def test_qnx_platform_disables_pthread_flags(self):
+        # Threading is a platform property (QNX's libc includes pthreads)
+        # handled via MachineInfo.is_qnx() - so this applies to any compiler on QNX.
+        qnx = mesonbuild.envconfig.MachineInfo(
+            system='qnx', cpu_family='x86_64', cpu='x86_64',
+            endian='little', kernel=None, subsystem=None)
+
+        for cls in (GnuCCompiler, QccCCompiler):
+            with self.subTest(compiler=cls.__name__):
+                env = get_fake_env()
+                env.machines.host = qnx
+                linker = linkers.GnuBFDDynamicLinker([], env, MachineChoice.HOST, ManyInOneLinkerOptionStyle('-Wl,', ','), [])
+                cc = cls([], [], 'fake', MachineChoice.HOST, env, linker=linker)
+
+                self.assertEqual(cc.thread_flags(), [])
+                self.assertEqual(cc.thread_link_flags(), [])
+
+        # A non-QNX target still gets the normal -pthread.
+        linux = mesonbuild.envconfig.MachineInfo(
+            system='linux', cpu_family='x86_64', cpu='x86_64',
+            endian='little', kernel='linux', subsystem=None)
+        for cls in (GnuCCompiler, QccCCompiler):
+            with self.subTest(compiler=cls.__name__):
+                env = get_fake_env()
+                env.machines.host = linux
+                linker = linkers.GnuBFDDynamicLinker([], env, MachineChoice.HOST, ManyInOneLinkerOptionStyle('-Wl,', ','), [])
+                cc = cls([], [], 'fake', MachineChoice.HOST, env, linker=linker)
+
+                self.assertEqual(cc.thread_flags(), ['-pthread'])
+                self.assertEqual(cc.thread_link_flags(), ['-pthread'])
+
+    def test_symbolextractor_dispatches_qnx_to_gnu_syms(self):
+        # QNX ships GNU binutils, so a native QNX build should use the same
+        # readelf/nm-based extraction as Linux/Hurd/Haiku, not dummy_syms()
+        # (which forces a relink every time).
+        se = mesonbuild.scripts.symbolextractor
+        with mock.patch.object(se.mesonlib, 'is_linux', return_value=False), \
+             mock.patch.object(se.mesonlib, 'is_hurd', return_value=False), \
+             mock.patch.object(se.mesonlib, 'is_haiku', return_value=False), \
+             mock.patch.object(se.mesonlib, 'is_qnx', return_value=True), \
+             mock.patch.object(se, 'gnu_syms') as mock_gnu_syms, \
+             mock.patch.object(se, 'dummy_syms') as mock_dummy_syms:
+            options = argparse.Namespace(cross_host=None, builddir='builddir',
+                                         libfilename='lib.so', impfilename='lib.imp',
+                                         outfilename='out.symbols')
+            se.gen_symbols(options)
+            mock_gnu_syms.assert_called_once_with('lib.so', 'out.symbols')
+            mock_dummy_syms.assert_not_called()
+
+    def test_jni_platform_include_dir_qnx(self):
+        # JNI's jni_md.h lives in a per-OS subdirectory of a JDK's include/
+        # dir; QNX-targeting JDKs use 'qnx', matching the lowercase-OS-name
+        # convention used for every other platform here.
+        to_dir = mesonbuild.dependencies.dev.JNISystemDependency.get_platform_include_dir
+
+        def machine(system: str) -> mesonbuild.envconfig.MachineInfo:
+            return mesonbuild.envconfig.MachineInfo(
+                system=system, cpu_family='x86_64', cpu='x86_64',
+                endian='little', kernel=None, subsystem=None)
+
+        self.assertEqual(to_dir(machine('qnx')), 'qnx')
+        self.assertEqual(to_dir(machine('linux')), 'linux')
+        self.assertIsNone(to_dir(machine('some-made-up-os')))
+
+    def test_qcc_dependency_and_coverage_args(self):
+        # qcc/q++ mixin overrides that are pure argument-list transforms and
+        # need no real compiler binary or environment plumbing to exercise.
+        for cls in (QccCCompiler, QccCPPCompiler):
+            with self.subTest(compiler=cls.__name__):
+                env = get_fake_env()
+                qcc = cls([], [], 'fake', MachineChoice.HOST, env)
+
+                # Plain '-MD'/'-MF'/'-MQ' collide with qcc's own flag meanings; see
+                # get_dependency_gen_args().
+                self.assertEqual(
+                    qcc.get_dependency_gen_args('out.o', 'out.o.d'),
+                    ['-Wc,-MQ,out.o', '-Wc,-MMD', '-Wc,-MP', '-Wc,-MF,out.o.d'])
+
+                self.assertEqual(qcc.get_coverage_args(), ['-fprofile-arcs', '-ftest-coverage'])
+                self.assertEqual(qcc.get_coverage_link_args(), ['-fprofile-arcs', '-ftest-coverage'])
+
+    def test_qcc_runtime_library_auto_link_args(self):
+        # qcc's driver doesn't auto-link the runtime for '-fopenmp',
+        # '-fprofile-generate', or '-fsanitize=<name>' like gcc's driver does.
+        for cls in (QccCCompiler, QccCPPCompiler):
+            with self.subTest(compiler=cls.__name__):
+                env = get_fake_env()
+                linker = linkers.GnuBFDDynamicLinker([], env, MachineChoice.HOST, ManyInOneLinkerOptionStyle('-Wl,', ','), [])
+                qcc = cls([], [], 'fake', MachineChoice.HOST, env, linker=linker)
+
+                self.assertEqual(qcc.openmp_link_flags(), ['-fopenmp', '-lgomp'])
+
+                self.assertEqual(qcc.get_profile_generate_args(), ['-fprofile-generate', '-fprofile-arcs'])
+
+                # A trailing forced '-lc' accompanies any linked sanitizer runtime:
+                # on SDP 8.0, libgcc_eh.a's __gthread_once needs pthread_once,
+                # which '-Wl,--as-needed' will otherwise drop from a shared
+                # library link with no other pthread-touching reference.
+                keep_libc = ['-Wl,--no-as-needed', '-lc', '-Wl,--as-needed']
+                self.assertEqual(qcc.sanitizer_link_args(None, ['address']),
+                                 ['-fsanitize=address', '-lasan'] + keep_libc)
+                self.assertEqual(qcc.sanitizer_link_args(None, ['undefined']),
+                                 ['-fsanitize=undefined', '-lubsan'] + keep_libc)
+                self.assertEqual(qcc.sanitizer_link_args(None, ['address', 'leak']),
+                                 ['-fsanitize=address,leak', '-lasan', '-llsan'] + keep_libc)
+                # No libtsan in this SDP, so 'thread' passes through unaugmented,
+                # and since no runtime was linked, '-lc' isn't forced either.
+                self.assertEqual(qcc.sanitizer_link_args(None, ['thread']), ['-fsanitize=thread'])
+                self.assertEqual(qcc.sanitizer_link_args(None, []), [])
+
+    def test_qcc_preprocess_only_args(self):
+        # Bare '-P' is silently dropped by qcc's driver; '-Wp,-P' is required.
+        for cls, suffix in ((QccCCompiler, '-xc'), (QccCPPCompiler, '-xc++')):
+            with self.subTest(compiler=cls.__name__):
+                env = get_fake_env()
+                qcc = cls([], [], 'fake', MachineChoice.HOST, env)
+
+                self.assertEqual(qcc.get_preprocess_only_args(), ['-E', '-Wp,-P'])
+                # get_preprocess_to_file_args() builds on get_preprocess_only_args().
+                self.assertEqual(qcc.get_preprocess_to_file_args(), ['-E', '-Wp,-P', suffix])
+
+    def test_qcc_unsupported_features_raise(self):
+        # qcc/q++ have no alternate-linker-selection equivalent, so Meson
+        # must refuse it instead of silently emitting a flag known not to work.
+        for cls in (QccCCompiler, QccCPPCompiler):
+            with self.subTest(compiler=cls.__name__):
+                with self.assertRaises(MesonException):
+                    cls.use_linker_args('lld', '1.0')
+
+    def test_qcc_lto_works_but_thinlto_cache_raises(self):
+        # Plain LTO uses GnuCompiler's unmodified flags and needs no
+        # override; ThinLTO's incremental-cache flag is rejected by cc1.
+        for cls in (QccCCompiler, QccCPPCompiler):
+            with self.subTest(compiler=cls.__name__):
+                env = get_fake_env()
+                qcc = cls([], [], '12.2.0', MachineChoice.HOST, env, defines={})
+
+                self.assertEqual(qcc.get_lto_compile_args(threads=0), ['-flto=auto'])
+                self.assertEqual(qcc.get_lto_compile_args(threads=4), ['-flto=4'])
+                self.assertEqual(qcc.get_lto_link_args(threads=0), ['-flto=auto'])
+
+                with self.assertRaises(EnvironmentException):
+                    qcc.get_lto_compile_args(threads=0, thinlto_cache_dir='/tmp/cache')
+                with self.assertRaises(EnvironmentException):
+                    qcc.get_thinlto_cache_args('/tmp/cache')
+
+    def test_qcc_default_include_dirs_uses_double_verbose(self):
+        # qcc/q++ print no banner for plain '-v'; '-vv' is required.
+        with mock.patch('mesonbuild.compilers.mixins.gnu.gnulike_default_include_dirs') as m:
+            m.return_value = ['/usr/include']
+            env = get_fake_env()
+            qcc = QccCCompiler([], ['qcc'], 'fake', MachineChoice.HOST, env)
+            self.assertEqual(qcc.get_default_include_dirs(), ['/usr/include'])
+            self.assertEqual(m.call_args.kwargs.get('verbosity_arg'), '-vv')
+
+    def test_qcc_sanity_check_compile_args(self):
+        # qcc rejects '-c' mixed into an already link-shaped command, so
+        # compile and link modes must stay mutually exclusive.
+
+        # Each subtest gets its own environment and compiler, so neither can
+        # see state left behind by the other.
+        def make_qcc() -> QccCCompiler:
+            env = get_fake_env()
+            linker = linkers.GnuBFDDynamicLinker([], env, MachineChoice.HOST, ManyInOneLinkerOptionStyle('-Wl,', ','), [])
+            qcc = QccCCompiler([], ['qcc'], 'fake', MachineChoice.HOST, env, linker=linker)
+            env.add_lang_args('c', QccCCompiler, MachineChoice.HOST)
+            env.coredata.process_compiler_options('c', qcc, '')
+            return qcc
+
+        # Not cross (or cross with an exe wrapper): a link-shaped command,
+        # source and output named directly, no '-c'.
+        with self.subTest('native'):
+            qcc = make_qcc()
+            self.assertFalse(qcc.is_cross)
+            args, largs = qcc._sanity_check_compile_args('sanity.c', 'sanity.exe')
+            self.assertNotIn('-c', args)
+            self.assertIn('sanity.c', args)
+            self.assertIn('sanity.exe', args)
+            self.assertEqual(largs, [])
+
+        # Cross without an exe wrapper: a compile-only command instead.
+        with self.subTest('cross without exe wrapper'):
+            qcc = make_qcc()
+            qcc.is_cross = True
+            with mock.patch.object(qcc.environment, 'has_exe_wrapper', return_value=False):
+                args, largs = qcc._sanity_check_compile_args('sanity.c', 'sanity.exe')
+            self.assertIn('-c', args)
+            self.assertIn('sanity.c', args)
 
     def test_string_templates_substitution(self):
         dictfunc = mesonbuild.mesonlib.get_filenames_templates_dict
@@ -1375,7 +1598,8 @@ Thread model: posix'''), '21.9.0')
                 (['foo.o \\', 'foo.h: bar'], 'foo.h', set({'bar'})),
                 (['foo.o \\', 'foo.h: bar'], 'foo.o', set({'bar'})),
                 # \\ handling
-                (['foo: Program\\ F\\iles\\\\X'], 'foo', set({'Program Files\\X'})),
+                (['foo: Program\\ F\\iles\\\\X'], 'foo',
+                 set({'Program Files/X' if os.path.sep == '\\' else r'Program Files\X'})),
                 # $ handling
                 (['f$o.o: c/b'], 'f$o.o', set({'c/b'})),
                 (['f$$o.o: c/b'], 'f$o.o', set({'c/b'})),
@@ -1384,6 +1608,17 @@ Thread model: posix'''), '21.9.0')
                 (['a: b', 'b: a'], 'b', set({'a', 'b'})),
         ]:
             d = mesonbuild.depfile.DepFile(f)
+            deps = d.get_all_dependencies(target)
+            self.assertEqual(sorted(deps), sorted(expdeps))
+
+    def test_depfile_join_paths(self):
+        for (f, target, expdeps) in [
+                # relative paths
+                (['meson/foo.o  : foo.c'], 'meson/foo.o', set({'/path/to/src/foo.c'})),
+                # absolute paths
+                (['meson/foo.o  : /usr/include/foo.h'], 'meson/foo.o', set({'/usr/include/foo.h'})),
+        ]:
+            d = mesonbuild.depfile.DepFile(f, '/path/to/src')
             deps = d.get_all_dependencies(target)
             self.assertEqual(sorted(deps), sorted(expdeps))
 
@@ -2408,6 +2643,34 @@ Thread model: posix'''), '21.9.0')
         _(None, mock.Mock(), [''], {'input': ''})
         _(None, mock.Mock(), [['']], {'input': ['']})
         self.assertRaises(InvalidArguments, _, None, mock.Mock(), [], {'input': 42})
+
+    def test_install_mode_kwarg(self) -> None:
+        @TypedArgs('testfunc', kw_types=[INSTALL_MODE_KW])
+        def _(obj, node, args: T.Tuple, kwargs: T.Dict[str, FileMode]) -> FileMode:
+            return kwargs['install_mode']
+
+        # False means "use the default" and must not be passed on as uid/gid 0.
+        mode = _(None, mock.Mock(), [], {'install_mode': ['rw-rw-r--', False, 'mygroup']})
+        self.assertEqual(mode.perms_s, 'rw-rw-r--')
+        self.assertIsNone(mode.owner)
+        self.assertEqual(mode.group, 'mygroup')
+
+        mode = _(None, mock.Mock(), [], {'install_mode': [False, 'myuser', False]})
+        self.assertIsNone(mode.perms_s)
+        self.assertEqual(mode.owner, 'myuser')
+        self.assertIsNone(mode.group)
+
+        mode = _(None, mock.Mock(), [], {'install_mode': ['rw-rw-r--', 0, 0]})
+        self.assertEqual(mode.owner, 0)
+        self.assertEqual(mode.group, 0)
+
+        # 1 == True, but it is a valid uid/gid.
+        mode = _(None, mock.Mock(), [], {'install_mode': ['rw-rw-r--', 1, 1]})
+        self.assertEqual(mode.owner, 1)
+        self.assertEqual(mode.group, 1)
+
+        with self.assertRaises(InvalidArguments):
+            _(None, mock.Mock(), [], {'install_mode': ['rw-rw-r--', True]})
 
     def test_detect_cpu_family(self) -> None:
         """Test the various cpu families that we detect and normalize.

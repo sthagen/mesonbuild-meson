@@ -1877,17 +1877,31 @@ class Interpreter(InterpreterBase, HoldableObject):
         if fallback and (wrap_mode == WrapMode.forcefallback or fallback in force_fallback_for):
             return self.find_program_fallback(fallback, args, for_machine, default_options, required, extra_info)
 
-        progobj = self.program_from_file_for(for_machine, args)
-        if progobj is None:
-            progobj = self.program_from_system(args, search_dirs, extra_info)
-        if progobj is None and args[0].endswith('python3'):
-            prog = ExternalProgram('python3', mesonlib.python_command, silent=True)
-            progobj = prog if prog.found() else None
-
-        if isinstance(progobj, ExternalProgram) and version_arg:
-            progobj.version_arg = version_arg
-        if progobj and not self.check_program_version(progobj, wanted, version_func, for_machine, extra_info):
-            progobj = None
+        progobj = None
+        version_fail_info: T.List[mlog.TV_Loggable] = []
+        # A machine-file entry is authoritative for its name, even if its
+        # version is unsuitable. Only unconfigured names may use system lookup.
+        for arg in args:
+            candidate_extra: T.List[mlog.TV_Loggable] = []
+            candidate = self.program_from_file_for(for_machine, [arg])
+            if candidate is None:
+                candidate = self.program_from_system([arg], search_dirs, candidate_extra)
+                if candidate is None and isinstance(arg, str) and arg.endswith('python3'):
+                    candidate = ExternalProgram('python3', mesonlib.python_command, silent=True)
+            if candidate is None or not candidate.found():
+                continue
+            if version_arg:
+                candidate.version_arg = version_arg
+            ver_info: T.List[mlog.TV_Loggable] = []
+            if self.check_program_version(candidate, wanted, version_func, for_machine, ver_info):
+                extra_info.extend(candidate_extra)
+                extra_info.extend(ver_info)
+                progobj = candidate
+                break
+            version_fail_info.extend(candidate_extra)
+            version_fail_info.extend(ver_info)
+        else:
+            extra_info.extend(version_fail_info)
 
         if progobj is None and fallback and required:
             progobj = self.notfound_program(args)
@@ -2392,6 +2406,8 @@ class Interpreter(InterpreterBase, HoldableObject):
 
         if '@DEPFILE@' in all_args:
             raise InterpreterException('run_target does not have support for @DEPFILE@')
+        if '@PRIVATE_DIR@' in all_args:
+            raise InterpreterException('run_target does not have support for @PRIVATE_DIR@')
 
         name = args[0]
         tg = build.RunTarget(name, all_args, kwargs['depends'], self.subdir, self.environment,
@@ -3059,7 +3075,7 @@ class Interpreter(InterpreterBase, HoldableObject):
             if depfile:
                 mlog.log('Reading depfile:', mlog.bold(depfile))
                 with open(depfile, encoding='utf-8') as f:
-                    df = DepFile(f.readlines())
+                    df = DepFile(f.readlines(), self.environment.build_dir)
                     deps = df.get_all_dependencies(ofile_fname)
                     for dep in deps:
                         self.add_build_def_file(dep)

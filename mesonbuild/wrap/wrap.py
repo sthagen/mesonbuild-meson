@@ -26,13 +26,13 @@ import gzip
 from base64 import b64encode
 from enum import Enum
 from netrc import netrc
-from pathlib import Path, PurePath
+from pathlib import Path
 from functools import lru_cache
 
 from . import WrapMode
 from .. import coredata
 from ..mesonlib import (
-    DirectoryLock, DirectoryLockAction, quiet_git, GIT, ProgressBar, MesonException,
+    as_posix, DirectoryLock, DirectoryLockAction, quiet_git, GIT, ProgressBar, MesonException,
     windows_proof_rmtree, Popen_safe, SubProject,
 )
 from ..interpreterbase import FeatureNew
@@ -585,7 +585,7 @@ class Resolver:
                 with open(main_fname, 'w', encoding='utf-8') as f:
                     f.write(textwrap.dedent(f'''\
                         [wrap-redirect]
-                        filename = {PurePath(os.path.relpath(self.wrap.original_filename, self.subdir_root)).as_posix()}
+                        filename = {as_posix(self.wrap.original_filename, relative_to=self.subdir_root)}
                         '''))
 
         # Map each supported method to a file that must exist at the root of source tree.
@@ -736,6 +736,9 @@ class Resolver:
         if self.wrap.values.get('depth', '') != '':
             is_shallow = True
             depth_option = ['--depth', self.wrap.values.get('depth')]
+        clone_recursive_val = self.wrap.values.get('clone-recursive', '').lower()
+        if clone_recursive_val and clone_recursive_val not in ['false', 'true']:
+            raise WrapException(f"clone-recursive: invalid value '{clone_recursive_val}' (use 'true' or 'false')")
         # for some reason git only allows commit ids to be shallowly fetched by fetch not with clone
         if is_shallow and self.is_git_full_commit_id(revno):
             # git doesn't support directly cloning shallowly for commits,
@@ -758,7 +761,7 @@ class Resolver:
                     args += ['--branch', revno]
                 args += [self.wrap.get('url'), self.directory]
                 verbose_git(args, self.subdir_root, check=True)
-        if self.wrap.values.get('clone-recursive', '').lower() == 'true':
+        if clone_recursive_val == 'true':
             verbose_git(['submodule', 'update', '--init', '--checkout', '--recursive', *depth_option],
                         self.dirname, check=True)
         push_url = self.wrap.values.get('push-url')
@@ -997,7 +1000,7 @@ class Resolver:
                 # Always pass a POSIX path to patch, because on Windows it's MSYS
                 # Ignore whitespace when applying patches to workaround
                 # line-ending differences
-                cmd = [patch_command(), '-l', '-f', '-p1', '-i', str(Path(relpath).as_posix())]
+                cmd = [patch_command(), '-l', '-f', '-p1', '-i', as_posix(relpath)]
             elif GIT:
                 # If the `patch` command is not available, fall back to `git
                 # apply`. The `--work-tree` is necessary in case we're inside a

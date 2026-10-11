@@ -9,7 +9,6 @@ from __future__ import annotations
 import abc
 import re
 import os
-from pathlib import Path
 import typing as T
 
 from .base import DependencyException, DependencyMethods
@@ -53,7 +52,7 @@ def _qt_get_private_includes(mod_inc_dir: str, module: str, mod_version: str) ->
             if len(dirname.split('.')) == 3:
                 private_dir = dirname
                 break
-    return [private_dir, Path(private_dir, f'Qt{module}').as_posix()]
+    return [private_dir, mesonlib.as_posix(private_dir, f'Qt{module}')]
 
 
 def get_qmake_host_bins(qvars: T.Dict[str, str]) -> str:
@@ -194,7 +193,9 @@ class QtPkgConfigDependency(_QtBase, PkgConfigDependency, metaclass=mesonlib.Sim
                 self.is_found = False
                 return
             if self.private_headers:
+                # fd.o pkg-config does not apply PKG_CONFIG_SYSROOT_DIR to variables.
                 qt_inc_dir = mod.get_variable(pkgconfig='includedir')
+                qt_inc_dir = self.env.get_sys_root_path(self.for_machine, qt_inc_dir)
                 mod_private_dir = os.path.join(qt_inc_dir, 'Qt' + m)
                 if not os.path.isdir(mod_private_dir):
                     if self.env.machines[self.for_machine].is_darwin():
@@ -204,6 +205,7 @@ class QtPkgConfigDependency(_QtBase, PkgConfigDependency, metaclass=mesonlib.Sim
                         # headers; both public and private headers live under
                         # <libdir>/Qt<Module>.framework/Headers.
                         libdir = mod.get_variable(pkgconfig='libdir', default_value='')
+                        libdir = self.env.get_sys_root_path(self.for_machine, libdir)
                         framework_inc = os.path.join(libdir, f'Qt{m}.framework', 'Headers')
                         if libdir and os.path.isdir(framework_inc):
                             mod_private_dir = framework_inc
@@ -322,7 +324,7 @@ class QmakeQtDependency(_QtBase, ConfigToolDependency, metaclass=mesonlib.Simple
         modules_lib_suffix = _get_modules_lib_suffix(self.version, self.env.machines[self.for_machine], is_debug)
 
         for module in self.requested_modules:
-            mincdir = Path(incdir, f'Qt{module}').as_posix()
+            mincdir = mesonlib.as_posix(incdir, f'Qt{module}')
             self.compile_args.append('-I' + mincdir)
 
             if module == 'QuickTest':

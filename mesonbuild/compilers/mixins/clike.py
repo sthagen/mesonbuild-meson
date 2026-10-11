@@ -25,7 +25,7 @@ from ... import arglist
 from ... import mesonlib
 from ... import mlog
 from ...linkers.linkers import GnuLikeDynamicLinkerMixin, SolarisDynamicLinker, CompCertDynamicLinker
-from ...mesonlib import LibType
+from ...mesonlib import as_posix, LibType
 from .. import compilers
 from ..compilers import CompileCheckMode
 from .visualstudio import VisualStudioLikeCompiler
@@ -877,14 +877,23 @@ class CLikeCompiler(Compiler):
         and then searching the binary for the string,
         '''
         symbol_name = b'meson_uscore_prefix'
-        code = '''#ifdef __cplusplus
-        extern "C" {
-        #endif
-        void ''' + symbol_name.decode() + ''' (void) {}
-        #ifdef __cplusplus
-        }
-        #endif
-        '''
+        if self.language == 'fortran':
+            code = f'''      real function {symbol_name.decode()}()
+                  {symbol_name.decode()} = 0
+                  return
+                  end
+            '''
+        elif self.language in {'c', 'cpp'}:
+            code = '''#ifdef __cplusplus
+            extern "C" {
+            #endif
+            void ''' + symbol_name.decode() + ''' (void) {}
+            #ifdef __cplusplus
+            }
+            #endif
+            '''
+        else:
+            raise RuntimeError(f'Underscore prefix check not implemented for {self.language}')
         args = self.get_compiler_check_args(CompileCheckMode.COMPILE)
         n = '_symbols_have_underscore_prefix_searchbin'
         with self._build_wrapper(code, extra_args=args, mode=CompileCheckMode.COMPILE, want_output=True) as p:
@@ -951,7 +960,7 @@ class CLikeCompiler(Compiler):
 
     def symbols_have_underscore_prefix(self) -> bool:
         '''
-        Check if the compiler prefixes an underscore to global C symbols
+        Check if the compiler prefixes an underscore to global C or Fortran symbols
         '''
         # First, try to query the compiler directly
         result = self._symbols_have_underscore_prefix_define()
@@ -1197,7 +1206,7 @@ class CLikeCompiler(Compiler):
                     continue
                 if libname.startswith('lib') and trial_result.startswith(libname) and lib_prefix_warning:
                     mlog.warning(f'find_library({libname!r}) starting in "lib" only works by accident and is not portable')
-                return [Path(trial_result).as_posix()]
+                return [as_posix(trial_result)]
         return None
 
     def _find_library_impl(self, libname: str, extra_dirs: T.List[str], code: str, libtype: LibType,
@@ -1293,7 +1302,7 @@ class CLikeCompiler(Compiler):
 
     def thread_flags(self) -> T.List[str]:
         # TODO: does this belong here or in GnuLike or maybe PosixLike?
-        if self.info.is_haiku() or self.info.is_darwin():
+        if self.info.is_haiku() or self.info.is_darwin() or self.info.is_qnx():
             return []
         if self.info.is_os2():
             return ['-lpthread']

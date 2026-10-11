@@ -4,13 +4,13 @@
 from __future__ import annotations
 
 from .base import ExternalDependency, DependencyException, sort_libpaths, DependencyTypeName
-from ..mesonlib import (EnvironmentVariables, OrderedSet, PerMachine, Popen_safe, Popen_safe_logged, MachineChoice,
-                        join_args, MesonException, path_has_root)
+from ..mesonlib import (as_posix, EnvironmentVariables, OrderedSet, PerMachine, Popen_safe, Popen_safe_logged,
+                        MachineChoice, join_args, MesonException, path_has_root)
 from ..options import OptionKey
 from ..programs import find_external_program, ExternalProgram
 from .. import mlog
 from enum import Enum
-from pathlib import Path, PurePath
+from pathlib import PurePath
 from functools import lru_cache
 import re
 import os
@@ -287,7 +287,7 @@ class PkgConfigCLI(PkgConfigInterface):
             bpath = self.env.get_build_dir()
             if bpath is not None:
                 # uninstalled can only be used if a build dir exists.
-                uninstalled_path = Path(bpath, 'meson-uninstalled').as_posix()
+                uninstalled_path = as_posix(bpath, 'meson-uninstalled')
                 if uninstalled_path not in extra_paths:
                     extra_paths.insert(0, uninstalled_path)
         env.set('PKG_CONFIG_PATH', extra_paths)
@@ -607,7 +607,10 @@ class PkgConfigDependency(ExternalDependency):
                      configtool: T.Optional[str] = None, internal: T.Optional[str] = None,
                      system: T.Optional[str] = None, default_value: T.Optional[str] = None,
                      pkgconfig_define: PkgConfigDefineType = None) -> str:
-        if pkgconfig:
+        if not pkgconfig:
+            if default_value is None:
+                raise DependencyException(f'{self.name!r} is a pkg-config dependency, and neither the "pkgconfig" keyword nor a default was passed')
+        else:
             try:
                 variable = self.pkgconfig.variable(self.name, pkgconfig, pkgconfig_define)
                 if variable is not None:
@@ -616,4 +619,4 @@ class PkgConfigDependency(ExternalDependency):
                 pass
         if default_value is not None:
             return default_value
-        raise DependencyException(f'Could not get pkg-config variable and no default provided for {self!r}')
+        raise DependencyException(f'Could not get variable {pkgconfig!r} of {self.name!r} from pkg-config and no default provided')

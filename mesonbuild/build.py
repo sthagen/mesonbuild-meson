@@ -21,7 +21,7 @@ from . import mlog
 from . import programs
 from .environment import MachineMap
 from .mesonlib import (
-    HoldableObject, SecondLevelHolder, SimpleABC, SubProject,
+    as_posix, HoldableObject, SecondLevelHolder, SimpleABC, SubProject,
     File, MesonException, MachineChoice, ThreeMachineChoice, PerMachine,
     OrderedSet, classify_unity_sources, ROOT_SUBPROJECT,
     get_filenames_templates_dict, substitute_values, has_path_sep,
@@ -776,11 +776,11 @@ class StructuredSources(HoldableObject):
     def canonicalize(path: str) -> str:
         """Canonicalize a path within the structure.
 
-        The root of the structure is spelled as an empty string.
+        Like as_posix, but the root of the structure is spelled as an empty string.
         """
         if not path:
             return ''
-        path = pathlib.PurePath(os.path.normpath(path)).as_posix()
+        path = as_posix(path)
         return '' if path == '.' else path
 
     def extend(self, path: str, sources: T.Iterable[TargetSources]) -> None:
@@ -1105,8 +1105,8 @@ class BuildTarget(Target, BuildTargetProto):
         # we have to call process_compilers() first and we need to process libraries
         # from link_with and link_whole first.
         # See https://github.com/mesonbuild/meson/pull/11957#issuecomment-1629243208.
-        link_targets = self._extract_link_with(kwargs.get('link_with', []))
-        link_whole_targets = self._extract_link_whole(kwargs.get('link_whole', []))
+        link_targets = self._extract_link_with(kwargs.get('link_with', [])) + self.link_targets
+        link_whole_targets = self._extract_link_whole(kwargs.get('link_whole', [])) + self.link_whole_targets
         self.link_targets.clear()
         self.link_whole_targets.clear()
         self.link(link_targets)
@@ -1175,6 +1175,8 @@ class BuildTarget(Target, BuildTargetProto):
             self.pic = True
             self.pie = True
         else:
+            if self.link_language == 'rust':
+                raise MesonException("link_language 'rust' requires a Rust source file")
             if self.structured_sources:
                 raise MesonException('structured sources are only supported in Rust targets')
 
@@ -1396,7 +1398,7 @@ class BuildTarget(Target, BuildTargetProto):
                         break
                 else:
                     if is_known_suffix(s) and not is_header(s):
-                        path = pathlib.Path(str(s)).as_posix()
+                        path = as_posix(str(s))
                         m = f'No {self.for_machine.get_lower_case_name()} machine compiler for {path!r}'
                         raise MesonException(m)
 
@@ -1934,7 +1936,7 @@ class BuildTarget(Target, BuildTargetProto):
         bl_type = self._default_library_type()
 
         lib_list: list[LinkableTargetProto] = []
-        for lib in itertools.chain(link_with, self.link_targets):
+        for lib in link_with:
             if isinstance(lib, (CustomTarget, CustomTargetIndex)):
                 lib_list.append(lib)
             elif isinstance(lib, Jar):
@@ -1948,7 +1950,7 @@ class BuildTarget(Target, BuildTargetProto):
 
     def _extract_link_whole(self, link_whole: T.Sequence[StaticTypes]) -> list[StaticTargetProto]:
         lib_list: list[StaticTargetProto] = []
-        for lib in itertools.chain(link_whole, self.link_whole_targets):
+        for lib in link_whole:
             if isinstance(lib, BothLibraries):
                 lib = lib.get('static')
                 if not isinstance(lib, StaticLibrary):
@@ -3244,17 +3246,30 @@ class CustomTarget(Target, CustomTargetBase, CommandTargetProto):
     def get_generated_sources(self) -> T.Iterable[GeneratedTypes]:
         return self.get_generated_lists()
 
-    def get_dep_outname(self, infilenames: list[str]) -> str:
+    def get_dep_outname(self, infilenames: list[str],
+                        outfilenames: T.Optional[list[str]] = None) -> str:
         if self.depfile is None:
             raise InvalidArguments('Tried to get depfile name for custom_target that does not have depfile defined.')
+        depfile = self.depfile
         if infilenames:
             plainname = os.path.basename(infilenames[0])
             basename = os.path.splitext(plainname)[0]
-            return self.depfile.replace('@BASENAME@', basename).replace('@PLAINNAME@', plainname)
-        else:
-            if '@BASENAME@' in self.depfile or '@PLAINNAME@' in self.depfile:
-                raise InvalidArguments('Substitution in depfile for custom_target that does not have an input file.')
-            return self.depfile
+            depfile = depfile.replace('@BASENAME@', basename).replace('@PLAINNAME@', plainname)
+        elif '@BASENAME@' in depfile or '@PLAINNAME@' in depfile:
+            raise InvalidArguments('Substitution in depfile for custom_target that does not have an input file.')
+        # @OUTPUT@ in depfile is the output *filename*, not the full path.
+        # The backend joins this with get_target_dir(), which already includes
+        # the meson subdir and build_subdir. Substituting a full @OUTPUT@ path
+        # would double both (issue #14140).
+        outputs = outfilenames if outfilenames is not None else self.outputs
+        if '@OUTPUT@' in depfile:
+            if len(outputs) != 1:
+                raise InvalidArguments("Depfile has '@OUTPUT@' as part of a "
+                                       'string and more than one output file')
+            depfile = depfile.replace('@OUTPUT@', os.path.basename(outputs[0]))
+        for i, ofile in enumerate(outputs):
+            depfile = depfile.replace(f'@OUTPUT{i}@', os.path.basename(ofile))
+        return depfile
 
     def is_linkable_output(self, output: str) -> bool:
         if output.endswith(('.a', '.dll', '.lib', '.so', '.dylib')):

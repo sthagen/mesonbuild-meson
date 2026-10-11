@@ -7,6 +7,7 @@ from __future__ import annotations
 import dataclasses
 import itertools
 import os, re
+from pathlib import Path
 import typing as T
 import collections
 
@@ -19,11 +20,12 @@ from . import options
 from .mesonlib import (
     MesonException, MachineChoice, Popen_safe, PerMachine,
     PerMachineDefaultable, PerThreeMachineDefaultable, split_args,
-    MesonBugException, ThreeMachineChoice
+    MesonBugException, ThreeMachineChoice, path_is_in_root
 )
 from .options import OptionKey
 from . import mlog
 from .programs import ExternalProgram
+from .scripts import destdir_join
 
 from .envconfig import (
     BinaryTable, MachineInfo, Properties, CMakeVariables,
@@ -468,6 +470,13 @@ class Environment:
     def is_cross_build(self, when_building_for: MachineChoice = MachineChoice.HOST) -> bool:
         return self.machine_map[when_building_for] is not self.machine_map.build
 
+    def get_sys_root_path(self, for_machine: MachineChoice, path: str) -> str:
+        """Prefix path with the sys_root property, unless it is already inside it."""
+        sysroot = self.properties[for_machine].get_sys_root()
+        if path and sysroot and not path_is_in_root(Path(path), Path(sysroot)):
+            path = destdir_join(sysroot, path)
+        return path
+
     def dump_coredata(self) -> str:
         return coredata.save(self.coredata, self.get_build_dir())
 
@@ -555,6 +564,10 @@ class Environment:
         else:
             # This option is only supported by gcc and clang. If we don't get a
             # GCC or Clang compiler return and empty list.
+            #
+            # qcc excluded: '-print-search-dirs' isn't a documented qcc
+            # option, and this function raises rather than degrading
+            # gracefully on a non-zero exit.
             return []
 
         p, out, _ = Popen_safe(comp.get_exelist() + ['-print-search-dirs'])
@@ -567,11 +580,11 @@ class Environment:
         for comp in self.coredata.compilers[for_machine].values():
             if comp.id == 'clang':
                 break
-            elif comp.id == 'gcc':
+            elif comp.id in {'gcc', 'qcc'}:
                 break
         else:
-            # This option is only supported by gcc and clang. If we don't get a
-            # GCC or Clang compiler return and empty list.
+            # Only gcc, clang, and gcc-compatible drivers (e.g. qcc) support
+            # this; return an empty list otherwise.
             return []
         return comp.get_default_include_dirs()
 
